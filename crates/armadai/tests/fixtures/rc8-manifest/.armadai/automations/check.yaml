@@ -1,0 +1,5 @@
+event: before-tool
+run: ./check.sh
+native:
+  claude:
+    timeout: 5

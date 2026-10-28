@@ -1,3 +1,21 @@
+## Unreleased
+
+### Added
+
+- New diagnostic: `ignored-pack-file` (warning), a file of a pack folder that `init --pack` does not install: counted by `validate`, present in `--json`, printed the same way by `init --pack` (#525).
+- New diagnostic: `skill-missing-path` (warning), a path under `scripts/` or `references/` that a `SKILL.md` names and its folder lacks (#524).
+- `armadai link --adopt-hooks` takes over the hooks of `.claude/settings.json` that are identical to the ones link adds (a clone or a worktree without `.armadai/link-manifest.yaml`), so `unlink` removes them; the report says so where it said `not owned` (#534).
+
+### Fixed
+
+- `init --pack` keeps the executable bit of a pack's files, so a skill's scripts stay runnable (#521).
+- The help of `init` and the starter-packs page list the whole white list of a pack, `templates/*.md` and `commands/*.md` included (#526).
+- `native.claude.permissions` is merged list by list into an existing `permissions` of `.claude/settings.json` (`allow`, `ask`, `deny`, `additionalDirectories` and any other list): your rules are kept, `unlink` removes only the rules link added, a `deny` link adds that your `allow` lists is reported, and a conflicting value names both values (#522).
+- `validate` positions `unknown-state`, `unknown-step` and `unknown-free-agent` on the faulty link, key or list entry instead of the first occurrence of the word (#523).
+- `validate` no longer reports as `unknown-free-agent` an agent that a declared target provides (Claude Code, OpenCode), and its hint lists them (#517).
+- `unlink` and a relink no longer reorder the keys of `.claude/settings.json`; numbers of hooks and keys recorded in the link manifest are plain YAML numbers (#505).
+- A mistake under `model_tiers` of `config.yaml` (an unknown tier such as `medium`) no longer breaks `config starters-dir` nor hides your `starters_dirs` from the pack search: it is a warning there, and an error naming the key only for `link --target opencode`, which uses it (#506).
+
 ## v1.0.0-rc.8 (2026-10-27)
 
 Eighth release candidate. `armadai flow status` now follows the flow you launched: the command you type (`/bugfix`, `/evolution`…) is recorded and decides the flow a run belongs to, so a team whose flows share an entry step is no longer shown under the wrong flow. Relink with `armadai link --target claude` to get the new recording hook.

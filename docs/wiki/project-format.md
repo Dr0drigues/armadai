@@ -135,7 +135,8 @@ not linked: they are not project templates.
 
 Frontmatter: `name` (equal to the folder name), `description` (required, at most 1024
 characters), `license`, `compatibility`, `metadata`. Other keys are kept and reported as
-warnings. The folder's other files (scripts, references) are untouched.
+warnings. The folder's other files (scripts, references) are copied as is; a path under `scripts/`
+or `references/` named by `SKILL.md` and absent gives the warning `skill-missing-path`. The check reads prose too, so a path given as an example (a guide on writing skills) and `scripts/references` written to mean "either folder" are reported as well: the warning does not block `link`.
 
 `metadata: { armadai-slot: code-standards }` makes the skill fill a slot (see
 [Slots](#slots)); several slots are separated by commas (`armadai-slot: "code-standards, security"`).
@@ -306,8 +307,9 @@ armadai validate [path] --json   # the diagnostics as a JSON array on stdout, no
 A diagnostic prints as `file:line:column: error[code]: message`, followed by `hint: …` when a fix
 is obvious. In JSON each one has `severity`, `code`, `file`, `path`, `line`, `column`, `message`
 and `hint`. Positions in an agent's frontmatter are lines of the file. A semantic position (an
-unknown agent, a missing step…) points at the first whole-word occurrence of the faulty name in
-the file. `--json` only applies to new-format projects; on a legacy project it is ignored with a
+unknown agent…) points at the first whole-word occurrence of the faulty name in the file, except
+`unknown-state`, `unknown-step` and `unknown-free-agent`, which point at the faulty link key
+(`when`, `from`, `to`), `on_failure` or `start`, or at the entry of `free_agents`. `--json` only applies to new-format projects; on a legacy project it is ignored with a
 warning on stderr.
 
 ### Diagnostic codes
@@ -326,13 +328,15 @@ warning on stderr.
 | `unknown-target` | error | A target in `targets`, `outputs` or a `native` key is not supported | Use `claude`, `codex`, `copilot` or `opencode` |
 | `bad-output` | error | An `outputs` value is absolute, climbs with `..`, is the project root, or points into `.armadai/` or `.git/` | Use a folder inside the project such as `.claude` (`link --output` can point elsewhere for one run) |
 | `unknown-agent` | error | A step or `coordinator` names no agent of the project | Use an existing agent id (the hint suggests a close one) |
-| `unknown-free-agent` | warning | A `free_agents` entry names no agent of the project | None needed for an agent the target provides itself (Claude Code: `Explore`, `Plan`, `general-purpose`); otherwise fix the id (the hint suggests a close one) |
+| `unknown-free-agent` | warning | A `free_agents` entry names no agent of the project | Not reported for an agent a declared target provides itself (Claude Code: `Explore`, `Plan`, `general-purpose`, `claude`, `statusline-setup`, `claude-code-guide`; OpenCode: `general`, `explore`; no `targets` means Claude Code); otherwise fix the id (the hint suggests a close one) |
 | `unknown-skill` | error | An agent lists a skill the project does not have | Add the skill or fix the id |
 | `empty-description` | error | An agent's `description` is empty | Write a one-line description |
 | `invalid-temperature` | error | `temperature` is not a finite number | Use a number such as `0.4` |
 | `skill-name-mismatch` | error | A skill's `name` differs from its folder | Set `name` to the folder name |
 | `skill-missing-description` | error | A skill has no or an empty `description` | Add one |
 | `skill-description-too-long` | error | A skill's `description` exceeds 1024 characters | Shorten it |
+| `skill-missing-path` | warning | A `SKILL.md` names a path under `scripts/` or `references/` (prose or code, not a pattern such as `scripts/<name>.sh`) that its folder does not contain | Add the file to the skill folder, or correct the path |
+| `ignored-pack-file` | warning | A file of a pack folder that `init --pack` does not install (outside the white list: `project.yaml`, `agents/*.md`, `templates/*.md`, `commands/*.md`, `skills/**`, `flows/*.yaml`, `automations/*.yaml`); reported by `validate <pack>` and `init --pack` | Move it into one of the listed folders, or remove it from the pack |
 | `unknown-skill-key` | warning | A skill's frontmatter has a key outside the standard | None needed if another tool uses it |
 | `empty-flow` | error | A flow has no step | Add steps or delete the file |
 | `duplicate-step-state` | error | `states` repeats a state or redeclares `done`/`failed` | Remove the duplicate |

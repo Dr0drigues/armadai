@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -93,18 +92,70 @@ pub fn ensure_config_dirs() -> anyhow::Result<()> {
 #[serde(default)]
 pub struct UserConfig {
     pub starters_dirs: Vec<String>,
-    /// Target name -> tier -> model id, e.g. `opencode: {fast: opencode/free-a}`.
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub model_tiers: BTreeMap<String, BTreeMap<armadai_model::Tier, String>>,
+    /// Target -> tier -> model id (`opencode: {fast: opencode/free-a}`), as written:
+    /// it never fails the read of the file, the commands that use it check it
+    /// ([`try_load_user_config_for`]).
+    #[serde(skip_serializing_if = "is_null")]
+    pub model_tiers: armadai_model::NativeValue,
 }
 
-/// The model the user chose for `tier` on `target`, if any.
+fn is_null(v: &armadai_model::NativeValue) -> bool {
+    v.is_null()
+}
+
+fn tier_name(tier: armadai_model::Tier) -> String {
+    serde_json::to_value(tier)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_default()
+}
+
+/// The model the user chose for `tier` on `target`; a faulty entry is `None`.
 pub fn model_for_tier(
     config: &UserConfig,
     target: &str,
     tier: armadai_model::Tier,
 ) -> Option<String> {
-    config.model_tiers.get(target)?.get(&tier).cloned()
+    config
+        .model_tiers
+        .get(target)?
+        .get(tier_name(tier))?
+        .as_str()
+        .map(str::to_owned)
+}
+
+/// Every problem under `model_tiers` as `(path, reason)`, e.g.
+/// `("model_tiers.opencode.medium", "is not a tier (fast, pro, max)")`. The name of a
+/// target is not checked.
+pub fn model_tier_problems(config: &UserConfig) -> Vec<(String, String)> {
+    use armadai_model::Tier;
+    use serde_json::Value;
+    let tiers = [Tier::Fast, Tier::Pro, Tier::Max].map(tier_name);
+    let mut out = Vec::new();
+    let top = match &*config.model_tiers {
+        Value::Null => return out,
+        Value::Object(m) => m,
+        _ => {
+            out.push(("model_tiers".into(), "must map targets to tiers".into()));
+            return out;
+        }
+    };
+    for (target, v) in top {
+        let path = format!("model_tiers.{target}");
+        let Value::Object(m) = v else {
+            out.push((path, "must map tiers to model ids".into()));
+            continue;
+        };
+        for (tier, id) in m {
+            let path = format!("{path}.{tier}");
+            if !tiers.contains(tier) {
+                out.push((path, format!("is not a tier ({})", tiers.join(", "))));
+            } else if !id.is_string() {
+                out.push((path, "must be a model id (a string)".into()));
+            }
+        }
+    }
+    out
 }
 
 /// Parse a user file: `Ok(None)` when it is missing, empty or only comments; an error
@@ -133,10 +184,49 @@ pub fn warn_once(msg: String) {
     }
 }
 
-/// Load user config from `~/.config/armadai/config.yaml`, for a write: an existing file
-/// that does not read is an error, never replaced by defaults.
-pub fn try_load_user_config() -> anyhow::Result<UserConfig> {
+fn read_config() -> anyhow::Result<UserConfig> {
     Ok(read_user_yaml(&config_file_path())?.unwrap_or_default())
+}
+
+/// A problem under `model_tiers` that this read does not use, as a warning (once).
+fn warn_model_tiers(path: &str, why: &str) {
+    let refuses = if path == "model_tiers" || path.starts_with("model_tiers.opencode") {
+        "; ignored here, but `armadai link --target opencode` refuses it"
+    } else {
+        "; ignored"
+    };
+    warn_once(format!(
+        "{}: {path} {why}{refuses}",
+        config_file_path().display()
+    ));
+}
+
+/// Load user config from `~/.config/armadai/config.yaml`, for a write: an existing file
+/// that does not read is an error, never replaced by defaults. A problem under
+/// `model_tiers` is a warning, not an error: it does not hide the rest of the file.
+pub fn try_load_user_config() -> anyhow::Result<UserConfig> {
+    let config = read_config()?;
+    for (path, why) in model_tier_problems(&config) {
+        warn_model_tiers(&path, &why);
+    }
+    Ok(config)
+}
+
+/// Strict read for a command that uses `model_tiers.<target>`: a problem under it is an
+/// error naming the key; one under another target stays a warning.
+pub fn try_load_user_config_for(target: &str) -> anyhow::Result<UserConfig> {
+    let config = read_config()?;
+    let own = format!("model_tiers.{target}");
+    for (path, why) in model_tier_problems(&config) {
+        if path == "model_tiers" || path == own || path.starts_with(&format!("{own}.")) {
+            anyhow::bail!(
+                "{}: {path} {why}; fix it or remove it",
+                config_file_path().display()
+            );
+        }
+        warn_model_tiers(&path, &why);
+    }
+    Ok(config)
 }
 
 /// Load user config for reading only: defaults if the file is missing, defaults and a
@@ -218,7 +308,71 @@ mod tests {
         let cfg: UserConfig =
             armadai_model::yaml::from_str("starters_dirs:\n  - /opt/a\n").unwrap();
         assert_eq!(cfg.starters_dirs, vec!["/opt/a".to_string()]);
-        assert!(cfg.model_tiers.is_empty());
+        assert!(cfg.model_tiers.is_null());
+    }
+
+    fn parse(text: &str) -> UserConfig {
+        armadai_model::yaml::from_str(text).unwrap()
+    }
+
+    #[test]
+    fn an_unknown_tier_does_not_hide_the_starter_dirs() {
+        let cfg = parse(
+            "starters_dirs: [/opt/a]\nmodel_tiers:\n  opencode:\n    medium: x\n    fast: m1\n",
+        );
+        assert_eq!(cfg.starters_dirs, vec!["/opt/a".to_string()]);
+        assert_eq!(
+            model_tier_problems(&cfg),
+            vec![(
+                "model_tiers.opencode.medium".to_string(),
+                "is not a tier (fast, pro, max)".to_string()
+            )]
+        );
+        assert_eq!(
+            model_for_tier(&cfg, "opencode", armadai_model::Tier::Fast),
+            Some("m1".to_string())
+        );
+    }
+
+    #[test]
+    fn each_shape_problem_is_named() {
+        let p = |t: &str| model_tier_problems(&parse(t));
+        let one = |path: &str, why: &str| vec![(path.to_string(), why.to_string())];
+        assert_eq!(
+            p("model_tiers: [a]\n"),
+            one("model_tiers", "must map targets to tiers")
+        );
+        assert_eq!(
+            p("model_tiers:\n  opencode: x\n"),
+            one("model_tiers.opencode", "must map tiers to model ids")
+        );
+        assert_eq!(
+            p("model_tiers:\n  opencode:\n    fast: 3\n"),
+            one("model_tiers.opencode.fast", "must be a model id (a string)")
+        );
+        assert_eq!(p("model_tiers:\n  anything:\n    pro: m\n"), vec![]);
+        assert_eq!(p("starters_dirs: []\n"), vec![]);
+    }
+
+    #[test]
+    fn the_strict_read_fails_on_its_own_target_only() {
+        let iso = crate::test_support::IsolatedConfigDir::enter();
+        let file = iso.config_dir().join("config.yaml");
+        std::fs::write(&file, "model_tiers:\n  opencode:\n    medium: x\n").unwrap();
+        let e = try_load_user_config_for("opencode")
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            e,
+            format!(
+                "{}: model_tiers.opencode.medium is not a tier (fast, pro, max); fix it or remove it",
+                file.display()
+            )
+        );
+        assert!(try_load_user_config_for("codex").is_ok());
+        assert!(try_load_user_config().is_ok());
+        std::fs::write(&file, "model_tiers: 3\n").unwrap();
+        assert!(try_load_user_config_for("codex").is_err());
     }
 
     #[test]

@@ -1416,6 +1416,7 @@ mod tests {
                     }],
                     keys: [("model".to_string(), serde_json::json!("opus"))].into(),
                     containers: vec!["hooks".into()],
+                    ..Owned::default()
                 }),
                 created: true,
             },

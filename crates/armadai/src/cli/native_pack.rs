@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 
+const IGNORED: &str = "ignored-pack-file";
+
 /// `project.yaml` of a pack that ships none.
 pub const DEFAULT_PROJECT: &str = "schema_version: 1\ntargets: [claude]\n";
 
@@ -27,11 +29,12 @@ fn listed(rel: &Path) -> bool {
     }
 }
 
-/// A pack's files: those it installs, as (path relative to `.armadai/`, bytes), and
-/// those inside its folders the white list leaves out (top-level files such as
-/// `pack.yaml` or a README are expected and not listed).
+/// A pack's files: those it installs, as (path relative to `.armadai/`, bytes,
+/// executable on Unix in the pack), and those inside its folders the white list
+/// leaves out (top-level files such as `pack.yaml` or a README are expected and not
+/// listed).
 pub struct PackFiles {
-    pub files: Vec<(PathBuf, Vec<u8>)>,
+    pub files: Vec<(PathBuf, Vec<u8>, bool)>,
     pub ignored: Vec<PathBuf>,
 }
 
@@ -53,7 +56,12 @@ pub fn files(pack_dir: &Path) -> anyhow::Result<PackFiles> {
             if meta.is_dir() {
                 todo.push(path);
             } else if meta.is_file() && listed(&rel) {
-                out.push((rel, std::fs::read(&path)?));
+                #[cfg(unix)]
+                let exec =
+                    std::os::unix::fs::PermissionsExt::mode(&meta.permissions()) & 0o111 != 0;
+                #[cfg(not(unix))]
+                let exec = false;
+                out.push((rel, std::fs::read(&path)?, exec));
             } else if rel.components().count() > 1 {
                 ignored.push(rel);
             }
@@ -68,30 +76,49 @@ pub fn files(pack_dir: &Path) -> anyhow::Result<PackFiles> {
 }
 
 /// The pack as a scratch project (`<tmp>/.armadai/`, the default `project.yaml`
-/// when it ships none) and its diagnostics, positioned in the pack itself.
+/// when it ships none) and its diagnostics, positioned in the pack itself: one
+/// `ignored-pack-file` warning per ignored file first, then the validator's.
 pub fn stage(
     pack_dir: &Path,
-    files: &[(PathBuf, Vec<u8>)],
+    pack: &PackFiles,
 ) -> anyhow::Result<(tempfile::TempDir, Vec<armadai_model::Diagnostic>)> {
+    let files = &pack.files;
     let tmp = tempfile::tempdir()?;
     let base = tmp.path().join(".armadai");
-    for (rel, bytes) in files {
+    for (rel, bytes, _) in files {
         let dest = base.join(rel);
         std::fs::create_dir_all(dest.parent().context("a file has a parent")?)?;
         std::fs::write(dest, bytes)?;
     }
-    if !files.iter().any(|(r, _)| r == Path::new("project.yaml")) {
+    if !files.iter().any(|(r, ..)| r == Path::new("project.yaml")) {
         std::fs::create_dir_all(&base)?;
         std::fs::write(base.join("project.yaml"), DEFAULT_PROJECT)?;
     }
-    let ds = armadai_model::validate(tmp.path())
-        .into_iter()
-        .map(|mut d| {
-            if let Ok(rel) = d.file.strip_prefix(&base) {
-                d.file = pack_dir.join(rel);
-            }
-            d
-        })
+    let ignored = pack.ignored.iter().map(|rel| armadai_model::Diagnostic {
+        severity: armadai_model::Severity::Warning,
+        code: IGNORED,
+        file: pack_dir.join(rel),
+        path: String::new(),
+        line: None,
+        column: None,
+        message: "not part of a pack: init --pack does not install it".into(),
+        hint: Some(
+            "a pack installs project.yaml, agents/*.md, templates/*.md, commands/*.md, skills/**, \
+             flows/*.yaml and automations/*.yaml"
+                .into(),
+        ),
+    });
+    let ds = ignored
+        .chain(
+            armadai_model::validate(tmp.path())
+                .into_iter()
+                .map(|mut d| {
+                    if let Ok(rel) = d.file.strip_prefix(&base) {
+                        d.file = pack_dir.join(rel);
+                    }
+                    d
+                }),
+        )
         .collect();
     Ok((tmp, ds))
 }
@@ -105,7 +132,13 @@ struct Created {
 
 impl Created {
     /// Write `bytes` at `base/rel`, never through a symbolic link, never over a file.
-    fn write(&mut self, base: &Path, rel: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    fn write(
+        &mut self,
+        base: &Path,
+        rel: &Path,
+        bytes: &[u8],
+        executable: bool,
+    ) -> anyhow::Result<()> {
         let mut at = base.to_path_buf();
         for c in std::iter::once(None).chain(rel.components().map(Some)) {
             if let Some(c) = c {
@@ -134,6 +167,17 @@ impl Created {
             .with_context(|| format!("creating {}", at.display()))?;
         self.files.push(at);
         f.write_all(bytes)?;
+        #[cfg(unix)]
+        if executable {
+            // only the executable bit, like `copy_executable_bits` in `link`
+            use std::os::unix::fs::PermissionsExt;
+            let mode = f.metadata()?.permissions().mode();
+            f.set_permissions(std::fs::Permissions::from_mode(
+                mode | ((mode & 0o444) >> 2),
+            ))?;
+        }
+        #[cfg(not(unix))]
+        let _ = executable;
         Ok(())
     }
 
@@ -150,17 +194,16 @@ impl Created {
 /// Install the native pack at `pack_dir` into `root/.armadai/`. Existing files are
 /// kept (one warning each); an existing `project.yaml` wins over the pack's.
 pub fn install(root: &Path, pack_dir: &Path, name: &str) -> anyhow::Result<()> {
-    let PackFiles { files, ignored } = files(pack_dir)?;
+    let pack = files(pack_dir)?;
+    let files = &pack.files;
     let w = crate::cli::style::warn();
-    for f in &ignored {
-        anstream::eprintln!(
-            "{w}  warn: ignored: {} (not part of a pack){w:#}",
-            f.display()
-        );
+    let (tmp, ds) = stage(pack_dir, &pack)?;
+    // the other warnings of the validator stay silent here
+    for d in ds.iter().filter(|d| d.code == IGNORED) {
+        eprintln!("{}", d.render());
     }
-    let (tmp, ds) = stage(pack_dir, &files)?;
     if armadai_model::has_errors(&ds) {
-        for d in &ds {
+        for d in ds.iter().filter(|d| d.code != IGNORED) {
             eprintln!("{}", d.render());
         }
         bail!("pack '{name}' is invalid; nothing was written");
@@ -183,12 +226,12 @@ pub fn install(root: &Path, pack_dir: &Path, name: &str) -> anyhow::Result<()> {
         std::fs::symlink_metadata(base.join("skills").join(skill)).is_ok()
     };
     let existing: BTreeSet<std::ffi::OsString> = (files.iter())
-        .filter_map(|(r, _)| r.starts_with("skills").then(|| r.iter().nth(1)).flatten())
+        .filter_map(|(r, ..)| r.starts_with("skills").then(|| r.iter().nth(1)).flatten())
         .filter(|s| had_skill(s))
         .map(|s| s.to_owned())
         .collect();
     let result = (|| -> anyhow::Result<()> {
-        for (rel, bytes) in &files {
+        for (rel, bytes, exec) in files {
             if rel == Path::new("project.yaml") && had_project {
                 anstream::eprintln!(
                     "{w}  warn: .armadai/project.yaml exists: the project.yaml of the pack is \
@@ -218,11 +261,16 @@ pub fn install(root: &Path, pack_dir: &Path, name: &str) -> anyhow::Result<()> {
                 kept += 1;
                 continue;
             }
-            created.write(&base, rel, bytes)?;
+            created.write(&base, rel, bytes, *exec)?;
             installed.push(rel);
         }
         if !base.join("project.yaml").exists() {
-            created.write(&base, Path::new("project.yaml"), DEFAULT_PROJECT.as_bytes())?;
+            created.write(
+                &base,
+                Path::new("project.yaml"),
+                DEFAULT_PROJECT.as_bytes(),
+                false,
+            )?;
         }
         Ok(())
     })();

@@ -355,6 +355,35 @@ impl Ctx {
     }
 }
 
+/// Paths under `scripts/` or `references/` that `body` names, as `(byte offset, path as written)`,
+/// once per distinct path. A path starts at the beginning of the text or after a character outside
+/// `[A-Za-z0-9._/-]` (so a URL or `foo/scripts/x` is not one) and a pattern (`scripts/<name>.sh`,
+/// `scripts/*.sh`) is not a path.
+fn skill_paths(body: &str) -> Vec<(usize, String)> {
+    const PREFIXES: [&str; 4] = ["./scripts/", "./references/", "scripts/", "references/"];
+    let in_path = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '/' | '-');
+    let mut found: Vec<(usize, String)> = Vec::new();
+    let mut i = 0;
+    while i < body.len() {
+        let rest = &body[i..];
+        let starts = !body[..i].chars().next_back().is_some_and(in_path)
+            && PREFIXES.iter().any(|p| rest.starts_with(p));
+        if !starts {
+            i += rest.chars().next().map_or(1, char::len_utf8);
+            continue;
+        }
+        let end = rest.find(|c| !in_path(c)).unwrap_or(rest.len());
+        let token = rest[..end].trim_end_matches(['.', ',', ':', ')']);
+        let pattern = rest[end..].starts_with(['<', '{', '*', '$']);
+        let bare = PREFIXES.contains(&token);
+        if !pattern && !bare && !found.iter().any(|(_, t)| t == token) {
+            found.push((i, token.to_string()));
+        }
+        i += end.max(1);
+    }
+    found
+}
+
 /// Sorted entries of `dir` (empty when it does not exist).
 fn sorted(dir: &Path) -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
@@ -543,6 +572,22 @@ pub fn load_project(root: &Path) -> Loaded {
                 (l.map(|l| l + first - 1), c),
                 format!("unknown skill frontmatter key `{k}`"),
             );
+        }
+        let start = (body.as_ptr() as usize).saturating_sub(text.as_ptr() as usize);
+        for (at, token) in skill_paths(body) {
+            if !dir.join(&token).exists() {
+                let pos = crate::diag::line_col(&text, start + at);
+                cx.diag(
+                    Severity::Warning,
+                    "skill-missing-path",
+                    &p,
+                    pos,
+                    format!("`{token}` is named here but is not in the skill folder"),
+                );
+                cx.hint(Some(format!(
+                    "add it to .armadai/skills/{id}/, or correct the path"
+                )));
+            }
         }
         skills.insert(
             id,
@@ -825,6 +870,7 @@ fn instance(
 #[cfg(test)]
 mod tests {
     use super::strip_positions;
+    use crate::validate;
 
     #[test]
     fn strips_every_position_suffix_wherever_it_is() {
@@ -844,5 +890,99 @@ mod tests {
             strip_positions("at line 3, column x"),
             "at line 3, column x"
         );
+    }
+
+    /// Render each `skill-missing-path` of a project whose skill `s` has `body`; `files` are
+    /// created in the skill folder first.
+    fn missing(body: &str, files: &[&str]) -> Vec<String> {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let skill = root.join(".armadai/skills/s");
+        std::fs::create_dir_all(root.join(".armadai/agents")).unwrap();
+        std::fs::write(root.join(".armadai/project.yaml"), "schema_version: 1\n").unwrap();
+        std::fs::write(
+            root.join(".armadai/agents/a.md"),
+            "---\ndescription: A\n---\nB\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(skill.join("scripts")).unwrap();
+        std::fs::write(
+            skill.join("SKILL.md"),
+            format!("---\nname: s\ndescription: A skill\n---\n{body}\n"),
+        )
+        .unwrap();
+        for f in files {
+            std::fs::write(skill.join(f), "x").unwrap();
+        }
+        let prefix = root.to_str().unwrap();
+        validate(root)
+            .iter()
+            .filter(|d| d.code == "skill-missing-path")
+            .map(|d| d.render().replace(prefix, "<root>"))
+            .collect()
+    }
+
+    fn t5(token: &str, pos: &str) -> String {
+        format!(
+            "<root>/.armadai/skills/s/SKILL.md:{pos}: warning[skill-missing-path]: `{token}` is named here but is not in the skill folder\n  hint: add it to .armadai/skills/s/, or correct the path"
+        )
+    }
+
+    #[test]
+    fn a_skill_path_absent_from_its_folder_is_a_warning() {
+        let body = "Run scripts/run.sh then scripts/missing.sh";
+        assert_eq!(
+            missing(body, &["scripts/run.sh"]),
+            [t5("scripts/missing.sh", "5:25")]
+        );
+        assert_eq!(
+            missing(body, &["scripts/run.sh", "scripts/missing.sh"]),
+            Vec::<String>::new()
+        );
+        // in a code span, under `references/`, with a `./` prefix; once per distinct path
+        assert_eq!(
+            missing(
+                "Read `references/x.md` and ./scripts/y.sh, then references/x.md",
+                &[]
+            ),
+            [t5("references/x.md", "5:7"), t5("./scripts/y.sh", "5:28")]
+        );
+    }
+
+    #[test]
+    fn a_sentence_end_is_not_part_of_the_path() {
+        assert_eq!(
+            missing("Run scripts/missing.sh.", &[]),
+            [t5("scripts/missing.sh", "5:5")]
+        );
+        assert_eq!(
+            missing(
+                "Run (scripts/ok.sh), scripts/ok.sh: done",
+                &["scripts/ok.sh"]
+            ),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn what_is_not_a_skill_path_is_left_alone() {
+        for body in [
+            "see scripts/<name>.sh",
+            "see scripts/*.sh",
+            "see scripts/${NAME}.sh",
+            "see scripts/$NAME.sh",
+            "https://x.test/scripts/a.sh",
+            "foo/scripts/a.sh",
+            "the scripts/ folder",
+            "the references/ folder",
+            "see scripts/run-<n>.sh",
+            "see scripts/run-*.sh",
+            "see scripts/run-${N}.sh",
+            "see scripts/run-{a,b}.sh",
+            "see scripts/run-$N.sh",
+            "my_scripts/a.sh",
+        ] {
+            assert_eq!(missing(body, &[]), Vec::<String>::new(), "{body}");
+        }
     }
 }

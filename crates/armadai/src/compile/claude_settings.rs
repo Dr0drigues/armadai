@@ -12,6 +12,8 @@ use armadai_model::{Delegation, Event, NativeValue, Project};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use super::json_keys::{JsonKeys, OwnedJson, conflict, merge_into, plain_values, remove_from};
+
 /// One hook handler and the group it sits in.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HookEntry {
@@ -20,7 +22,11 @@ pub struct HookEntry {
     pub matcher: Option<String>,
     pub command: String,
     /// `native.claude` of the automation, merged into the handler object.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        serialize_with = "plain_values"
+    )]
     pub native: BTreeMap<String, Value>,
 }
 
@@ -39,13 +45,33 @@ impl HookEntry {
 pub struct Owned {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub entries: Vec<HookEntry>,
-    /// Top-level keys from the manifest's `native.claude`.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    /// Top-level keys from the manifest's `native.claude`, `permissions` excepted
+    /// (see [`Owned::permissions`]).
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        serialize_with = "plain_values"
+    )]
     pub keys: BTreeMap<String, Value>,
     /// Containers link created (`hooks`, `hooks.<Event>`): removed once empty again;
     /// a container the user had, even empty, is kept.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub containers: Vec<String>,
+    /// Rules and values of `native.claude.permissions`, owned entry by entry. Absent
+    /// from manifests written before 1.0.0, hence the default.
+    #[serde(default, skip_serializing_if = "OwnedJson::is_empty")]
+    pub permissions: OwnedJson,
+}
+
+/// What a merge did besides its text and what it owns: for the report.
+#[derive(Debug, Default, PartialEq)]
+pub struct MergeNotes {
+    /// Identical hooks found and taken over (`--adopt-hooks`).
+    pub adopted: Vec<HookEntry>,
+    /// Identical hooks found and left to the user.
+    pub kept: Vec<HookEntry>,
+    /// `deny` rules link added that the `allow` of the user also lists.
+    pub deny_over_allow: Vec<String>,
 }
 
 pub fn event_name(e: Event) -> &'static str {
@@ -233,7 +259,7 @@ fn prune(doc: &mut Map<String, Value>, containers: &[String]) {
         .and_then(Value::as_object)
         .is_some_and(Map::is_empty);
     if empty && containers.iter().any(|c| c == "hooks") {
-        doc.remove("hooks");
+        doc.shift_remove("hooks");
     }
 }
 
@@ -243,22 +269,89 @@ fn unmerge(doc: &mut Map<String, Value>, entries: &[&HookEntry], keys: &[(&Strin
     }
     for (k, v) in keys {
         if doc.get(*k) == Some(*v) {
-            doc.remove(*k);
+            doc.shift_remove(*k);
         }
     }
 }
 
+/// `previous` as this version reads it: a `permissions` key owned whole (what 1.0.0-rc.8
+/// recorded when it created the key) becomes owned rules, entry by entry.
+fn read_previous(previous: &Owned) -> Owned {
+    let mut p = previous.clone();
+    if p.keys.get("permissions").is_some_and(Value::is_object)
+        && let Some(Value::Object(m)) = p.keys.remove("permissions")
+    {
+        let o = &mut p.permissions;
+        o.containers.push("permissions".into());
+        for (k, v) in m {
+            let path = format!("permissions.{k}");
+            match v {
+                Value::Array(a) => {
+                    o.containers.push(path.clone());
+                    o.array_entries.insert(path, a);
+                }
+                v => {
+                    o.values.insert(path, v);
+                }
+            }
+        }
+        o.containers.sort();
+        o.containers.dedup();
+    }
+    p
+}
+
+/// `native.claude.permissions`, when an object, as keys to merge one by one (a list
+/// into the entries of `permissions.<key>`, anything else as a value); taken out of
+/// `keys`. shortcut: a key of `permissions` containing `.` cannot be owned, none exists.
+fn permission_keys(keys: &mut BTreeMap<String, Value>) -> JsonKeys {
+    let mut out = JsonKeys::default();
+    // not an object: stays in `keys`, a whole value like any other key
+    if keys.get("permissions").is_some_and(Value::is_object)
+        && let Some(Value::Object(m)) = keys.remove("permissions")
+    {
+        for (k, v) in m {
+            let path = format!("permissions.{k}");
+            match v {
+                Value::Array(a) => {
+                    out.array_entries.insert(path, a);
+                }
+                v => {
+                    out.values.insert(path, v);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Edit the document as the `Value` the shared merge works on.
+fn on_value<T>(doc: &mut Map<String, Value>, f: impl FnOnce(&mut Value) -> T) -> T {
+    let mut v = Value::Object(std::mem::take(doc));
+    let out = f(&mut v);
+    if let Value::Object(m) = v {
+        *doc = m;
+    }
+    out
+}
+
 /// Merge `entries` and the native `keys` into `existing` (absent = new file). What
 /// `previous` owned and is no longer wanted is removed by value; an identical
-/// entry already present is neither duplicated nor claimed. Returns the new text
-/// and what this link owns.
+/// entry already present is neither duplicated nor claimed, unless `adopt` takes it
+/// over (a clone without manifest). `permissions` is merged rule by rule. Returns
+/// the new text, what this link owns and what the report must say.
 pub fn merge_settings(
     existing: Option<&str>,
     entries: &[HookEntry],
     keys: &BTreeMap<String, Value>,
     previous: &Owned,
-) -> anyhow::Result<(String, Owned)> {
+    adopt: bool,
+) -> anyhow::Result<(String, Owned, MergeNotes)> {
     let mut doc = parse(existing)?;
+    let previous = &read_previous(previous);
+    let mut keys = keys.clone();
+    let perms = permission_keys(&mut keys);
+    let keys = &keys;
     let gone: Vec<&HookEntry> = (previous.entries.iter())
         .filter(|e| !entries.contains(e))
         .collect();
@@ -267,6 +360,7 @@ pub fn merge_settings(
         .collect();
     unmerge(&mut doc, &gone, &gone_keys);
 
+    let mut notes = MergeNotes::default();
     let mut owned = Owned {
         containers: previous.containers.clone(),
         ..Owned::default()
@@ -278,17 +372,23 @@ pub fn merge_settings(
                     owned.keys.insert(k.clone(), v.clone());
                 }
             }
-            Some(_) => bail!("settings.json key `{k}` is already set to another value"),
+            Some(cur) => return Err(conflict(k, cur, v)),
             None => {
                 doc.insert(k.clone(), v.clone());
                 owned.keys.insert(k.clone(), v.clone());
             }
         }
     }
+    owned.permissions = on_value(&mut doc, |d| merge_into(d, &perms, &previous.permissions))?;
     for e in entries {
         if present(&mut doc, e) {
             if previous.entries.contains(e) {
                 owned.entries.push(e.clone());
+            } else if adopt {
+                owned.entries.push(e.clone());
+                notes.adopted.push(e.clone());
+            } else {
+                notes.kept.push(e.clone());
             }
             continue;
         }
@@ -314,18 +414,52 @@ pub fn merge_settings(
             .push(Value::Object(group));
         owned.entries.push(e.clone());
     }
+    if !notes.adopted.is_empty() {
+        // the earlier link that wrote these hooks left no record of the event arrays and
+        // of `hooks` it created: those left empty once the adopted hooks are out were its
+        let mut without = doc.clone();
+        for e in &notes.adopted {
+            remove_one(&mut without, e);
+        }
+        for e in &notes.adopted {
+            if groups(&mut without, &e.event).is_some_and(|g| g.is_empty()) {
+                owned.containers.push(format!("hooks.{}", e.event));
+            }
+        }
+        let mut as_if = owned.containers.clone();
+        as_if.push("hooks".into());
+        prune(&mut without, &as_if);
+        if !without.contains_key("hooks") {
+            owned.containers.push("hooks".into());
+        }
+    }
     prune(&mut doc, &owned.containers);
     owned.containers.sort();
     owned.containers.dedup();
-    Ok((render(doc), owned))
+    if let Some(deny) = owned.permissions.array_entries.get("permissions.deny") {
+        let allow = doc.get("permissions").and_then(|p| p.get("allow"));
+        let mine = owned.permissions.array_entries.get("permissions.allow");
+        notes.deny_over_allow = (deny.iter())
+            .filter(|r| {
+                allow
+                    .and_then(Value::as_array)
+                    .is_some_and(|a| a.contains(r))
+                    && !mine.is_some_and(|m| m.contains(r))
+            })
+            .filter_map(|r| r.as_str().map(str::to_string))
+            .collect();
+    }
+    Ok((render(doc), owned, notes))
 }
 
 /// Remove exactly what `previous` owns from `existing`.
 pub fn remove_entries(existing: &str, previous: &Owned) -> anyhow::Result<String> {
     let mut doc = parse(Some(existing))?;
+    let previous = &read_previous(previous);
     let entries: Vec<&HookEntry> = previous.entries.iter().collect();
     let keys: Vec<(&String, &Value)> = previous.keys.iter().collect();
     unmerge(&mut doc, &entries, &keys);
+    on_value(&mut doc, |d| remove_from(d, &previous.permissions));
     prune(&mut doc, &previous.containers);
     Ok(render(doc))
 }
@@ -342,6 +476,16 @@ mod tests {
             command: command.into(),
             native: BTreeMap::new(),
         }
+    }
+
+    /// `merge_settings` without adoption, as most tests use it.
+    fn merge(
+        existing: Option<&str>,
+        entries: &[HookEntry],
+        keys: &BTreeMap<String, Value>,
+        previous: &Owned,
+    ) -> anyhow::Result<(String, Owned)> {
+        merge_settings(existing, entries, keys, previous, false).map(|(t, o, _)| (t, o))
     }
 
     fn value(t: &str) -> Value {
@@ -507,9 +651,9 @@ mod tests {
     #[test]
     fn a_project_linked_with_three_recording_hooks_gets_the_fourth_on_relink() {
         let old = flow_status_entries()[..3].to_vec();
-        let (first, owned1) = merge_settings(Some(USER), &old, &none(), &Owned::default()).unwrap();
+        let (first, owned1) = merge(Some(USER), &old, &none(), &Owned::default()).unwrap();
         let (second, owned2) =
-            merge_settings(Some(&first), &flow_status_entries(), &none(), &owned1).unwrap();
+            merge(Some(&first), &flow_status_entries(), &none(), &owned1).unwrap();
         assert_eq!(
             value(&second)["hooks"]["UserPromptExpansion"],
             json!([{"hooks": [{"type": "command", "command": "armadai __record-flow-event", "async": true}]}])
@@ -560,7 +704,7 @@ mod tests {
 
     #[test]
     fn creates_a_settings_file_from_nothing() {
-        let (text, owned) = merge_settings(None, &wanted(), &none(), &Owned::default()).unwrap();
+        let (text, owned) = merge(None, &wanted(), &none(), &Owned::default()).unwrap();
         assert_eq!(
             value(&text),
             json!({"hooks": {
@@ -574,7 +718,7 @@ mod tests {
 
     #[test]
     fn user_hooks_permissions_unknown_keys_and_key_order_are_preserved() {
-        let (text, _) = merge_settings(Some(USER), &wanted(), &none(), &Owned::default()).unwrap();
+        let (text, _) = merge(Some(USER), &wanted(), &none(), &Owned::default()).unwrap();
         let v = value(&text);
         assert_eq!(v["permissions"], value(USER)["permissions"]);
         assert_eq!(v["alpha"], json!({"unknown": true}));
@@ -592,28 +736,26 @@ mod tests {
 
     #[test]
     fn merging_twice_changes_nothing() {
-        let (once, owned) =
-            merge_settings(Some(USER), &wanted(), &none(), &Owned::default()).unwrap();
-        let (twice, owned2) = merge_settings(Some(&once), &wanted(), &none(), &owned).unwrap();
+        let (once, owned) = merge(Some(USER), &wanted(), &none(), &Owned::default()).unwrap();
+        let (twice, owned2) = merge(Some(&once), &wanted(), &none(), &owned).unwrap();
         assert_eq!(once, twice);
         assert_eq!(owned, owned2);
     }
 
     #[test]
     fn removing_after_merging_gives_the_user_file_back() {
-        let (merged, owned) =
-            merge_settings(Some(USER), &wanted(), &none(), &Owned::default()).unwrap();
+        let (merged, owned) = merge(Some(USER), &wanted(), &none(), &Owned::default()).unwrap();
         assert_eq!(
             value(&remove_entries(&merged, &owned).unwrap()),
             value(USER)
         );
 
-        let (merged, owned) = merge_settings(None, &wanted(), &none(), &Owned::default()).unwrap();
+        let (merged, owned) = merge(None, &wanted(), &none(), &Owned::default()).unwrap();
         assert_eq!(value(&remove_entries(&merged, &owned).unwrap()), json!({}));
 
         let empty_hooks = r#"{"hooks": {}}"#;
         let (merged, owned) =
-            merge_settings(Some(empty_hooks), &wanted(), &none(), &Owned::default()).unwrap();
+            merge(Some(empty_hooks), &wanted(), &none(), &Owned::default()).unwrap();
         assert_eq!(
             value(&remove_entries(&merged, &owned).unwrap()),
             json!({"hooks": {}}),
@@ -622,7 +764,7 @@ mod tests {
 
         let empty_event = r#"{"hooks": {"PreToolUse": []}}"#;
         let (merged, owned) =
-            merge_settings(Some(empty_event), &wanted(), &none(), &Owned::default()).unwrap();
+            merge(Some(empty_event), &wanted(), &none(), &Owned::default()).unwrap();
         assert_eq!(
             value(&remove_entries(&merged, &owned).unwrap()),
             value(empty_event),
@@ -634,24 +776,89 @@ mod tests {
     fn an_identical_entry_already_present_is_neither_duplicated_nor_claimed() {
         let mine = entry("PreToolUse", "armadai check");
         let user = r#"{"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "armadai check"}]}]}}"#;
-        let (text, owned) = merge_settings(
+        let (text, owned, notes) = merge_settings(
             Some(user),
             std::slice::from_ref(&mine),
             &none(),
             &Owned::default(),
+            false,
         )
         .unwrap();
         assert_eq!(value(&text), value(user));
         assert!(owned.entries.is_empty());
+        assert_eq!(notes.kept, [mine]);
+        assert_eq!(notes.adopted, []);
         assert_eq!(value(&remove_entries(&text, &owned).unwrap()), value(user));
     }
 
     #[test]
+    fn an_identical_entry_is_adopted_on_request() {
+        let mine = entry("PreToolUse", "armadai check");
+        let theirs = r#"{"type": "command", "command": "armadai check --mine"}"#;
+        let user = format!(
+            r#"{{"hooks": {{"PreToolUse": [{{"hooks": [{{"type": "command", "command": "armadai check"}}, {theirs}]}}]}}}}"#
+        );
+        let (text, owned, notes) = merge_settings(
+            Some(&user),
+            std::slice::from_ref(&mine),
+            &none(),
+            &Owned::default(),
+            true,
+        )
+        .unwrap();
+        assert_eq!(text, pretty(&user));
+        assert_eq!(owned.entries, std::slice::from_ref(&mine));
+        assert_eq!(notes.adopted, [mine]);
+        assert_eq!(notes.kept, []);
+        assert_eq!(
+            remove_entries(&text, &owned).unwrap(),
+            pretty(&format!(
+                r#"{{"hooks": {{"PreToolUse": [{{"hooks": [{theirs}]}}]}}}}"#
+            )),
+            "the hook of the user whose text differs stays"
+        );
+    }
+
+    #[test]
+    fn adopting_every_hook_of_a_file_lets_unlink_empty_it() {
+        let wanted = [entry("PreToolUse", "a"), entry("Stop", "b")];
+        let user = r#"{"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "a"}]}], "Stop": [{"hooks": [{"type": "command", "command": "b"}]}]}}"#;
+        let (text, owned, _) =
+            merge_settings(Some(user), &wanted, &none(), &Owned::default(), true).unwrap();
+        assert_eq!(remove_entries(&text, &owned).unwrap(), pretty("{}"));
+        // not adopted: the arrays and `hooks` are the user's as far as anyone knows
+        let (text, owned, _) =
+            merge_settings(Some(user), &wanted, &none(), &Owned::default(), false).unwrap();
+        assert_eq!(remove_entries(&text, &owned).unwrap(), pretty(user));
+    }
+
+    #[test]
+    fn a_hook_with_another_matcher_is_not_adopted() {
+        let mine = entry("PreToolUse", "armadai check");
+        let user = r#"{"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "armadai check"}]}]}}"#;
+        let (text, owned, notes) = merge_settings(
+            Some(user),
+            std::slice::from_ref(&mine),
+            &none(),
+            &Owned::default(),
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            text,
+            pretty(
+                r#"{"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "armadai check"}]}, {"hooks": [{"type": "command", "command": "armadai check"}]}]}}"#
+            ),
+            "added beside the user's, not taken for it"
+        );
+        assert_eq!((notes.adopted, notes.kept), (vec![], vec![]));
+        assert_eq!(remove_entries(&text, &owned).unwrap(), pretty(user));
+    }
+
+    #[test]
     fn an_entry_no_longer_wanted_is_removed_on_relink() {
-        let (first, owned) =
-            merge_settings(Some(USER), &wanted(), &none(), &Owned::default()).unwrap();
-        let (second, owned2) =
-            merge_settings(Some(&first), &wanted()[..1], &none(), &owned).unwrap();
+        let (first, owned) = merge(Some(USER), &wanted(), &none(), &Owned::default()).unwrap();
+        let (second, owned2) = merge(Some(&first), &wanted()[..1], &none(), &owned).unwrap();
         assert!(
             value(&second)["hooks"].get("SessionStart").is_none(),
             "{second}"
@@ -662,18 +869,223 @@ mod tests {
     #[test]
     fn native_keys_are_added_owned_and_removed() {
         let keys: BTreeMap<String, Value> = [("model".to_string(), json!("opus"))].into();
-        let (text, owned) = merge_settings(Some(USER), &[], &keys, &Owned::default()).unwrap();
+        let (text, owned) = merge(Some(USER), &[], &keys, &Owned::default()).unwrap();
         assert_eq!(value(&text)["model"], json!("opus"));
         assert_eq!(value(&remove_entries(&text, &owned).unwrap()), value(USER));
         let clash = r#"{"model": "haiku"}"#;
-        let err = merge_settings(Some(clash), &[], &keys, &Owned::default()).unwrap_err();
-        assert!(err.to_string().contains("`model`"), "{err}");
+        let err = merge(Some(clash), &[], &keys, &Owned::default()).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            r#"key `model` is already set to another value: "haiku" (link writes "opus")"#
+        );
+    }
+
+    const ORDERED: &str = r#"{"zeta":1,"permissions":{"allow":["Bash(ls)"]},"alpha":{"x":true}}"#;
+
+    fn ordered_with(extra: &[(&str, i32)]) -> String {
+        let mut v = value(ORDERED);
+        for (k, n) in extra {
+            v[*k] = json!(n);
+        }
+        render(v.as_object().unwrap().clone())
+    }
+
+    #[test]
+    fn unlink_keeps_the_key_order_of_the_user() {
+        let keys: BTreeMap<String, Value> = [("model".to_string(), json!("opus"))].into();
+        let (merged, owned) = merge(Some(ORDERED), &wanted(), &keys, &Owned::default()).unwrap();
+        // the user adds two keys after the link
+        let mut v = value(&merged);
+        v["beta"] = json!(2);
+        v["gamma"] = json!(3);
+        let edited = render(v.as_object().unwrap().clone());
+        assert_eq!(
+            remove_entries(&edited, &owned).unwrap(),
+            ordered_with(&[("beta", 2), ("gamma", 3)])
+        );
+    }
+
+    #[test]
+    fn a_key_no_longer_wanted_leaves_the_order_on_relink() {
+        let keys: BTreeMap<String, Value> = [
+            ("model".to_string(), json!("opus")),
+            ("env".to_string(), json!({"A": "1"})),
+        ]
+        .into();
+        let (merged, owned) = merge(Some(ORDERED), &[], &keys, &Owned::default()).unwrap();
+        let mut v = value(&merged);
+        v["beta"] = json!(2);
+        v["gamma"] = json!(3);
+        let edited = render(v.as_object().unwrap().clone());
+        let only_model: BTreeMap<String, Value> = [("model".to_string(), json!("opus"))].into();
+        let (relinked, _) = merge(Some(&edited), &[], &only_model, &owned).unwrap();
+        let mut expected = value(ORDERED);
+        expected["model"] = json!("opus");
+        expected["beta"] = json!(2);
+        expected["gamma"] = json!(3);
+        assert_eq!(relinked, render(expected.as_object().unwrap().clone()));
+    }
+
+    fn pretty(t: &str) -> String {
+        render(value(t).as_object().unwrap().clone())
+    }
+
+    fn permissions(v: Value) -> BTreeMap<String, Value> {
+        [("permissions".to_string(), v)].into()
+    }
+
+    #[test]
+    fn permission_lists_merge_rule_by_rule() {
+        let user = r#"{"permissions":{"allow":["Bash(ls)"]}}"#;
+        let keys = permissions(json!({"ask": ["Bash(git push:*)"]}));
+        let (text, owned) = merge(Some(user), &[], &keys, &Owned::default()).unwrap();
+        assert_eq!(
+            text,
+            pretty(r#"{"permissions":{"allow":["Bash(ls)"],"ask":["Bash(git push:*)"]}}"#)
+        );
+        let (again, owned2) = merge(Some(&text), &[], &keys, &owned).unwrap();
+        assert_eq!((again, &owned2), (text.clone(), &owned), "second link");
+        assert_eq!(remove_entries(&text, &owned).unwrap(), pretty(user));
+    }
+
+    #[test]
+    fn a_project_allow_goes_after_the_user_allow() {
+        let user = r#"{"permissions":{"allow":["Bash(ls)"]}}"#;
+        let keys = permissions(json!({"allow": ["Bash(git *)"]}));
+        let (text, owned) = merge(Some(user), &[], &keys, &Owned::default()).unwrap();
+        assert_eq!(
+            text,
+            pretty(r#"{"permissions":{"allow":["Bash(ls)","Bash(git *)"]}}"#)
+        );
+        assert_eq!(remove_entries(&text, &owned).unwrap(), pretty(user));
+    }
+
+    #[test]
+    fn additional_directories_merge_like_the_rules() {
+        let user = r#"{"permissions":{"additionalDirectories":["../u"]}}"#;
+        let keys = permissions(json!({"additionalDirectories": ["../p"]}));
+        let (text, owned) = merge(Some(user), &[], &keys, &Owned::default()).unwrap();
+        assert_eq!(
+            text,
+            pretty(r#"{"permissions":{"additionalDirectories":["../u","../p"]}}"#)
+        );
+        assert_eq!(remove_entries(&text, &owned).unwrap(), pretty(user));
+    }
+
+    #[test]
+    fn a_rule_the_user_already_has_is_neither_duplicated_nor_claimed() {
+        let user = r#"{"permissions":{"ask":["Bash(git push:*)"]}}"#;
+        let keys = permissions(json!({"ask": ["Bash(git push:*)"]}));
+        let (text, owned) = merge(Some(user), &[], &keys, &Owned::default()).unwrap();
+        assert_eq!(text, pretty(user));
+        assert_eq!(owned.permissions, OwnedJson::default());
+        assert_eq!(remove_entries(&text, &owned).unwrap(), pretty(user));
+    }
+
+    #[test]
+    fn a_deny_the_user_allows_is_written_and_noted() {
+        let keys = permissions(json!({"deny": ["Bash(curl:*)", "Bash(rm:*)"]}));
+        let user = r#"{"permissions":{"allow":["Bash(curl:*)","Bash(ls)"]}}"#;
+        let (text, _, notes) =
+            merge_settings(Some(user), &[], &keys, &Owned::default(), false).unwrap();
+        assert_eq!(
+            text,
+            pretty(
+                r#"{"permissions":{"allow":["Bash(curl:*)","Bash(ls)"],"deny":["Bash(curl:*)","Bash(rm:*)"]}}"#
+            )
+        );
+        assert_eq!(notes.deny_over_allow, ["Bash(curl:*)"]);
+        let user = r#"{"permissions":{"allow":["Bash(ls)"]}}"#;
+        let (_, _, notes) =
+            merge_settings(Some(user), &[], &keys, &Owned::default(), false).unwrap();
+        assert_eq!(notes.deny_over_allow, Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_deny_against_an_allow_link_added_itself_is_not_noted() {
+        let keys = permissions(json!({"allow": ["Bash(curl:*)"], "deny": ["Bash(curl:*)"]}));
+        let (_, _, notes) = merge_settings(None, &[], &keys, &Owned::default(), false).unwrap();
+        assert_eq!(notes.deny_over_allow, Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_non_list_permission_with_another_value_names_both_values() {
+        let user = r#"{"permissions":{"defaultMode":"plan"}}"#;
+        let keys = permissions(json!({"defaultMode": "acceptEdits"}));
+        let err = merge(Some(user), &[], &keys, &Owned::default()).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            r#"key `permissions.defaultMode` is already set to another value: "plan" (link writes "acceptEdits")"#
+        );
+    }
+
+    /// rc.8 owned the whole `permissions` key when it created it: that reads as owned
+    /// rules, a relink changes nothing and the old manifest still unlinks.
+    #[test]
+    fn a_manifest_owning_the_whole_permissions_key_reads_as_rules() {
+        let previous = Owned {
+            keys: permissions(json!({"ask": ["Bash(git push:*)"]})),
+            ..Owned::default()
+        };
+        let file = r#"{"permissions":{"ask":["Bash(git push:*)"]},"zeta":1}"#;
+        let (text, owned) = merge(
+            Some(file),
+            &[],
+            &permissions(json!({"ask": ["Bash(git push:*)"]})),
+            &previous,
+        )
+        .unwrap();
+        assert_eq!(text, pretty(file));
+        assert_eq!(
+            owned,
+            Owned {
+                permissions: OwnedJson {
+                    array_entries: [(
+                        "permissions.ask".to_string(),
+                        vec![json!("Bash(git push:*)")]
+                    )]
+                    .into(),
+                    containers: vec!["permissions".into(), "permissions.ask".into()],
+                    ..OwnedJson::default()
+                },
+                ..Owned::default()
+            }
+        );
+        assert_eq!(
+            remove_entries(file, &previous).unwrap(),
+            pretty(r#"{"zeta":1}"#)
+        );
+    }
+
+    /// The manifest stores a number as a plain YAML number (not serde_json's private
+    /// `arbitrary_precision` map, which is what it wrote until 1.0.0-rc.8), and reads
+    /// both forms.
+    #[test]
+    fn owned_numbers_are_plain_yaml_numbers_in_the_manifest() {
+        let mut e = entry("PreToolUse", "./x.sh");
+        e.native.insert("timeout".into(), json!(5));
+        let owned = Owned {
+            entries: vec![e],
+            keys: [("cleanupPeriodDays".to_string(), json!(30))].into(),
+            ..Owned::default()
+        };
+        let plain = "entries:\n- event: PreToolUse\n  command: ./x.sh\n  native:\n    timeout: 5\nkeys:\n  cleanupPeriodDays: 30\n";
+        assert_eq!(armadai_model::yaml::to_string(&owned).unwrap(), plain);
+        assert_eq!(
+            armadai_model::yaml::from_str::<Owned>(plain).unwrap(),
+            owned
+        );
+        let private = "entries:\n- event: PreToolUse\n  command: ./x.sh\n  native:\n    timeout:\n      \"$serde_json::private::Number\": \"5\"\nkeys:\n  cleanupPeriodDays:\n    \"$serde_json::private::Number\": \"30\"\n";
+        assert_eq!(
+            armadai_model::yaml::from_str::<Owned>(private).unwrap(),
+            owned
+        );
     }
 
     #[test]
     fn invalid_json_is_an_error() {
-        assert!(merge_settings(Some("{ not json"), &wanted(), &none(), &Owned::default()).is_err());
-        assert!(merge_settings(Some("[1]"), &wanted(), &none(), &Owned::default()).is_err());
+        assert!(merge(Some("{ not json"), &wanted(), &none(), &Owned::default()).is_err());
+        assert!(merge(Some("[1]"), &wanted(), &none(), &Owned::default()).is_err());
         assert!(remove_entries("{ not json", &Owned::default()).is_err());
     }
 }

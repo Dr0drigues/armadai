@@ -4,10 +4,33 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use crate::TARGETS;
-use crate::diag::{Diagnostic, Severity, locate, locate_key};
+use crate::diag::{
+    Diagnostic, Severity, key_end, key_start, locate, locate_from, locate_key, locate_pair,
+};
 use crate::load::{Kind, Origins, Project, load_project};
 
 const MAX_SKILL_DESCRIPTION: usize = 1024;
+
+/// Agents a target provides that a delegation can reach (official docs, read 2026-10-28):
+/// a free agent named here is not reported. Claude Code: `code.claude.com/docs/en/sub-agents.md`,
+/// "Built-in subagents". OpenCode: `opencode.ai/docs/agents`, "Built-in" (`build` and `plan` are
+/// primary agents, not delegation targets).
+// The OpenCode adapter's own `BUILTIN_SUBAGENTS` (`compile/opencode.rs`) also lists `scout`,
+// which the docs do not name: keep the two in step when the docs settle it.
+const BUILTIN_SUBAGENTS: [(&str, &[&str]); 2] = [
+    (
+        "claude",
+        &[
+            "Explore",
+            "Plan",
+            "general-purpose",
+            "claude",
+            "statusline-setup",
+            "claude-code-guide",
+        ],
+    ),
+    ("opencode", &["general", "explore"]),
+];
 
 /// Names of the built-in commands and skills of the targets, sorted. Sources: Claude Code
 /// `code.claude.com/docs/en/commands.md` (read on 2026-10-21); OpenCode
@@ -302,7 +325,7 @@ struct Out<'a> {
     ds: Vec<Diagnostic>,
 }
 
-impl Out<'_> {
+impl<'a> Out<'a> {
     /// Emit a diagnostic of `kind`/`id`, positioned on the first whole-word `token`
     /// (`key` = locate it as a mapping key instead).
     fn emit(
@@ -403,6 +426,49 @@ impl Out<'_> {
         );
     }
 
+    /// Like [`Out::unknown_ref`], at a known position.
+    fn unknown_ref_at(
+        &mut self,
+        at: (Kind, &str),
+        code: &'static str,
+        what: &str,
+        token: &str,
+        known: &BTreeSet<&str>,
+        pos: (Option<usize>, Option<usize>),
+    ) {
+        self.emit_pos(
+            at,
+            Severity::Error,
+            code,
+            pos,
+            format!("unknown {what} `{token}`"),
+            hint_for(token, known),
+        );
+    }
+
+    /// Text of the file of `kind`/`id`, when known.
+    fn text(&self, (kind, id): (Kind, &str)) -> Option<&'a str> {
+        let origins: &'a Origins = self.origins;
+        origins
+            .files
+            .get(&(kind, id.to_string()))
+            .map(|(_, t)| t.as_str())
+    }
+
+    /// Position of the `n`-th `key: value` pair of the `links:` list of the flow `at`.
+    fn link_pos(
+        &self,
+        at: (Kind, &str),
+        key: &str,
+        value: &str,
+        n: usize,
+    ) -> (Option<usize>, Option<usize>) {
+        let Some(text) = self.text(at) else {
+            return (None, None);
+        };
+        key_end(text, "links").map_or((None, None), |from| locate_pair(text, from, key, value, n))
+    }
+
     fn native_keys<'k>(&mut self, at: (Kind, &str), keys: impl Iterator<Item = &'k String>) {
         for k in keys.filter(|k| !TARGETS.contains(&k.as_str())) {
             self.unknown_target(at, k);
@@ -485,18 +551,43 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
         o.unknown_ref(man, "unknown-agent", "agent", a, &agents);
     }
     // a free agent may be one the target provides itself (Claude Code's `Explore`, ...)
-    for a in (m.policy.free_agents.iter()).filter(|a| !agents.contains(a.as_str())) {
+    let declared: Vec<&str> = if m.targets.is_empty() {
+        vec!["claude"]
+    } else {
+        m.targets.iter().map(String::as_str).collect()
+    };
+    let provided: Vec<(&str, &[&str])> = BUILTIN_SUBAGENTS
+        .iter()
+        .copied()
+        .filter(|(t, _)| declared.contains(t))
+        .collect();
+    for a in (m.policy.free_agents.iter()).filter(|a| {
+        !agents.contains(a.as_str()) && !provided.iter().any(|(_, l)| l.contains(&a.as_str()))
+    }) {
         let hint = hint_for(a, &agents)
             .filter(|h| h.starts_with("did you mean"))
             .unwrap_or_else(|| {
-                "fine if the target provides it (Claude Code: Explore, Plan, general-purpose)"
-                    .into()
+                let lists: Vec<String> = provided
+                    .iter()
+                    .map(|(t, l)| format!("{t}: {}", l.join(", ")))
+                    .collect();
+                if lists.is_empty() {
+                    "nor a built-in agent of a declared target".into()
+                } else {
+                    format!(
+                        "nor a built-in agent of a declared target ({})",
+                        lists.join("; ")
+                    )
+                }
             });
-        o.emit(
+        let pos = o.text(man).map_or((None, None), |t| {
+            key_end(t, "free_agents").map_or((None, None), |from| locate_from(t, from, a))
+        });
+        o.emit_pos(
             man,
             Severity::Warning,
             "unknown-free-agent",
-            Some((a, false)),
+            pos,
             format!("free agent `{a}` is not an agent of this project"),
             Some(hint),
         );
@@ -660,7 +751,11 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
                 }
             }
             if let Some(t) = s.on_failure.as_deref().filter(|t| !steps.contains(t)) {
-                o.unknown_ref(at, "unknown-step", "step", t, &steps);
+                let pos = o.text(at).map_or((None, None), |text| {
+                    let from = key_end(text, "steps").and_then(|e| key_start(text, e, sid));
+                    from.map_or((None, None), |f| locate_pair(text, f, "on_failure", t, 0))
+                });
+                o.unknown_ref_at(at, "unknown-step", "step", t, &steps, pos);
             }
             if s.on_failure.as_deref() == Some(sid.as_str()) {
                 o.err(
@@ -690,7 +785,8 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
             }
         }
         let mut seen_links = BTreeSet::new();
-        for l in &f.links {
+        for (i, l) in f.links.iter().enumerate() {
+            let prior = &f.links[..i];
             let key = (&l.from, &l.to, l.when.as_deref().unwrap_or("done"));
             if !seen_links.insert(key) {
                 o.err(
@@ -701,9 +797,18 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
                     None,
                 );
             }
-            for end in [&l.from, &l.to] {
+            let ends = [
+                (
+                    "from",
+                    &l.from,
+                    prior.iter().filter(|p| p.from == l.from).count(),
+                ),
+                ("to", &l.to, prior.iter().filter(|p| p.to == l.to).count()),
+            ];
+            for (key, end, n) in ends {
                 if !steps.contains(end.as_str()) {
-                    o.unknown_ref(at, "unknown-step", "step", end, &steps);
+                    let pos = o.link_pos(at, key, end, n);
+                    o.unknown_ref_at(at, "unknown-step", "step", end, &steps, pos);
                 }
             }
             if l.from == l.to {
@@ -721,7 +826,12 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
                         .into_iter()
                         .chain(src.states.iter().map(String::as_str))
                         .collect();
-                    o.unknown_ref(at, "unknown-state", "state", w, &known);
+                    let n = prior
+                        .iter()
+                        .filter(|p| p.when.as_deref() == Some(w))
+                        .count();
+                    let pos = o.link_pos(at, "when", w, n);
+                    o.unknown_ref_at(at, "unknown-state", "state", w, &known, pos);
                 }
                 if w == "failed" {
                     *failure.entry(&l.from).or_default() += 1;
@@ -751,7 +861,10 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
             }
         }
         if let Some(s) = f.start.as_deref().filter(|s| !steps.contains(s)) {
-            o.unknown_ref(at, "unknown-step", "step", s, &steps);
+            let pos = o
+                .text(at)
+                .map_or((None, None), |t| locate_pair(t, 0, "start", s, 0));
+            o.unknown_ref_at(at, "unknown-step", "step", s, &steps, pos);
             continue;
         }
         let entry_ids = entry_steps(f);

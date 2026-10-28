@@ -40,8 +40,14 @@ pub struct OwnedJson {
     pub containers: Vec<String>,
 }
 
+impl OwnedJson {
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty() && self.array_entries.is_empty() && self.containers.is_empty()
+    }
+}
+
 // numbers as plain YAML numbers (`NativeValue`), not `arbitrary_precision`'s private map
-fn plain_values<S: serde::Serializer>(
+pub(crate) fn plain_values<S: serde::Serializer>(
     m: &BTreeMap<String, Value>,
     s: S,
 ) -> Result<S::Ok, S::Error> {
@@ -173,6 +179,17 @@ pub fn merge_json_keys(
     previous: &OwnedJson,
 ) -> anyhow::Result<(String, OwnedJson)> {
     let mut doc = parse(existing)?;
+    let owned = merge_into(&mut doc, wanted, previous)?;
+    Ok((render(doc), owned))
+}
+
+/// [`merge_json_keys`] on a parsed document (`settings.json` merges its `permissions`
+/// with it): the document is edited in place and may be half edited on an error.
+pub(crate) fn merge_into(
+    doc: &mut Value,
+    wanted: &JsonKeys,
+    previous: &OwnedJson,
+) -> anyhow::Result<OwnedJson> {
     // a key still wanted is replaced in place below, not removed and appended
     let gone_values: Vec<(&String, &Value)> = (previous.values.iter())
         .filter(|(k, _)| !wanted.values.contains_key(*k))
@@ -181,7 +198,7 @@ pub fn merge_json_keys(
         .flat_map(|(k, es)| es.iter().map(move |e| (k, e)))
         .filter(|(k, e)| !wanted.array_entries.get(*k).is_some_and(|w| w.contains(e)))
         .collect();
-    unmerge(&mut doc, &gone_values, &gone_entries);
+    unmerge(doc, &gone_values, &gone_entries);
 
     let mut owned = OwnedJson {
         containers: previous.containers.clone(),
@@ -189,7 +206,7 @@ pub fn merge_json_keys(
     };
     for (k, v) in &wanted.values {
         let (_, leaf) = split(k);
-        let obj = parent_or_create(&mut doc, k, &mut owned.containers)?;
+        let obj = parent_or_create(doc, k, &mut owned.containers)?;
         match obj.get(leaf) {
             Some(cur) if cur == v => {
                 if previous.values.get(k) == Some(v) {
@@ -203,7 +220,7 @@ pub fn merge_json_keys(
             Some(_) if previous.values.contains_key(k) => {
                 bail!("key `{k}` was changed by hand since the last link")
             }
-            Some(_) => bail!("key `{k}` is already set to another value"),
+            Some(cur) => return Err(conflict(k, cur, v)),
             None => {
                 obj.insert(leaf.into(), v.clone());
                 owned.values.insert(k.clone(), v.clone());
@@ -212,7 +229,7 @@ pub fn merge_json_keys(
     }
     for (k, es) in &wanted.array_entries {
         let (_, leaf) = split(k);
-        let obj = parent_or_create(&mut doc, k, &mut owned.containers)?;
+        let obj = parent_or_create(doc, k, &mut owned.containers)?;
         if !obj.contains_key(leaf) {
             obj.insert(leaf.into(), Value::Array(Vec::new()));
             owned.containers.push(k.clone());
@@ -236,20 +253,31 @@ pub fn merge_json_keys(
             owned.array_entries.insert(k.clone(), mine);
         }
     }
-    prune(&mut doc, &mut owned.containers);
-    Ok((render(doc), owned))
+    prune(doc, &mut owned.containers);
+    Ok(owned)
+}
+
+/// The error for a wanted value the user set to another one: names the key and both
+/// values (`settings.json` and `opencode.json` alike).
+pub(crate) fn conflict(key: &str, current: &Value, wanted: &Value) -> anyhow::Error {
+    anyhow::anyhow!("key `{key}` is already set to another value: {current} (link writes {wanted})")
 }
 
 /// Remove exactly what `previous` owns from `existing`.
 pub fn remove_json_keys(existing: &str, previous: &OwnedJson) -> anyhow::Result<String> {
     let mut doc = parse(Some(existing))?;
+    remove_from(&mut doc, previous);
+    Ok(render(doc))
+}
+
+/// [`remove_json_keys`] on a parsed document.
+pub(crate) fn remove_from(doc: &mut Value, previous: &OwnedJson) {
     let values: Vec<(&String, &Value)> = previous.values.iter().collect();
     let entries: Vec<(&String, &Value)> = (previous.array_entries.iter())
         .flat_map(|(k, es)| es.iter().map(move |e| (k, e)))
         .collect();
-    unmerge(&mut doc, &values, &entries);
-    prune(&mut doc, &mut previous.containers.clone());
-    Ok(render(doc))
+    unmerge(doc, &values, &entries);
+    prune(doc, &mut previous.containers.clone());
 }
 
 #[cfg(test)]
@@ -393,7 +421,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(
             err.to_string(),
-            "key `default_agent` is already set to another value"
+            r#"key `default_agent` is already set to another value: "mine" (link writes "lead")"#
         );
         let err = merge_json_keys(
             Some(r#"{"agent": {"build": 1}}"#),

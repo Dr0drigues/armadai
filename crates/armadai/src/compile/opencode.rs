@@ -30,6 +30,9 @@ pub const BUILTIN_AGENTS: [&str; 8] = [
 ];
 
 /// Built-in agents a delegation can reach (the others are primary).
+// `scout` is not named by opencode.ai/docs/agents (read 2026-10-28), which lists `general` and
+// `explore`: the validator's table (`armadai-model` `check.rs`, `BUILTIN_SUBAGENTS`) holds those two
+// only. Keep the two in step when the docs settle it.
 const BUILTIN_SUBAGENTS: [&str; 3] = ["general", "explore", "scout"];
 
 /// Upper bound of `experimental.subagent_depth`.
@@ -65,7 +68,7 @@ impl Compiler for OpencodeCompiler {
         compile_with(
             project,
             root,
-            &armadai_core::config::try_load_user_config()?,
+            &armadai_core::config::try_load_user_config_for(T)?,
             &self.team,
         )
     }
@@ -605,10 +608,7 @@ mod tests {
 
     fn tiers(max: &str) -> UserConfig {
         UserConfig {
-            model_tiers: BTreeMap::from([(
-                "opencode".to_string(),
-                BTreeMap::from([(armadai_model::Tier::Max, max.to_string())]),
-            )]),
+            model_tiers: serde_json::json!({ "opencode": { "max": max } }).into(),
             ..Default::default()
         }
     }

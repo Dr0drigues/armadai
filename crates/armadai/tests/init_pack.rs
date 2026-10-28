@@ -57,6 +57,17 @@ impl Env {
     }
 }
 
+/// The text of `ignored-pack-file` (validated by Dimitri, 2026-10-28).
+const T8_MESSAGE: &str = "not part of a pack: init --pack does not install it";
+const T8_HINT: &str = "a pack installs project.yaml, agents/*.md, templates/*.md, commands/*.md, skills/**, flows/*.yaml and automations/*.yaml";
+
+fn t8(file: &Path) -> String {
+    format!(
+        "{}: warning[ignored-pack-file]: {T8_MESSAGE}\n  hint: {T8_HINT}",
+        file.display()
+    )
+}
+
 fn tree(dir: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
     fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<PathBuf, Option<Vec<u8>>>) {
         for e in std::fs::read_dir(dir).unwrap() {
@@ -146,8 +157,11 @@ fn a_native_pack_is_copied_by_its_white_list() {
         "{err}"
     );
     // a file inside a pack folder that is not installed is said so; root files are not
-    assert!(err.contains("ignored: agents/notes.txt"), "{err}");
-    assert!(!err.contains("ignored: README.md"), "{err}");
+    assert!(
+        err.contains("agents/notes.txt: warning[ignored-pack-file]"),
+        "{err}"
+    );
+    assert!(!err.contains("README.md"), "{err}");
     assert!(
         out.contains("2 agent(s), 1 skill(s), 1 flow(s), 1 automation(s)"),
         "{out}"
@@ -394,7 +408,10 @@ fn ignored_pack_files_are_reported() {
     let (ok, out, err) = env.init(&pack, &[]);
     assert!(ok, "{out}\n{err}");
     for f in ["flows/x.yml", "prompts/p.md", "agents/notes.txt"] {
-        assert!(err.contains(&format!("ignored: {f}")), "{f}: {err}");
+        assert!(
+            err.contains(&format!("{f}: warning[ignored-pack-file]")),
+            "{f}: {err}"
+        );
     }
 }
 
@@ -732,10 +749,7 @@ fn a_native_pack_installs_its_templates() {
         instance
     );
     assert!(!base.join("templates/notes.txt").exists());
-    assert_eq!(
-        err,
-        "  warn: ignored: templates/notes.txt (not part of a pack)\n"
-    );
+    assert_eq!(err, format!("{}\n", t8(&pack.join("templates/notes.txt"))));
     assert_eq!(
         out,
         "Created .armadai/ from pack 'tpl': 1 agent(s), 0 skill(s), 0 flow(s), 0 automation(s), \
@@ -839,4 +853,106 @@ fn the_concept_to_code_pack_installs_validates_and_links() {
         deliver.contains("  n_build[\"build (implementer)\"]\n"),
         "{deliver}"
     );
+}
+
+/// #521: a pack file executable in the pack stays so after `init --pack`, and after
+/// `link`; nothing else gains the bit.
+#[cfg(unix)]
+#[test]
+fn a_pack_script_keeps_its_executable_bit() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = Env::new();
+    let pack = env.pack(
+        "demo",
+        &[
+            ("pack.yaml", "format: 1\nname: demo\ndescription: d\n"),
+            ("project.yaml", "schema_version: 1\ntargets: [claude]\n"),
+            ("agents/a.md", "---\ndescription: A\n---\nYou are a.\n"),
+            (
+                "skills/s/SKILL.md",
+                "---\nname: s\ndescription: A skill\n---\nRun scripts/run.sh\n",
+            ),
+            ("skills/s/scripts/run.sh", "#!/bin/sh\necho hi\n"),
+        ],
+    );
+    let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    let set =
+        |p: &Path, m| std::fs::set_permissions(p, std::fs::Permissions::from_mode(m)).unwrap();
+    set(&pack.join("skills/s/scripts/run.sh"), 0o755);
+    set(&pack.join("skills/s/SKILL.md"), 0o644);
+    let (ok, out, err) = env.init(&pack, &["--no-link"]);
+    assert!(ok, "{out}\n{err}");
+    let base = env.root().join(".armadai/skills/s");
+    assert_eq!(mode(&base.join("scripts/run.sh")), 0o755);
+    assert_eq!(mode(&base.join("SKILL.md")), 0o644);
+    let (ok, out, err) = env.run(&["link", "--target", "claude"]);
+    assert!(ok, "{out}\n{err}");
+    assert_eq!(
+        mode(&env.root().join(".claude/skills/s/scripts/run.sh")),
+        0o755
+    );
+}
+
+/// #525: an ignored file is a counted warning of `validate`, in `--json`, and nothing
+/// goes to stderr.
+#[test]
+fn validate_counts_an_ignored_pack_file() {
+    let env = Env::new();
+    let pack = env.pack(
+        "pack",
+        &[
+            ("pack.yaml", "format: 1\nname: demo\ndescription: d\n"),
+            ("project.yaml", "schema_version: 1\ntargets: [claude]\n"),
+            ("agents/a.md", "---\ndescription: A\n---\nB\n"),
+            ("tests/x", "t\n"),
+        ],
+    );
+    let p = pack.to_str().unwrap();
+    let (ok, out, err) = env.run(&["validate", p]);
+    assert!(ok, "{out}\n{err}");
+    assert_eq!(
+        out,
+        format!("{}\n0 error(s), 1 warning(s)\n", t8(&pack.join("tests/x")))
+    );
+    assert_eq!(err, "");
+    let (ok, out, err) = env.run(&["validate", p, "--json"]);
+    assert!(ok, "{out}\n{err}");
+    assert_eq!(err, "");
+    let got: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let want = serde_json::json!([{
+        "severity": "warning", "code": "ignored-pack-file",
+        "file": pack.join("tests/x").to_str().unwrap(),
+        "path": "", "line": null, "column": null,
+        "message": T8_MESSAGE, "hint": T8_HINT,
+    }]);
+    assert_eq!(got, want);
+}
+
+/// Only `ignored-pack-file` is printed by `init`: another warning of the validator
+/// (here `skill-missing-path`) stays silent.
+#[test]
+fn init_prints_no_validator_warning_but_the_ignored_file() {
+    let env = Env::new();
+    let pack = env.pack(
+        "demo",
+        &[
+            ("pack.yaml", "format: 1\nname: demo\ndescription: d\n"),
+            ("project.yaml", "schema_version: 1\ntargets: [claude]\n"),
+            ("agents/a.md", "---\ndescription: A\n---\nB\n"),
+            (
+                "skills/s/SKILL.md",
+                "---\nname: s\ndescription: A skill\n---\nRun scripts/missing.sh\n",
+            ),
+            ("tests/x", "t\n"),
+        ],
+    );
+    let p = pack.to_str().unwrap();
+    let (_, out, _) = env.run(&["validate", p]);
+    assert!(
+        out.contains("skill-missing-path"),
+        "the fixture must warn: {out}"
+    );
+    let (ok, out, err) = env.init(&pack, &["--no-link"]);
+    assert!(ok, "{out}\n{err}");
+    assert_eq!(err, format!("{}\n", t8(&pack.join("tests/x"))));
 }

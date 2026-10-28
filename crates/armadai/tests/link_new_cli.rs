@@ -485,9 +485,7 @@ fn an_identical_user_hook_is_reported_and_left_to_the_user() {
     write(&env.root(), &[(".claude/settings.json", user)]);
     let out = env.ok(&["link"]);
     assert!(
-        out.contains(
-            "hook PostToolUse cargo fmt: approximated (existing identical hook kept, not owned)"
-        ),
+        out.lines().any(|l| l == "claude: hook PostToolUse cargo fmt: approximated (existing identical hook kept, not owned: unlink leaves it; adopt it with `armadai link --adopt-hooks`)"),
         "{out}"
     );
     assert!(out.contains("settings.json reformatted"), "{out}");
@@ -497,6 +495,305 @@ fn an_identical_user_hook_is_reported_and_left_to_the_user() {
     )
     .unwrap();
     assert_eq!(v, serde_json::from_str::<serde_json::Value>(user).unwrap());
+}
+
+/// `unlink` gives the keys of the user back in their order, at the text level (a
+/// `Value` comparison ignores the order of keys).
+#[test]
+fn a_link_and_unlink_keep_the_user_key_order() {
+    let env = Env::new(&[
+        (
+            ".armadai/project.yaml",
+            "schema_version: 1\nnative:\n  claude:\n    model: opus\n",
+        ),
+        (
+            ".armadai/agents/a.md",
+            "---\ndescription: A\n---\nYou are a.\n",
+        ),
+        (".armadai/flows/f.yaml", "steps:\n  s: { agent: a }\n"),
+        (
+            ".claude/settings.json",
+            "{\"zeta\":1,\"permissions\":{\"allow\":[\"Bash(ls)\"]},\"alpha\":{\"unknown\":true}}",
+        ),
+    ]);
+    env.ok(&["link"]);
+    let path = env.root().join(".claude/settings.json");
+    let linked = std::fs::read_to_string(&path).unwrap();
+    let edited = linked
+        .trim_end()
+        .strip_suffix('}')
+        .unwrap()
+        .trim_end()
+        .to_string()
+        + ",\n  \"beta\": 2,\n  \"gamma\": 3\n}\n";
+    std::fs::write(&path, edited).unwrap();
+    env.ok(&["unlink"]);
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "{\n  \"zeta\": 1,\n  \"permissions\": {\n    \"allow\": [\n      \"Bash(ls)\"\n    ]\n  },\n  \"alpha\": {\n    \"unknown\": true\n  },\n  \"beta\": 2,\n  \"gamma\": 3\n}\n"
+    );
+}
+
+const RECORDING: &str = "approximated (existing identical hook kept, not owned: unlink leaves it; adopt it with `armadai link --adopt-hooks`)";
+
+/// The five hooks of a project with a flow under `policy.delegation: strict`, in the
+/// order of the report (sorted).
+const FIVE_HOOKS: [&str; 5] = [
+    "hook PreToolUse armadai __claude-policy-gate",
+    "hook PreToolUse armadai __record-flow-event",
+    "hook SubagentStart armadai __record-flow-event",
+    "hook SubagentStop armadai __record-flow-event",
+    "hook UserPromptExpansion armadai __record-flow-event",
+];
+
+fn hook_lines(out: &str) -> Vec<&str> {
+    out.lines()
+        .filter(|l| l.starts_with("claude: hook "))
+        .collect()
+}
+
+/// A clone has the committed `.claude/settings.json` and no manifest (git-ignored):
+/// `link` claims nothing and says how to adopt, `--adopt-hooks` takes the identical
+/// hooks over, and `unlink` then removes them and only them.
+#[test]
+fn hooks_found_without_a_manifest_are_adopted_on_request() {
+    let env = Env::new(&[
+        (
+            ".armadai/project.yaml",
+            "schema_version: 1\npolicy:\n  delegation: strict\n",
+        ),
+        (
+            ".armadai/agents/a.md",
+            "---\ndescription: A\n---\nYou are a.\n",
+        ),
+        (
+            ".armadai/agents/b.md",
+            "---\ndescription: B\n---\nYou are b.\n",
+        ),
+        (
+            ".armadai/flows/f.yaml",
+            "steps:\n  s: { agent: a }\n  t: { agent: b }\nlinks:\n  - { from: s, to: t }\n",
+        ),
+        (
+            ".claude/settings.json",
+            r#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"./mine.sh"}]}]}}"#,
+        ),
+    ]);
+    env.ok(&["link"]);
+    let settings = env.root().join(".claude/settings.json");
+    let manifest = env.root().join(".armadai/link-manifest.yaml");
+    std::fs::remove_file(&manifest).unwrap();
+    let committed = std::fs::read_to_string(&settings).unwrap();
+
+    // (a) without the option: nothing claimed, the way out is in the report
+    let out = env.ok(&["link"]);
+    let expected: Vec<String> = FIVE_HOOKS
+        .iter()
+        .map(|h| format!("claude: {h}: {RECORDING}"))
+        .collect();
+    assert_eq!(hook_lines(&out), expected, "{out}");
+    let owned = std::fs::read_to_string(&manifest).unwrap();
+    assert!(
+        !owned.contains("__claude-policy-gate") && !owned.contains("__record-flow-event"),
+        "{owned}"
+    );
+    env.ok(&["unlink"]);
+    assert_eq!(std::fs::read_to_string(&settings).unwrap(), committed);
+
+    // (b) with it: the five are owned, unlink removes them, the user's hook stays
+    env.ok(&["link"]);
+    std::fs::remove_file(&manifest).unwrap();
+    let out = env.ok(&["link", "--adopt-hooks"]);
+    let expected: Vec<String> = FIVE_HOOKS
+        .iter()
+        .map(|h| {
+            format!("claude: {h}: compiled (existing identical hook adopted: unlink removes it)")
+        })
+        .collect();
+    assert_eq!(hook_lines(&out), expected, "{out}");
+    let owned = std::fs::read_to_string(&manifest).unwrap();
+    assert_eq!(
+        owned
+            .matches("command: armadai __record-flow-event")
+            .count(),
+        4,
+        "{owned}"
+    );
+    assert_eq!(
+        owned
+            .matches("command: armadai __claude-policy-gate")
+            .count(),
+        1,
+        "{owned}"
+    );
+    env.ok(&["unlink"]);
+    assert_eq!(
+        std::fs::read_to_string(&settings).unwrap(),
+        "{\n  \"hooks\": {\n    \"PreToolUse\": [\n      {\n        \"matcher\": \"Bash\",\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"./mine.sh\"\n          }\n        ]\n      }\n    ]\n  }\n}\n"
+    );
+}
+
+fn with_permissions(permissions: &str, settings: &str) -> Env {
+    Env::new(&[
+        (
+            ".armadai/project.yaml",
+            &format!("schema_version: 1\nnative:\n  claude:\n    permissions:\n{permissions}"),
+        ),
+        (
+            ".armadai/agents/a.md",
+            "---\ndescription: A\n---\nYou are a.\n",
+        ),
+        (".claude/settings.json", settings),
+    ])
+}
+
+/// `native.claude.permissions` is merged rule by rule into the user's own `permissions`
+/// (#522): added, idempotent, given back by unlink; a `deny` the user's `allow` lists
+/// is reported; a value in conflict names both and writes nothing.
+#[test]
+fn permissions_merge_into_the_user_settings_and_unlink_gives_them_back() {
+    let env = with_permissions(
+        "      ask: [\"Bash(git push:*)\"]\n",
+        r#"{"permissions":{"allow":["Bash(ls)"]}}"#,
+    );
+    let settings = env.root().join(".claude/settings.json");
+    env.ok(&["link"]);
+    let linked = std::fs::read_to_string(&settings).unwrap();
+    assert_eq!(
+        linked,
+        "{\n  \"permissions\": {\n    \"allow\": [\n      \"Bash(ls)\"\n    ],\n    \"ask\": [\n      \"Bash(git push:*)\"\n    ]\n  }\n}\n"
+    );
+    env.ok(&["link"]);
+    assert_eq!(
+        std::fs::read_to_string(&settings).unwrap(),
+        linked,
+        "relink"
+    );
+    env.ok(&["unlink"]);
+    assert_eq!(
+        std::fs::read_to_string(&settings).unwrap(),
+        "{\n  \"permissions\": {\n    \"allow\": [\n      \"Bash(ls)\"\n    ]\n  }\n}\n"
+    );
+
+    // a deny that the user's allow lists is written, and said
+    let env = with_permissions(
+        "      deny: [\"Bash(ls)\"]\n",
+        r#"{"permissions":{"allow":["Bash(ls)"]}}"#,
+    );
+    let out = env.ok(&["link"]);
+    assert!(
+        out.lines().any(|l| l == "claude: permissions.deny Bash(ls): compiled (also in your permissions.allow: Claude Code applies deny)"),
+        "{out}"
+    );
+    let written = std::fs::read_to_string(env.root().join(".claude/settings.json")).unwrap();
+    assert_eq!(
+        written,
+        "{\n  \"permissions\": {\n    \"allow\": [\n      \"Bash(ls)\"\n    ],\n    \"deny\": [\n      \"Bash(ls)\"\n    ]\n  }\n}\n"
+    );
+
+    // a value in conflict: exit 1, both values named, nothing written
+    let env = with_permissions(
+        "      defaultMode: acceptEdits\n",
+        r#"{"permissions":{"defaultMode":"plan"}}"#,
+    );
+    let (ok, _, stderr) = env.run(&["link"]);
+    assert!(!ok);
+    let lines: Vec<&str> = stderr.lines().collect();
+    assert!(
+        lines[0].starts_with("Error: ") && lines[0].ends_with("/.claude/settings.json"),
+        "{stderr}"
+    );
+    assert_eq!(
+        lines[1..],
+        [
+            "",
+            "Caused by:",
+            r#"    key `permissions.defaultMode` is already set to another value: "plan" (link writes "acceptEdits")"#
+        ],
+        "{stderr}"
+    );
+    assert!(!env.root().join(".claude/agents").exists());
+}
+
+fn copy_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for e in std::fs::read_dir(from).unwrap() {
+        let e = e.unwrap();
+        let target = to.join(e.file_name());
+        if e.path().is_dir() {
+            copy_tree(&e.path(), &target);
+        } else {
+            std::fs::copy(e.path(), target).unwrap();
+        }
+    }
+}
+
+/// A project linked by the real 1.0.0-rc.8 binary (`tests/fixtures/rc8-manifest/`: a
+/// flow, an automation with `native.claude.timeout: 5`, `native.claude.permissions.ask`),
+/// with the manifest it wrote (`manifest`: that one, or the same with plain numbers, what
+/// this version writes).
+fn rc8_project(manifest: &str) -> Env {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rc8-manifest");
+    let env = Env::new(&[]);
+    copy_tree(&fixture.join(".armadai"), &env.root().join(".armadai"));
+    copy_tree(&fixture.join(".claude"), &env.root().join(".claude"));
+    std::fs::copy(
+        fixture.join(manifest),
+        env.root().join(".armadai/link-manifest.yaml"),
+    )
+    .unwrap();
+    env
+}
+
+fn a_manifest_of_rc8_unlinks_and_relinks(manifest: &str) {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rc8-manifest");
+    let linked = std::fs::read_to_string(fixture.join(".claude/settings.json")).unwrap();
+
+    // unlink removes the hooks and the permission: link had created the file
+    let env = rc8_project(manifest);
+    env.ok(&["unlink"]);
+    assert!(!env.root().join(".claude/settings.json").exists());
+
+    // a relink changes not a byte and records the same hooks and the rule
+    let env = rc8_project(manifest);
+    env.ok(&["link"]);
+    assert_eq!(
+        std::fs::read_to_string(env.root().join(".claude/settings.json")).unwrap(),
+        linked
+    );
+    let without_date = |t: String| {
+        t.lines()
+            .filter(|l| !l.contains("linked_at"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert_eq!(
+        without_date(
+            std::fs::read_to_string(env.root().join(".armadai/link-manifest.yaml")).unwrap()
+        ),
+        without_date(std::fs::read_to_string(fixture.join("link-manifest-plain.yaml")).unwrap()),
+    );
+
+    // a relink that does change the file keeps `permissions` where the user had it
+    let env = rc8_project(manifest);
+    std::fs::remove_file(env.root().join(".armadai/automations/check.yaml")).unwrap();
+    env.ok(&["link"]);
+    let check = "      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"./check.sh\",\n            \"timeout\": 5\n          }\n        ]\n      },\n";
+    assert!(linked.contains(check));
+    assert_eq!(
+        std::fs::read_to_string(env.root().join(".claude/settings.json")).unwrap(),
+        linked.replacen(check, "", 1)
+    );
+}
+
+#[test]
+fn a_manifest_written_by_rc8_still_unlinks_and_relinks() {
+    a_manifest_of_rc8_unlinks_and_relinks("link-manifest.yaml");
+}
+
+#[test]
+fn a_manifest_with_plain_numbers_still_unlinks_and_relinks() {
+    a_manifest_of_rc8_unlinks_and_relinks("link-manifest-plain.yaml");
 }
 
 /// A settings.json link created holds nothing once the project has no hook left:

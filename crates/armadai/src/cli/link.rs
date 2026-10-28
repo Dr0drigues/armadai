@@ -456,7 +456,13 @@ fn bytes(path: &Path) -> Option<Vec<u8>> {
     std::fs::read(path).ok()
 }
 
-fn write(root: &Path, p: &mut Prepared, force: bool, out: &mut Vec<String>) -> anyhow::Result<()> {
+fn write(
+    root: &Path,
+    p: &mut Prepared,
+    force: bool,
+    adopt_hooks: bool,
+    out: &mut Vec<String>,
+) -> anyhow::Result<()> {
     let mut patched = Vec::new();
     let mut changed: BTreeSet<PathBuf> = BTreeSet::new();
 
@@ -503,8 +509,15 @@ fn write(root: &Path, p: &mut Prepared, force: bool, out: &mut Vec<String>) -> a
             }
         } else {
             let before = bytes(&root.join(&rel));
-            let (done, reformatted) =
-                patch::apply_settings(root, &rel, &p.output_dir, &hooks, &keys, prev.as_ref())?;
+            let (done, reformatted, notes) = patch::apply_settings(
+                root,
+                &rel,
+                &p.output_dir,
+                &hooks,
+                &keys,
+                prev.as_ref(),
+                adopt_hooks,
+            )?;
             if bytes(&root.join(&rel)) != before {
                 changed.insert(rel.clone());
             }
@@ -516,15 +529,32 @@ fn write(root: &Path, p: &mut Prepared, force: bool, out: &mut Vec<String>) -> a
                     Some("settings.json reformatted (values and key order kept)"),
                 );
             }
-            if let PatchKind::SettingsHooks(owned) = &done.kind {
-                for h in hooks.iter().filter(|h| !owned.entries.contains(h)) {
-                    p.report.push(
-                        &p.target,
-                        format!("hook {} {}", h.event, h.command),
-                        Status::Approximated,
-                        Some("existing identical hook kept, not owned"),
-                    );
-                }
+            for h in &notes.kept {
+                p.report.push(
+                    &p.target,
+                    format!("hook {} {}", h.event, h.command),
+                    Status::Approximated,
+                    Some(
+                        "existing identical hook kept, not owned: unlink leaves it; adopt it \
+                         with `armadai link --adopt-hooks`",
+                    ),
+                );
+            }
+            for h in &notes.adopted {
+                p.report.push(
+                    &p.target,
+                    format!("hook {} {}", h.event, h.command),
+                    Status::Compiled,
+                    Some("existing identical hook adopted: unlink removes it"),
+                );
+            }
+            for rule in &notes.deny_over_allow {
+                p.report.push(
+                    &p.target,
+                    format!("permissions.deny {rule}"),
+                    Status::Compiled,
+                    Some("also in your permissions.allow: Claude Code applies deny"),
+                );
             }
             patched.push(done);
         }
@@ -623,6 +653,7 @@ pub fn execute(
     output: Option<PathBuf>,
     agents: Option<Vec<String>>,
     json: bool,
+    adopt_hooks: bool,
 ) -> anyhow::Result<()> {
     let (root, project) = load_project()?;
     let targets = targets_of(&targets, &project);
@@ -727,7 +758,7 @@ pub fn execute(
             ));
         }
         for p in &mut prepared {
-            write(&root, p, force, &mut lines)?;
+            write(&root, p, force, adopt_hooks, &mut lines)?;
         }
     }
 

@@ -69,7 +69,7 @@ fn unknown_agent_in_a_step_is_positioned_on_its_token() {
 fn unknown_coordinator_is_an_error_unknown_free_agent_a_warning() {
     let ds = diags(&[(
         ".armadai/project.yaml",
-        "schema_version: 1\ncoordinator: boss\npolicy:\n  free_agents: [Explore]\n",
+        "schema_version: 1\ncoordinator: boss\npolicy:\n  free_agents: [inconnu]\n",
     )]);
     let d = err(&ds, "unknown-agent", (2, 14));
     assert!(d.message.contains("boss"));
@@ -78,12 +78,12 @@ fn unknown_coordinator_is_an_error_unknown_free_agent_a_warning() {
         w.hint
             .as_deref()
             .unwrap()
-            .contains("Explore, Plan, general-purpose"),
+            .starts_with("nor a built-in agent of a declared target (claude: Explore, Plan"),
         "{w:?}"
     );
     assert!(
         !ds.iter()
-            .any(|d| d.code == "unknown-agent" && d.message.contains("Explore"))
+            .any(|d| d.code == "unknown-agent" && d.message.contains("inconnu"))
     );
 }
 
@@ -205,8 +205,8 @@ fn unknown_step_in_links_and_on_failure() {
     ]);
     let hits: Vec<_> = ds.iter().filter(|d| d.code == "unknown-step").collect();
     assert_eq!(hits.len(), 2, "{ds:?}");
-    assert_eq!((hits[0].line, hits[0].column), (Some(2), Some(32)));
-    assert_eq!((hits[1].line, hits[1].column), (Some(4), Some(20)));
+    assert_eq!((hits[0].line, hits[0].column), (Some(2), Some(20)));
+    assert_eq!((hits[1].line, hits[1].column), (Some(4), Some(16)));
 }
 
 #[test]
@@ -220,7 +220,7 @@ fn unknown_state_outside_done_failed_and_declared() {
             "steps:\n  a: { agent: dev, states: [approved] }\n  b: { agent: rev }\nlinks:\n  - { from: a, to: b, when: bogus }\n",
         ),
     ]);
-    err(&ds, "unknown-state", (5, 29));
+    err(&ds, "unknown-state", (5, 23));
 }
 
 #[test]
@@ -487,7 +487,7 @@ fn an_entry_with_an_incoming_link_is_ambiguous_even_beside_a_clean_one() {
 #[test]
 fn an_unknown_start_is_an_error_on_its_token() {
     let ds = flow("start: wirte\nsteps:\n  write: { agent: dev }\n");
-    let d = err(&ds, "unknown-step", (1, 8));
+    let d = err(&ds, "unknown-step", (1, 1));
     assert!(d.hint.unwrap().contains("did you mean `write`"));
     assert!(entry_steps(&flow_of("start: wirte\nsteps:\n  write: { agent: dev }\n")).is_empty());
 }
@@ -1165,4 +1165,160 @@ fn an_empty_armadai_slot_element_is_an_error() {
 #[test]
 fn several_slots_separated_by_commas_are_valid() {
     assert_eq!(skill_slot("\"a, b\""), []);
+}
+
+/// Diagnostics of `files`, each rendered with the project root written `<root>`.
+fn rendered(files: &[(&str, &str)], code: &str) -> Vec<String> {
+    let dir = project(files);
+    let root = dir.path().to_str().unwrap().to_string();
+    validate(dir.path())
+        .iter()
+        .filter(|d| d.code == code)
+        .map(|d| d.render().replace(&root, "<root>"))
+        .collect()
+}
+
+const AB: [(&str, &str); 3] = [
+    M,
+    (".armadai/agents/a.md", "---\ndescription: a\n---\nB\n"),
+    (".armadai/agents/b.md", "---\ndescription: b\n---\nB\n"),
+];
+
+fn with_flow(flow: &str) -> Vec<(&str, &str)> {
+    let mut v = AB.to_vec();
+    v.push((".armadai/flows/y.yaml", flow));
+    v
+}
+
+#[test]
+fn an_unknown_state_points_at_its_link() {
+    let flow = "description: y\nsteps:\n  a: { agent: a, states: [approved, rejected] }\n  b: { agent: b }\n  c: { agent: a }\nlinks:\n  - { from: a, to: b, when: approved }\n  - { from: b, to: c, when: rejected }\n";
+    assert_eq!(
+        rendered(&with_flow(flow), "unknown-state"),
+        [
+            "<root>/.armadai/flows/y.yaml:8:23: error[unknown-state]: unknown state `rejected`\n  hint: known: done, failed"
+        ]
+    );
+}
+
+#[test]
+fn the_second_link_with_the_same_state_is_found() {
+    let flow = "description: y\nsteps:\n  a: { agent: a, states: [rejected] }\n  b: { agent: b }\n  c: { agent: a }\nlinks:\n  - { from: a, to: b, when: rejected }\n  - { from: b, to: c, when: rejected }\n";
+    assert_eq!(
+        rendered(&with_flow(flow), "unknown-state"),
+        [
+            "<root>/.armadai/flows/y.yaml:8:23: error[unknown-state]: unknown state `rejected`\n  hint: known: done, failed"
+        ]
+    );
+}
+
+#[test]
+fn an_unknown_step_in_a_link_points_at_its_key() {
+    let flow = "description: zz\nsteps:\n  a: { agent: a }\nlinks:\n  - { from: a, to: zz }\n";
+    assert_eq!(
+        rendered(&with_flow(flow), "unknown-step"),
+        [
+            "<root>/.armadai/flows/y.yaml:5:16: error[unknown-step]: unknown step `zz`\n  hint: known: a"
+        ]
+    );
+}
+
+#[test]
+fn an_unknown_step_in_a_link_from_points_at_its_key() {
+    let flow = "description: zz\nsteps:\n  a: { agent: a }\nlinks:\n  - { from: zz, to: a }\n";
+    assert_eq!(
+        rendered(&with_flow(flow), "unknown-step"),
+        [
+            "<root>/.armadai/flows/y.yaml:5:7: error[unknown-step]: unknown step `zz`\n  hint: known: a"
+        ]
+    );
+}
+
+#[test]
+fn the_second_link_with_the_same_unknown_to_is_found() {
+    let flow = "description: y\nsteps:\n  a: { agent: a }\n  b: { agent: b }\nlinks:\n  - { from: a, to: zz }\n  - { from: b, to: zz }\n";
+    assert_eq!(
+        rendered(&with_flow(flow), "unknown-step"),
+        [
+            "<root>/.armadai/flows/y.yaml:6:16: error[unknown-step]: unknown step `zz`\n  hint: known: a, b",
+            "<root>/.armadai/flows/y.yaml:7:16: error[unknown-step]: unknown step `zz`\n  hint: known: a, b"
+        ]
+    );
+}
+
+#[test]
+fn the_second_link_with_the_same_unknown_from_is_found() {
+    let flow = "description: y\nsteps:\n  a: { agent: a }\n  b: { agent: b }\nlinks:\n  - { from: zz, to: a }\n  - { from: zz, to: b }\n";
+    assert_eq!(
+        rendered(&with_flow(flow), "unknown-step"),
+        [
+            "<root>/.armadai/flows/y.yaml:6:7: error[unknown-step]: unknown step `zz`\n  hint: known: a, b",
+            "<root>/.armadai/flows/y.yaml:7:7: error[unknown-step]: unknown step `zz`\n  hint: known: a, b"
+        ]
+    );
+}
+
+#[test]
+fn an_unknown_on_failure_points_at_its_key() {
+    let flow = "description: zz\nsteps:\n  a: { agent: a }\n  b: { agent: b, on_failure: zz }\n";
+    assert_eq!(
+        rendered(&with_flow(flow), "unknown-step"),
+        [
+            "<root>/.armadai/flows/y.yaml:4:18: error[unknown-step]: unknown step `zz`\n  hint: known: a, b"
+        ]
+    );
+}
+
+#[test]
+fn an_unknown_start_points_at_its_key() {
+    let flow = "description: zz\nstart: zz\nsteps:\n  a: { agent: a }\n";
+    assert_eq!(
+        rendered(&with_flow(flow), "unknown-step"),
+        [
+            "<root>/.armadai/flows/y.yaml:2:1: error[unknown-step]: unknown step `zz`\n  hint: known: a"
+        ]
+    );
+}
+
+fn free(targets: &str, agents: &str) -> Vec<String> {
+    let m = format!("schema_version: 1\n{targets}policy:\n  free_agents: [{agents}]\n");
+    rendered(&[(".armadai/project.yaml", &m)], "unknown-free-agent")
+}
+
+#[test]
+fn a_free_agent_the_target_provides_is_not_reported() {
+    let claude = "Explore, Plan, general-purpose, claude, statusline-setup, claude-code-guide";
+    assert_eq!(free("targets: [claude]\n", claude), Vec::<String>::new());
+    assert_eq!(free("", claude), Vec::<String>::new());
+    assert_eq!(
+        free("targets: [opencode]\n", "general, explore"),
+        Vec::<String>::new()
+    );
+    let d = free("targets: [opencode]\n", "Explore");
+    assert_eq!(d.len(), 1, "{d:?}");
+}
+
+#[test]
+fn an_unknown_free_agent_points_at_its_list_entry() {
+    assert_eq!(
+        free("targets: [claude]\n", "inconnu-xyz"),
+        [
+            "<root>/.armadai/project.yaml:4:17: warning[unknown-free-agent]: free agent `inconnu-xyz` is not an agent of this project\n  hint: nor a built-in agent of a declared target (claude: Explore, Plan, general-purpose, claude, statusline-setup, claude-code-guide)"
+        ]
+    );
+    // a word that also appears in `targets:` is found in the list, not there
+    let d = free("targets: [codex]\n", "codex");
+    assert!(d[0].contains("project.yaml:4:17:"), "{d:?}");
+    assert!(
+        d[0].ends_with("hint: nor a built-in agent of a declared target"),
+        "{d:?}"
+    );
+    // two targets: each list, one per target
+    assert_eq!(
+        free("targets: [claude, opencode]\n", "zz")[0]
+            .rsplit("hint: ")
+            .next()
+            .unwrap(),
+        "nor a built-in agent of a declared target (claude: Explore, Plan, general-purpose, claude, statusline-setup, claude-code-guide; opencode: general, explore)"
+    );
 }

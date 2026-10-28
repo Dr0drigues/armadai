@@ -66,10 +66,7 @@ pub fn execute(path: Option<PathBuf>, json: bool) -> anyhow::Result<()> {
             anyhow::bail!("pack '{}' uses an unknown format", pack.name);
         }
         let pack = super::native_pack::files(&target_path)?;
-        for f in &pack.ignored {
-            eprintln!("warning: ignored: {} (not part of a pack)", f.display());
-        }
-        let (_tmp, ds) = super::native_pack::stage(&target_path, &pack.files)?;
+        let (_tmp, ds) = super::native_pack::stage(&target_path, &pack)?;
         return report(ds, json);
     }
     if json {
