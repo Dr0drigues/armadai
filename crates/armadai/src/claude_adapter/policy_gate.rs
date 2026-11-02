@@ -13,11 +13,10 @@
 //! Nothing may be written to stdout except the decision JSON (tracing and the
 //! invalid-project warning go to stderr).
 
-use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use armadai_model::{Delegation, Project};
+use armadai_model::{Delegation, allowed_targets};
 use serde_json::Value;
 
 /// Read a hook payload from stdin and emit a decision. Never fails the hook.
@@ -103,56 +102,6 @@ fn main_checkout_of(cwd: &Path) -> Option<PathBuf> {
 /// around the policy — and if a project declares this agent, such calls are
 /// allowed again, because the policy decides rather than the shape of the call.
 const IMPLICIT_SUBAGENT: &str = "general-purpose";
-
-/// Agents `caller` may delegate to (`None` = the main thread).
-///
-/// - Main thread: with a coordinator, it IS the coordinator (it lives in
-///   `CLAUDE.md`) and drives the flows: every step agent. Without one, the
-///   agents of entry steps (`armadai_model::entry_steps`, the validator's own).
-/// - The coordinator as `--agent`: same as the main thread.
-/// - Agent X: the agents of the steps a step of X leads to (link or `on_failure`).
-/// - `policy.free_agents`: always.
-/// - The coordinator never, as a step agent: it is no sub-agent.
-pub fn allowed_targets(project: &Project, caller: Option<&str>) -> BTreeSet<String> {
-    let coordinator = project.manifest.coordinator.as_deref();
-    let main = caller.is_none() || caller == coordinator;
-    let mut out: BTreeSet<String> = project
-        .manifest
-        .policy
-        .free_agents
-        .iter()
-        .cloned()
-        .collect();
-    for flow in project.flows.values() {
-        let edges: Vec<(&str, &str)> = (flow.links.iter())
-            .map(|l| (l.from.as_str(), l.to.as_str()))
-            .chain(
-                flow.steps
-                    .iter()
-                    .filter_map(|(sid, s)| s.on_failure.as_deref().map(|t| (sid.as_str(), t))),
-            )
-            .collect();
-        let entries = armadai_model::entry_steps(flow);
-        for (sid, step) in &flow.steps {
-            let reached = if main {
-                coordinator.is_some() || entries.contains(sid)
-            } else {
-                edges.iter().any(|(from, to)| {
-                    to == sid
-                        && flow
-                            .steps
-                            .get(*from)
-                            .is_some_and(|s| Some(s.agent.as_str()) == caller)
-                })
-            };
-            // the coordinator lives in CLAUDE.md: never a sub-agent to delegate to
-            if reached && Some(step.agent.as_str()) != coordinator {
-                out.insert(step.agent.clone());
-            }
-        }
-    }
-    out
-}
 
 /// The whole gate, as a pure string→string function so it can be tested
 /// without a subprocess. `None` means "no opinion".
@@ -290,35 +239,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_project(dir.path(), STRICT);
         dir
-    }
-
-    /// The model's copy (drawn by `graph --view team`) gives the gate's answer
-    /// for every caller. Dropped with the gate's copy when it goes (T4).
-    #[test]
-    fn the_model_copy_agrees_with_the_gate() {
-        let dir = strict();
-        // the coordinator also runs a step: the case where the copies could part
-        std::fs::write(
-            dir.path().join(".armadai/flows/own.yaml"),
-            "steps:\n  first: { agent: lead }\n  second: { agent: dev, on_failure: third }\n  third: { agent: doc }\nlinks:\n  - { from: first, to: second }\n",
-        )
-        .unwrap();
-        let project = armadai_model::load_project(dir.path()).project.unwrap();
-        for caller in [
-            None,
-            Some("lead"),
-            Some("dev"),
-            Some("qa"),
-            Some("doc"),
-            Some("helper"),
-        ] {
-            assert_eq!(
-                armadai_model::allowed_targets(&project, caller),
-                allowed_targets(&project, caller),
-                "caller {caller:?}"
-            );
-        }
-        assert!(!allowed_targets(&project, Some("dev")).is_empty());
     }
 
     fn reason(out: Option<String>) -> String {

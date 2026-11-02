@@ -439,7 +439,7 @@ fn claude_md(coordinator: &str, lead: &Agent, project: &Project) -> String {
     // under a strict policy, say which agents the gate will not let the main
     // session reach rather than list them as if it would
     let strict = project.manifest.policy.delegation == Delegation::Strict;
-    let allowed = crate::claude_adapter::policy_gate::allowed_targets(project, None);
+    let allowed = armadai_model::allowed_targets(project, None);
     for (id, a) in project.agents.iter().filter(|(id, _)| *id != coordinator) {
         let note = if strict && !allowed.contains(id) {
             " (not delegable under `policy.delegation: strict`: in no flow and not a free agent)"
