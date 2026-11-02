@@ -3,6 +3,7 @@
 pub mod agent_templates;
 pub mod check;
 pub mod diag;
+pub mod dot;
 pub mod graph;
 pub mod load;
 pub mod mermaid;
@@ -14,6 +15,7 @@ pub mod write;
 pub mod yaml;
 pub use check::{check, entry_steps, has_errors, is_valid_id, load_checked, validate};
 pub use diag::{Diagnostic, Severity, locate, locate_key};
+pub use dot::{flow_graph_to_dot, flow_to_dot};
 pub use graph::{EdgeKind, FlowGraph, GraphEdge, GraphNode, flow_graph};
 pub use load::*;
 pub use mermaid::{flow_graph_to_mermaid, flow_to_mermaid};

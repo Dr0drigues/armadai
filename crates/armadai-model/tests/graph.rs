@@ -224,3 +224,61 @@ fn a_join_is_listed_once() {
     );
     assert_eq!(order(&flow_graph("f", &f)), ["a", "b", "c", "d"]);
 }
+
+#[test]
+fn flow_graph_json_golden() {
+    let f = flow(
+        &[
+            ("write", step("dev", None)),
+            ("check", step("rev", Some("write"))),
+        ],
+        None,
+        vec![
+            link("write", "check", None),
+            link("check", "write", Some("rejected")),
+        ],
+    );
+    let json = serde_json::to_string_pretty(&flow_graph("review", &f)).unwrap();
+    assert_eq!(
+        json,
+        r#"{
+  "id": "review",
+  "nodes": [
+    {
+      "id": "write",
+      "agent": "dev",
+      "states": [],
+      "start": true,
+      "end": false
+    },
+    {
+      "id": "check",
+      "agent": "rev",
+      "states": [],
+      "start": false,
+      "end": false
+    }
+  ],
+  "edges": [
+    {
+      "from": "write",
+      "to": "check",
+      "when": null,
+      "kind": "link"
+    },
+    {
+      "from": "check",
+      "to": "write",
+      "when": "rejected",
+      "kind": "link"
+    },
+    {
+      "from": "check",
+      "to": "write",
+      "when": null,
+      "kind": "on_failure"
+    }
+  ]
+}"#
+    );
+}
