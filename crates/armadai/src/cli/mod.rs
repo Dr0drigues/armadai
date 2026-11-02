@@ -90,18 +90,23 @@ pub enum Command {
         /// Agent id (its file name under .armadai/agents/)
         agent: String,
     },
-    /// Print the graph of a flow, of every flow, or of the team
+    /// Draw a flow, every flow, or the team (Mermaid, DOT, JSON or ASCII)
     #[command(
-        long_about = "Print the graph of a flow as Mermaid (flowchart TD) on stdout, and \
-            nothing else: redirect it to a .mmd file or paste it into a Markdown ```mermaid \
-            block.\n\n\
-            Without a flow, every flow of the project is printed, one diagram each, opened by \
-            a `%% flow: <id>` comment and separated by a blank line (Mermaid renders one \
-            diagram per document: take them one at a time). Conditional links are labelled \
-            with their state; failure paths (`when: failed`, `on_failure`) are dotted.",
+        long_about = "Draw how the project works, on stdout and nothing else: redirect it to a \
+            file or pipe it into a renderer.\n\n\
+            What to draw (--view):\n  \
+            flows  each flow's steps and links (default). Name a flow, or omit it to draw every flow.\n  \
+            team   who may delegate to whom, as the delegation gate reads it. It draws the whole team, so it takes no flow id.\n\n\
+            Output format (--format):\n  \
+            mermaid  flowchart TD (default). Paste it into a Markdown ```mermaid block or a .mmd file.\n  \
+            dot      Graphviz: armadai graph --format dot | dot -Tsvg > graph.svg\n  \
+            json     nodes and edges. With --view flows it is always {\"flows\": [...]}, even for one flow; with --view team it is the team object.\n  \
+            ascii    boxes for the terminal, without colour. Links that point back to an earlier step are not drawn: they are listed under `links not drawn:`.\n\n\
+            Several flows are several drawings, each opened by a `%% flow: <id>` comment (`// flow: <id>` in DOT, `flow: <id>` in ASCII) and separated by a blank line: Mermaid and Graphviz render one drawing per document, so take them one at a time. Conditional links are labelled with their state; failure paths (`when: failed`, `on_failure`) are dotted in Mermaid and dashed in DOT.",
         after_help = "Examples:\n  \
             armadai graph review > review.mmd\n  \
             armadai graph review --format dot | dot -Tsvg > review.svg\n  \
+            armadai graph review --format ascii\n  \
             armadai graph --view team\n  \
             armadai graph"
     )]

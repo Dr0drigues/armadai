@@ -378,3 +378,27 @@ fn a_cycle_is_drawn_as_ascii_with_its_return_links_listed() {
         Some("team (delegation: off, not enforced)")
     );
 }
+
+#[test]
+fn the_help_describes_the_views_and_the_formats() {
+    let env = Env::new(&[]);
+    let (code, out, _) = env.run(&env.root(), &["graph", "--help"]);
+    assert_eq!(code, Some(0));
+    let lines: Vec<&str> = out.lines().collect();
+    for want in [
+        "Draw how the project works, on stdout and nothing else: redirect it to a file or pipe it into a renderer.",
+        "  flows  each flow's steps and links (default). Name a flow, or omit it to draw every flow.",
+        "  team   who may delegate to whom, as the delegation gate reads it. It draws the whole team, so it takes no flow id.",
+        "  mermaid  flowchart TD (default). Paste it into a Markdown ```mermaid block or a .mmd file.",
+        "  dot      Graphviz: armadai graph --format dot | dot -Tsvg > graph.svg",
+        "  ascii    boxes for the terminal, without colour. Links that point back to an earlier step are not drawn: they are listed under `links not drawn:`.",
+        "  armadai graph review --format ascii",
+    ] {
+        assert!(lines.contains(&want), "missing line: {want}\n{out}");
+    }
+    assert!(
+        !out.lines()
+            .any(|l| l.starts_with("Print the graph of a flow as Mermaid")),
+        "{out}"
+    );
+}
