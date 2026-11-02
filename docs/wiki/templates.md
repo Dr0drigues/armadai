@@ -99,13 +99,21 @@ a sorted map), which changes nothing to the flow: its `links` carry the order.
 
 ```mermaid
 flowchart TD
-  n_dev["dev"]
-  n_release["release"]
+  n_dev(["dev"])
   n_reviewer["reviewer"]
+  n_release[["release"]]
   n_dev --> n_reviewer
   n_reviewer -->|"rejected"| n_dev
   n_reviewer -->|"approved"| n_release
+  classDef startStep stroke-width:3px
+  classDef endStep stroke-width:3px,stroke-dasharray:4 2
+  class n_dev startStep
+  class n_release endStep
 ```
+
+The nodes follow the flow (the start first), not the alphabet. See
+[Project format](project-format.md) for the other formats (`--format dot|json|ascii`) and the team
+view (`--view team`).
 
 ### Example: the TDD cycle
 
