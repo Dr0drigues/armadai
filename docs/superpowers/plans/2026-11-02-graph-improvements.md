@@ -2,9 +2,12 @@
 
 - Spec : `docs/superpowers/specs/2026-11-02-graph-improvements-design.md` (commit `f2f3b3a`).
 - Cadre : rendu par `framer` le 2026-11-02 (règles, contrainte `--watch`, tableau des points à trancher). La réponse de Dimitri sur les dépendances est « Dans crates/armadai (Recommandé) ».
-- Branche `feat/graph-improvements`, worktree `/Users/bl209054/work/misc/armadai-graph`.
-- **État au 2026-11-02** (rapporté par `lead`) : T0 mesurée ; T1 (`c1eba3d`), T2 (`b69845c`, `d762532`) et T3 (`a5bf815`, `fb590aa`) approuvées par `guardian` ; T4 en cours ; T5 à T8 à faire.
-- Neuf tâches : `T0` (mesure seule) puis `T1` à `T8`. Le lot reste d'un seul tenant, comme Dimitri l'a décidé ; rien ne justifie de le couper.
+- Branche `feat/graph-improvements`, dans le worktree du lot (désigné `<worktree>` ci-dessous).
+- **État au 2026-11-02** (rapporté par `lead` et par la revue de branche) :
+  - T0 mesurée ; T1 à T8 faites et approuvées par `guardian`, tête `6b6f775` ;
+  - la revue de la branche (`reviewer`) a **rejeté** le lot avec 6 rejets (§5) ;
+  - la vague de correction T9 à T11 est à faire, puis une nouvelle revue de la branche et la validation.
+- Douze tâches : `T0` (mesure seule), `T1` à `T8`, puis la vague de correction `T9` à `T11`. Le lot reste d'un seul tenant, comme Dimitri l'a décidé ; rien ne justifie de le couper.
 
 ## 0. Contraintes globales (toutes les tâches)
 
@@ -15,7 +18,7 @@
 5. **Réutilisation par `flow status --watch` (lot suivant).** Ce lot ne la livre pas. Le graphe intermédiaire (`armadai_model::flow_graph`) et le rendu ASCII (`crate::ascii_graph::flow_to_ascii`) sont des fonctions pures, sans terminal ni réseau. Elles prennent un graphe et rendent un `String`, et `flow status` les appelle sans passer par `cli/graph.rs`. `flow_status` vit bien dans le crate binaire (`crates/armadai/src/flow_status/`, vérifié). Le rendu ASCII y est donc atteignable. **Critère :** des tests appellent `flow_graph` (T1) et `flow_to_ascii(&flow_graph(..))` (T6) directement, sans la commande. Toute logique enfouie dans `cli::graph::execute` les fait échouer, parce qu'elle manquerait au rendu appelé directement.
 6. **Sortie déterministe dans chaque format.** L'ensemble des nœuds et des arêtes d'un flow ne change pas, ni l'ordre des arêtes (liens dans l'ordre déclaré, puis `on_failure` dans l'ordre des étapes). Seuls changent l'ordre des nœuds et leur marquage.
 7. **Tests.** Chaque test ajouté ou changé est muté : le spécialiste casse le code, constate le rouge, restaure avec `touch` et reporte la sortie vue. On compare des lignes ou des documents entiers, pas des `contains`. Les fixtures ont des valeurs distinctes deux à deux. Les goldens (`crates/armadai-model/tests/mermaid.rs`, constantes `REVIEW`/`SHIP` de `crates/armadai/tests/graph_cli.rs`) se mettent à jour à la main et se relisent ligne à ligne contre la spec, jamais par régénération en bloc. Dans le crate binaire : `--bin armadai` ou `--test graph_cli`, toujours `--no-fail-fast`.
-8. **Barrière à chaque tâche.** `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --no-fail-fast`, `cargo build -p armadai-core`, `cargo build -p armadai-model`, avec `CARGO_TARGET_DIR=/Users/bl209054/work/misc/armadai-graph/target`. On lit le code retour, sans tube. `cargo audit` s'ajoute dans T6 et T7, les tâches qui ajoutent des dépendances.
+8. **Barrière à chaque tâche.** `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --no-fail-fast`, `cargo build -p armadai-core`, `cargo build -p armadai-model`, avec `CARGO_TARGET_DIR=<worktree>/target`. On lit le code retour, sans tube. `cargo audit` s'ajoute dans T6 et T7, les tâches qui ajoutent des dépendances.
 9. **Textes nouveaux.** Les textes proposés au §3 ne s'écrivent qu'après validation de Dimitri. Un texte modifié à sa relecture se reporte ici, daté.
 10. **Commits.** Conventional Commits en anglais, un seul type par sujet, trailer `Co-Authored-By` de la session. Pas de fusion : `lead` ouvre la PR.
 
@@ -108,6 +111,42 @@ Source : `graph-frame.md`, rapporté par `lead`.
 - **Q5**, `--open` réussi : « Rien (Recommandé) ». Les autres textes du §3 Q5 (erreurs, repli ASCII, aides) : « Validés tels quels (Recommandé) ».
 - **Agent libre qui est aussi agent du projet** : « Un nœud dans le groupe libre (Recommandé) ». Il a un seul nœud, dans le groupe libre, libellé `id · flows`, et ses arêtes sortantes sont gardées.
 
+### Décisions de Dimitri pendant les tâches (2026-11-02, après 11 h 05), mot pour mot
+
+Source : `graph-frame.md`, fin de fichier, rapporté par `lead`.
+
+- **Aide de `graph`** (résumé et `long_about`, avec « dotted in Mermaid and dashed in DOT ») : « Validés tels quels (Recommandé) ». Le texte complet est ci-dessous.
+- **En-têtes ASCII** `flow: <id>` et `team (delegation: …)` : « Validées (Recommandé) ».
+- **Marque d'un agent libre** : « (free) en ASCII seul (Recommandé) ».
+- **Retours d'équipe en ASCII**, sans libellé sous `links not drawn:` : « Laisser ainsi (Recommandé) ».
+- **Vue équipe en ASCII, délégations dessinées** : « Règle du plan (Recommandé) ». C'est la première délégation vers chaque agent non encore vu, dans l'ordre de `edges` ; le reste va sous `links not drawn:`.
+- **Liste des délégations non dessinées, en ASCII** : « Les ids (Recommandé) ».
+- **Règle « déjà vu »** (source ou cible) : « Garder (Recommandé) ».
+- **Après la revue de la branche** :
+  - règle « déjà vu » : « Garder, corriger la doc (Recommandé) » ;
+  - libellé d'étape : « id seul, partout (Recommandé) », c'est-à-dire une fonction de libellé unique pour les quatre formats ;
+  - aide de `--format ascii` : « Proposer un texte (Recommandé) ». Le texte est à proposer, puis à faire valider. Proposition au §4, T11.
+
+**Aide validée de `graph`.** Voici le `long_about`, tel qu'il est figé par la constante `GRAPH_HELP` de `crates/armadai/tests/graph_cli.rs` :
+
+````
+Draw how the project works, on stdout and nothing else: redirect it to a file or pipe it into a renderer.
+
+What to draw (--view):
+  flows  each flow's steps and links (default). Name a flow, or omit it to draw every flow.
+  team   who may delegate to whom, as the delegation gate reads it. It draws the whole team, so it takes no flow id.
+
+Output format (--format):
+  mermaid  flowchart TD (default). Paste it into a Markdown ```mermaid block or a .mmd file.
+  dot      Graphviz: armadai graph --format dot | dot -Tsvg > graph.svg
+  json     nodes and edges. With --view flows it is always {"flows": [...]}, even for one flow; with --view team it is the team object.
+  ascii    boxes for the terminal, without colour. Links that point back to an earlier step are not drawn: they are listed under `links not drawn:`.
+
+Several flows are several drawings, each opened by a `%% flow: <id>` comment (`// flow: <id>` in DOT, `flow: <id>` in ASCII) and separated by a blank line: Mermaid and Graphviz render one drawing per document, so take them one at a time. Conditional links are labelled with their state; failure paths (`when: failed`, `on_failure`) are dotted in Mermaid and dashed in DOT.
+````
+
+Le résumé validé (`graph -h`, 1re ligne) est : `Draw a flow, every flow, or the team (Mermaid, DOT, JSON or ASCII)`. La ligne `ascii` de cette aide sera remplacée par le texte de T11 une fois que Dimitri l'aura validé.
+
 Le texte qui suit garde les propositions telles que soumises ; les réponses ci-dessus prévalent.
 
 ### Q1. Crates (posée après T0)
@@ -170,7 +209,7 @@ Proposition (recommandée) :
 
 ## 4. Tâches
 
-Ordre : `T0` ∥ (`T1` → `T2` → `T3` → `T4`) → `T5` → `T6` → `T7` → `T8`.
+Ordre : `T0` ∥ (`T1` → `T2` → `T3` → `T4`) → `T5` → `T6` → `T7` → `T8`, puis la vague de correction `T9` → `T10` → `T11` (après la revue de la branche).
 
 - `T0` n'écrit rien : il tourne en parallèle de T1 à T4.
 - T1 à T5 s'enchaînent sans attendre Dimitri sur les crates. Ils attendent ses réponses à Q2-Q5 pour les textes (T1 attend Q3 ; T3 attend Q4 ; T5 attend Q2 et Q5).
@@ -184,7 +223,7 @@ Ordre : `T0` ∥ (`T1` → `T2` → `T3` → `T4`) → `T5` → `T6` → `T7` �
 
 La mesure est faite le 2026-11-02. Ses conclusions sont reportées au §2.2 et au §3 (réponses de Dimitri).
 
-Le travail se fait dans un crate jetable hors du dépôt (`/tmp/armadai-graph-t0/`, son propre `CARGO_TARGET_DIR`), avec `HOME` et `ARMADAI_CONFIG_DIR` isolés pour tout essai du binaire.
+Le travail se fait dans un crate jetable hors du dépôt (un dossier temporaire, avec son propre `CARGO_TARGET_DIR`), avec `HOME` et `ARMADAI_CONFIG_DIR` isolés pour tout essai du binaire.
 
 **Candidats.** Leur existence et leurs propriétés sont à vérifier. Je n'ai rien mesuré : ce sont des noms à essayer, pas des faits.
 
@@ -199,7 +238,7 @@ Le travail se fait dans un crate jetable hors du dépôt (`/tmp/armadai-graph-t0
 1. Dernière version et sa date : `cargo info <crate>`, plus la date de publication sur crates.io. Un crate sans version depuis plus de 18 mois se signale comme peu maintenu.
 2. Licence : `cargo info <crate>`, plus celles de ses dépendances transitives (`cargo tree -e normal --prefix none -f '{p} {l}'` dans le crate jetable). Le dépôt est sous PolyForm-Noncommercial-1.0.0 ; aucune règle ne fixe les licences acceptées, c'est Dimitri qui tranche. Le rapport signale toute licence autre que MIT, Apache-2.0, BSD, Zlib ou ISC.
 3. Nombre de dépendances transitives ajoutées (`cargo tree | wc -l`, avant et après).
-4. Présence déjà dans `Cargo.lock` du dépôt : `/usr/bin/grep -n '^name = "<crate>"' /Users/bl209054/work/misc/armadai-graph/Cargo.lock`. Un crate déjà présent ne coûte rien de plus.
+4. Présence déjà dans `Cargo.lock` du dépôt : `/usr/bin/grep -n '^name = "<crate>"' <worktree>/Cargo.lock`. Un crate déjà présent ne coûte rien de plus.
 5. `cargo audit` dans le crate jetable, avec le crate ajouté : avis, yanked, non maintenu. Si `cargo audit` n'est pas installé, le dire et demander à `lead` avant d'installer quoi que ce soit.
 6. Compilation avec la toolchain du dépôt (édition 2024) : `cargo build` du crate jetable.
 7. **ASCII seulement : comportement sur un cycle.** Un petit binaire jetable dessine trois graphes écrits à la main :
@@ -446,7 +485,14 @@ pub fn team_to_ascii(g: &armadai_model::TeamGraph) -> String;
   - les arêtes de retour (`check → build` failed, `rev → dev` rejected) vont toujours dans la liste `links not drawn:` ;
   - le crate reçoit donc un graphe sans cycle, dans l'ordre du flow.
 
-  C'est une hypothèse : le spécialiste la mesure d'abord sur `plan-build-verify`. Si la flèche `build → check` reste invisible ou si le dessin se lit encore à l'envers, il s'arrête et le rapporte à `lead`, qui le dira à Dimitri, sans bricoler le dessin. La même règle vaut pour la vue équipe : on prend l'ordre de `edges` et on ne passe que les arêtes vers un agent pas encore vu.
+  C'est une hypothèse : le spécialiste la mesure d'abord sur `plan-build-verify`. Si la flèche `build → check` reste invisible ou si le dessin se lit encore à l'envers, il s'arrête et le rapporte à `lead`, qui le dira à Dimitri, sans bricoler le dessin. La règle de la vue équipe est différente ; la voici telle qu'elle est codée (`ascii_graph.rs`, `team_to_ascii`) et voulue par Dimitri (« Garder (Recommandé) », puis « Garder, corriger la doc (Recommandé) ») :
+  - les délégations sont prises dans l'ordre de `edges` : le fil principal d'abord, puis les agents par id ;
+  - le fil principal compte comme vu dès le départ ;
+  - pour chaque délégation, **la source est marquée vue d'abord**, que la délégation soit dessinée ou non ;
+  - la délégation est dessinée si sa cible n'est pas encore vue, ce qui la marque vue. Sinon elle est listée sous `links not drawn:`, avec les ids ;
+  - une délégation dont une extrémité n'est pas une boîte est listée et ne marque rien.
+
+  Conséquence assumée : sans coordinateur, un agent qui délègue avant qu'une délégation l'atteigne sort comme une boîte sans flèche entrante, sur la ligne du fil principal. L'essai réel (critère 12) dira si cela gêne la lecture.
 
 **Tests et mutations**
 - Tests unitaires dans `ascii_graph.rs`, qui appellent `flow_to_ascii(&armadai_model::flow_graph(..))` sans la commande (contrainte `--watch`) :
@@ -516,6 +562,119 @@ fn open_url(url: &str) -> anyhow::Result<()>;
 
 ---
 
+### Vague de correction après la revue de la branche (2026-11-02)
+
+Elle répond aux rejets 4 à 6 de `reviewer` et aux deux décisions de code de Dimitri (« id seul, partout », « Proposer un texte »). Les rejets 1 à 3 portent sur ce plan, et `architect` les corrige ici même.
+
+**Un seul écrivain par fichier.**
+
+| Fichiers | Écrivain |
+|---|---|
+| `crates/armadai-model/src/{graph,mermaid,dot,delegation}.rs`, `crates/armadai-model/tests/*` | `schema-specialist` (T9) |
+| `crates/armadai/src/ascii_graph.rs`, `crates/armadai/tests/graph_cli.rs`, `crates/armadai/src/cli/mod.rs`, `docs/wiki/project-format.md` | `cli-specialist` (T10, puis T11) |
+
+**Ordre :** T9 → T10 → T11. T10 a besoin des fonctions publiques de T9, et T11 attend que Dimitri valide le texte. Ensuite, `reviewer` relit la branche à nouveau, puis `validator` valide.
+
+---
+
+### T9 — Libellés publics et uniques dans le modèle (schema-specialist)
+
+**Fichiers**
+- `crates/armadai-model/src/delegation.rs`.
+- `crates/armadai-model/src/graph.rs`.
+- `crates/armadai-model/src/mermaid.rs`.
+- `crates/armadai-model/src/dot.rs`.
+- Tests sous `crates/armadai-model/tests/`.
+
+**Interfaces**
+```rust
+impl TeamGraph {
+    pub fn policy_note(&self) -> String; // was pub(crate); text unchanged
+    pub fn main_label(&self) -> String;  // was pub(crate); text unchanged
+}
+impl TeamAgent {
+    pub fn label(&self) -> String;       // was pub(crate); text unchanged
+}
+impl GraphNode {
+    /// The node's text in every format: the step id alone when the step bears its agent's
+    /// name, else `id (agent)`. Start/end marks are each format's own (Q3).
+    pub fn label(&self) -> String;
+}
+```
+
+**Étapes**
+- [ ] Passer les trois méthodes en `pub`, sans changer leur texte.
+- [ ] Ajouter `GraphNode::label()`. Remplacer par un appel à cette fonction le calcul du libellé d'un nœud de flow dans `mermaid.rs` et `dot.rs`, en supprimant leur copie locale. Il ne doit plus rester qu'une définition de la règle « id seul si l'étape porte le nom de son agent ».
+- [ ] Les goldens Mermaid et DOT existants restent verts sans retouche : leur sortie ne change pas.
+- [ ] Faire la barrière. `cargo tree -p armadai-model` reste inchangé.
+
+**Tests et mutations**
+- `a_node_label_is_its_id_when_the_step_bears_its_agent_name` : vérifier `plan`/`plan` → `plan` et `write`/`dev` → `write (dev)`, par égalité exacte.
+  - Mutation : toujours écrire `id (agent)`. Ce test doit rougir, et les goldens Mermaid et DOT des modèles aussi (`pipeline_golden` et ses voisins), ce qui prouve que les deux formats appellent bien `label()`.
+- Une mutation du texte de `TeamAgent::label` (séparateur `·` remplacé par `-`) doit rougir les goldens `team_to_mermaid` et `team_to_dot`.
+
+**Commit** : `refactor(model): expose node and team labels to every renderer`
+
+---
+
+### T10 — L'ASCII lit les libellés du modèle ; critère 3 ; doc de la règle « déjà vu » (cli-specialist)
+
+**Fichiers**
+- `crates/armadai/src/ascii_graph.rs`.
+- `crates/armadai/tests/graph_cli.rs`.
+- `docs/wiki/project-format.md`.
+
+**Étapes**
+- [ ] Faire appeler à `ascii_graph.rs` les fonctions du modèle, en supprimant ses copies : `n.label()` dans `flow_to_ascii` (les marques `▶ ` et ` ■` restent ajoutées par l'ASCII), et `g.main_label()`, `g.policy_note()`, `a.label()` dans `team_to_ascii`. Le suffixe ` (free)` reste propre à l'ASCII (décision « (free) en ASCII seul »).
+- [ ] Mettre à jour à la main les goldens ASCII qui changent avec « id seul, partout » : `PBV`, `REVIEW_LOOP`, `PIPELINE` et `FAN_OUT` dans `ascii_graph.rs` (`[▶ plan]` au lieu de `[▶ plan (plan)]`, avec des largeurs de boîte différentes). Les recopier depuis la sortie réelle et les relire ligne à ligne. Ceux où l'étape et l'agent diffèrent (`a (x)`, `write (dev)`) ne changent pas.
+- [ ] Ajouter `"ascii"` à la boucle de `every_format_is_byte_stable` (`graph_cli.rs`).
+- [ ] Ajouter le test `a_caller_met_first_is_not_a_target_again`, qui reprend le cas mesuré par `reviewer` : projet sans coordinateur, flow `s1(z) → s2(a) → s3(b)`, `team_to_ascii` appelée directement, golden exact. `z → a` doit être listée sous `links not drawn:`, et `[a · f]` doit sortir sans flèche entrante.
+- [ ] Corriger `docs/wiki/project-format.md:362-364` par le texte ci-dessous.
+- [ ] Faire la barrière.
+
+**Texte de la doc (remplace les l. 362-364)**
+```
+- In ASCII, the delegations are taken in the order of the edges (the main thread first, then
+  the agents by id). The main thread counts as already drawn; each delegation first counts its
+  caller as drawn, then is drawn only if its target has not appeared yet, as a caller or as a
+  target, in an earlier delegation. The others are listed under `links not drawn:`, by agent id.
+  An agent that delegates before any delegation reaches it is therefore drawn without an incoming
+  arrow, on the main thread's row.
+```
+
+**Mutations**
+- Dans le modèle, changer le texte de `TeamAgent::label`, de `policy_note` ou de `GraphNode::label`. Chacune doit rougir un golden ASCII (`the_team_in_boxes`, ou `PBV`), ce qui prouve qu'il n'y a plus de copie.
+- Ajouter `std::process::id()` à l'en-tête ASCII. `every_format_is_byte_stable` doit rougir ; `reviewer` l'a vu rester vert avant la correction.
+- Ne pas marquer la source comme vue (retirer `seen[f] = true`). `a_caller_met_first_is_not_a_target_again` doit rougir.
+
+**Commits** (un type chacun) :
+- `refactor(graph): draw ASCII labels from the model` ;
+- `test(graph): check ASCII output is byte stable` ;
+- `docs(graph): describe the ASCII team drawing rule`.
+
+---
+
+### T11 — Aide de `--format ascii` (cli-specialist), après validation par Dimitri
+
+L'aide validée (§3) dit « Links that point back to an earlier step are not drawn ». C'est devenu incomplet après `74f67f4` : sont aussi listées les arêtes parallèles, celles dont une extrémité est inconnue, et, dans la vue équipe, des délégations qui ne reviennent pas en arrière.
+
+**Texte proposé**, qui remplace la ligne `ascii` de `GRAPH_HELP` et du `long_about` de `cli/mod.rs` :
+```
+  ascii    boxes for the terminal, without colour. A link the drawing cannot show is listed under `links not drawn:`: a link back to an earlier step, a second link between the same two steps, a link to an unknown step, and in the team view a delegation to an agent already drawn.
+```
+
+**Étapes**
+- [ ] N'écrire le texte qu'après validation par Dimitri. `lead` la recueille et reporte la réponse au §3, datée.
+- [ ] Modifier `crates/armadai/src/cli/mod.rs` et la constante `GRAPH_HELP` de `graph_cli.rs`.
+- [ ] Reporter la même phrase dans `docs/wiki/project-format.md` si elle y figure.
+- [ ] Faire la barrière.
+
+**Mutation** : laisser l'ancien texte dans `cli/mod.rs`. `the_help_is_the_validated_text` doit rougir.
+
+**Commit** : `docs(graph): say which links ASCII lists instead of drawing`, ou bien `fix(graph): …` si `lead` juge qu'une aide de commande n'est pas de la doc. Un seul type dans tous les cas.
+
+---
+
 ### Après les tâches
 
 - **`reviewer`** relit la branche entière.
@@ -528,4 +687,22 @@ fn open_url(url: &str) -> anyhow::Result<()>;
 
 ## 5. Ce qui est refait si `guardian` ou `validator` rejette
 
-Sans rejet à ce jour. Mise à jour du 2026-11-02 (réponses de Dimitri, interface de T3 amendée, conclusions de T0) : aucune tâche approuvée n'est à refaire. T1 à T3 sont conformes aux réponses de Dimitri, d'après `lead`. T4 n'est pas touchée. Les changements portent sur T5, T6 et T7.
+**Rejets de `guardian` pendant les tâches.** La revue de la branche les cite par les commits de correction qui ont suivi : `d762532`, `fb590aa`, `3d1b767`, `74f67f4`, `3077067` et `6b6f775`. Pour trois d'entre eux, je connais ce qu'ils ont changé :
+- `d762532` corrige T2 ;
+- `fb590aa` corrige T3 : `TeamGraph.agents` ne contient plus ni le coordinateur ni les agents libres, et `free_agents` devient un `Vec<TeamAgent>` (§4, T3) ;
+- `74f67f4` : l'ASCII liste aussi les arêtes parallèles et celles dont une extrémité est inconnue (T6).
+
+Je ne connais pas l'objet de `3d1b767`, `3077067` et `6b6f775` : je n'ai pas d'accès à git. `lead` le complète d'après les rapports de `guardian`.
+
+**Rejet de la branche par `reviewer` (2026-11-02, tête `6b6f775`), 6 rejets :**
+
+| Rejet | Objet | Ce qu'il change |
+|---|---|---|
+| 1 | Le §3 du plan ne portait pas les décisions prises après 11 h 05 | §3 complété, mot pour mot et daté, avec le texte complet de l'aide validée |
+| 2 | L. 6 et §5 du plan n'étaient pas à jour | En-tête et §5 réécrits |
+| 3 | T6 ne disait pas qu'une source compte comme vue | T6 : la règle est écrite telle qu'elle est codée |
+| 4 | `project-format.md:362` décrit mal la règle « déjà vu » | T10 : texte corrigé, plus un test du cas mesuré |
+| 5 | L'ASCII recopie trois libellés du modèle (contrainte 4) | T9 (méthodes `pub`, plus `GraphNode::label()`), puis T10 (l'ASCII les appelle) |
+| 6 | `every_format_is_byte_stable` oublie `ascii` (critère 3) | T10 : `"ascii"` ajouté à la boucle |
+
+**À refaire.** Aucune tâche approuvée n'est refaite en entier. T6 et T8 sont corrigées par la vague T9 à T11 : T6 par T10 (ASCII et goldens), T8 par T10 (doc) et T11 (aide). Les décisions « id seul, partout » et « Proposer un texte » ajoutent T9 et T11. Puis `reviewer` relit la branche à nouveau, avant `validator`.
