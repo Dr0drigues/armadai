@@ -333,7 +333,18 @@ links not drawn:
             edges: vec![e("a", "b"), e("b", "a")],
             free_agents: vec![],
         };
-        assert!(team_to_ascii(&g).ends_with("\nlinks not drawn:\n  b → a\n"));
+        assert_eq!(
+            team_to_ascii(&g),
+            "team (delegation: off, not enforced)
+  [main thread]   [a]
+           ┌───────┘
+           ↓
+          [b]
+
+links not drawn:
+  b → a
+"
+        );
     }
 
     #[test]
