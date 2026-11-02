@@ -46,11 +46,7 @@ pub fn flow_graph_to_mermaid(g: &FlowGraph) -> String {
         while !taken.insert(n.clone()) {
             n.push_str("_2");
         }
-        let label = escape(&if nd.id == nd.agent {
-            nd.id.clone()
-        } else {
-            format!("{} ({})", nd.id, nd.agent)
-        });
+        let label = escape(&nd.label());
         let shape = if nd.start {
             format!("([\"{label}\"])")
         } else if nd.end {

@@ -450,3 +450,16 @@ fn colliding_agent_ids_are_told_apart() {
         "%% team (delegation: off, not enforced)\nflowchart TD\n  main([\"main thread (lead)\"])\n  n_a_b[\"a-b · f\"]\n  n_a_b_2[\"a_b · f\"]\n  main --> n_a_b\n  main --> n_a_b_2\n  n_a_b --> n_a_b_2\n"
     );
 }
+
+/// The ASCII renderer (another crate) builds its text from these.
+#[test]
+fn the_team_texts_are_public() {
+    let g = team_graph(&repo());
+    assert_eq!(
+        g.policy_note(),
+        "team (delegation: strict, enforced by the gate)"
+    );
+    assert_eq!(g.main_label(), "main thread (lead)");
+    let guardian = g.agents.iter().find(|a| a.id == "guardian").unwrap();
+    assert_eq!(guardian.label(), "guardian · task");
+}

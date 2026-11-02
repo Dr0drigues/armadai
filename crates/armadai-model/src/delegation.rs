@@ -142,7 +142,7 @@ pub fn team_graph(project: &Project) -> TeamGraph {
 
 impl TeamGraph {
     /// The policy mention opening every rendering, e.g. `team (delegation: strict, enforced by the gate)`.
-    pub(crate) fn policy_note(&self) -> String {
+    pub fn policy_note(&self) -> String {
         let enforced = if self.delegation == "strict" {
             "enforced by the gate"
         } else {
@@ -152,7 +152,7 @@ impl TeamGraph {
     }
 
     /// `main thread (lead)`, or `main thread` without a coordinator.
-    pub(crate) fn main_label(&self) -> String {
+    pub fn main_label(&self) -> String {
         match &self.coordinator {
             Some(c) => format!("main thread ({c})"),
             None => "main thread".into(),
@@ -162,7 +162,7 @@ impl TeamGraph {
 
 impl TeamAgent {
     /// `guardian · task`, or the bare id when no flow runs it.
-    pub(crate) fn label(&self) -> String {
+    pub fn label(&self) -> String {
         if self.flows.is_empty() {
             self.id.clone()
         } else {

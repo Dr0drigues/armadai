@@ -42,6 +42,18 @@ pub struct GraphEdge {
     pub kind: EdgeKind,
 }
 
+impl GraphNode {
+    /// The node's text in every format: the step id alone when the step bears
+    /// its agent's name, else `id (agent)`. Start/end marks are each format's own.
+    pub fn label(&self) -> String {
+        if self.id == self.agent {
+            self.id.clone()
+        } else {
+            format!("{} ({})", self.id, self.agent)
+        }
+    }
+}
+
 /// Nodes: the entry steps, then a breadth-first walk (successors in edge
 /// order, each step once), then the unreached steps alphabetically. Edges:
 /// links in declared order, then each step's `on_failure` in step order; an

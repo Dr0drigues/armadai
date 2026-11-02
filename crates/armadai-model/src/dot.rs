@@ -22,11 +22,7 @@ pub fn flow_graph_to_dot(g: &FlowGraph) -> String {
         q(&g.id)
     );
     for n in &g.nodes {
-        let label = if n.id == n.agent {
-            n.id.clone()
-        } else {
-            format!("{} ({})", n.id, n.agent)
-        };
+        let label = n.label();
         let mut attrs = format!("label={}, shape=box", q(&label));
         if n.start {
             attrs.push_str(", style=\"rounded,bold\"");

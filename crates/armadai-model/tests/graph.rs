@@ -282,3 +282,18 @@ fn flow_graph_json_golden() {
 }"#
     );
 }
+
+#[test]
+fn a_node_label_is_its_id_when_the_step_bears_its_agent_name() {
+    let f = flow(
+        &[("plan", step("plan", None)), ("write", step("dev", None))],
+        Some("plan"),
+        vec![link("plan", "write", None)],
+    );
+    let labels: Vec<String> = flow_graph("f", &f)
+        .nodes
+        .iter()
+        .map(GraphNode::label)
+        .collect();
+    assert_eq!(labels, ["plan", "write (dev)"]);
+}
