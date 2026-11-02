@@ -1,31 +1,29 @@
 //! ASCII boxes for a flow or for the team, as pure functions of the graphs of
 //! `armadai-model` (no terminal, no colour: reusable by `flow status --watch`).
 //!
-//! `ascii-dag` only draws acyclic graphs well, so it is given the "forward" edges
-//! (the target comes after the source in the node order of the graph) and every
-//! other edge (a return path, a self loop, an edge to an unknown step) is listed
-//! under `links not drawn:`.
+//! `ascii-dag` only draws acyclic graphs well, and one arrow per pair of boxes, so it
+//! is given a forward, acyclic subset of the edges; every other edge (a return path,
+//! a self loop, a parallel edge, an edge with an unknown end) is listed under
+//! `links not drawn:`, so that every edge appears once.
 
 use ascii_dag::Graph;
 
-/// `(from, to, label)` as indexes into the labels; names past `boxes` only name
-/// unknown targets.
+/// `(from, to, label)` as indexes into the labels.
 type Edge<'a> = (usize, usize, Option<&'a str>);
 
-/// `names` are what the list of undrawn links calls the nodes (no start or end mark).
-fn draw(labels: &[String], names: &[String], boxes: usize, edges: &[Edge<'_>]) -> String {
+/// The edge as the list of undrawn links writes it, `from` and `to` being plain names.
+fn link_line(from: &str, to: &str, when: Option<&str>) -> String {
+    let w = when.map_or(String::new(), |w| format!(" ({w})"));
+    format!("  {from} → {to}{w}")
+}
+
+fn draw(labels: &[String], drawn: &[Edge<'_>], not_drawn: &[String]) -> String {
     let mut dag = Graph::new();
-    for (i, l) in labels.iter().enumerate().take(boxes) {
+    for (i, l) in labels.iter().enumerate() {
         dag.add_node(i, l.as_str());
     }
-    let mut not_drawn = Vec::new();
-    for &(from, to, when) in edges {
-        if from < to && to < boxes {
-            dag.add_edge(from, to, when);
-        } else {
-            let w = when.map_or(String::new(), |w| format!(" ({w})"));
-            not_drawn.push(format!("  {} → {}{w}", names[from], names[to]));
-        }
+    for &(from, to, when) in drawn {
+        dag.add_edge(from, to, when);
     }
     let mut o = ascii_dag::RenderOptions::plain();
     o.emit.render_legend = true;
@@ -38,7 +36,7 @@ fn draw(labels: &[String], names: &[String], boxes: usize, edges: &[Edge<'_>]) -
     if !not_drawn.is_empty() {
         out.push_str("\nlinks not drawn:\n");
         for l in not_drawn {
-            out.push_str(&l);
+            out.push_str(l);
             out.push('\n');
         }
     }
@@ -46,7 +44,6 @@ fn draw(labels: &[String], names: &[String], boxes: usize, edges: &[Edge<'_>]) -
 }
 
 pub fn flow_to_ascii(g: &armadai_model::FlowGraph) -> String {
-    let mut names: Vec<String> = g.nodes.iter().map(|n| n.id.clone()).collect();
     let labels: Vec<String> = g
         .nodes
         .iter()
@@ -59,32 +56,32 @@ pub fn flow_to_ascii(g: &armadai_model::FlowGraph) -> String {
             }
         })
         .collect();
-    let boxes = labels.len();
     let index = |id: &str| g.nodes.iter().position(|n| n.id == id);
-    let mut edges: Vec<Edge<'_>> = Vec::new();
+    let (mut drawn, mut not_drawn): (Vec<Edge<'_>>, Vec<String>) = (Vec::new(), Vec::new());
     for e in &g.edges {
-        let Some(from) = index(&e.from) else { continue };
-        // an edge to an unknown step has no box: its label sits past `boxes`, so it is listed
-        let to = index(&e.to).unwrap_or_else(|| {
-            names.push(e.to.clone());
-            names.len() - 1
-        });
         let when = match (&e.when, e.kind) {
             (Some(w), _) => Some(w.as_str()),
             (None, armadai_model::EdgeKind::OnFailure) => Some("failed"),
             _ => None,
         };
-        edges.push((from, to, when));
+        // forward, and the first edge of its pair: the crate draws one arrow per pair
+        match (index(&e.from), index(&e.to)) {
+            (Some(f), Some(t)) if f < t && !drawn.iter().any(|d| (d.0, d.1) == (f, t)) => {
+                drawn.push((f, t, when))
+            }
+            _ => not_drawn.push(link_line(&e.from, &e.to, when)),
+        }
     }
-    format!("flow: {}\n{}", g.id, draw(&labels, &names, boxes, &edges))
+    format!("flow: {}\n{}", g.id, draw(&labels, &drawn, &not_drawn))
 }
 
 pub fn team_to_ascii(g: &armadai_model::TeamGraph) -> String {
-    let mut ids: Vec<Option<&str>> = vec![None];
-    let mut labels = vec![match &g.coordinator {
+    let main = match &g.coordinator {
         Some(c) => format!("main thread ({c})"),
         None => "main thread".to_string(),
-    }];
+    };
+    let mut ids: Vec<Option<&str>> = vec![None];
+    let mut labels = vec![main.clone()];
     let label = |a: &armadai_model::TeamAgent| {
         if a.flows.is_empty() {
             a.id.clone()
@@ -108,21 +105,33 @@ pub fn team_to_ascii(g: &armadai_model::TeamGraph) -> String {
     } else {
         "not enforced"
     };
-    let edges: Vec<Edge<'_>> = g
-        .edges
-        .iter()
-        .filter_map(|e| {
-            Some((
-                ids.iter().position(|i| *i == e.from.as_deref())?,
-                ids.iter().position(|i| *i == Some(e.to.as_str()))?,
-                None,
-            ))
-        })
-        .collect();
+    // In the order of `edges`, an edge is drawn when its target has not appeared in an
+    // earlier edge: the first delegation that leads to an agent. Each drawn edge reaches a
+    // new box, so the drawing is acyclic; the others are listed.
+    let name = |id: Option<&str>| id.map_or(main.clone(), String::from);
+    let mut seen = vec![false; ids.len()];
+    seen[0] = true;
+    let (mut drawn, mut not_drawn): (Vec<Edge<'_>>, Vec<String>) = (Vec::new(), Vec::new());
+    for e in &g.edges {
+        let pos = |id: Option<&str>| ids.iter().position(|i| *i == id);
+        match (pos(e.from.as_deref()), pos(Some(e.to.as_str()))) {
+            (Some(f), Some(t)) => {
+                seen[f] = true;
+                if seen[t] {
+                    not_drawn.push(link_line(&name(e.from.as_deref()), &e.to, None));
+                } else {
+                    seen[t] = true;
+                    drawn.push((f, t, None));
+                }
+            }
+            // an end that is no box of the graph: listed, never dropped
+            _ => not_drawn.push(link_line(&name(e.from.as_deref()), &e.to, None)),
+        }
+    }
     format!(
         "team (delegation: {}, {enforced})\n{}",
         g.delegation,
-        draw(&labels, &labels, labels.len(), &edges)
+        draw(&labels, &drawn, &not_drawn)
     )
 }
 
@@ -288,18 +297,110 @@ links not drawn:
             team_to_ascii(&g),
             "team (delegation: strict, enforced by the gate)
   [main thread (lead)]   [Explore (free)]   [helper · task (free)]
-            └──────────┬───────┐
-                       │       ↓
-                       │ [dev · ship]
-                       │       └──┐
-                       └──────────┤
-                                  ↓
-                            [rev · ship]
+            └─────────────┬──────────────┐
+                          ↓              ↓
+                    [dev · ship]   [rev · ship]
 
 links not drawn:
-  rev · ship → dev · ship
+  dev → rev
+  rev → dev
 "
         );
+    }
+
+    #[test]
+    fn a_mutual_delegation_is_not_drawn_as_a_cycle() {
+        let ag = |id: &str| armadai_model::TeamAgent {
+            id: id.into(),
+            flows: vec![],
+        };
+        let e = |f: &str, t: &str| armadai_model::TeamEdge {
+            from: Some(f.into()),
+            to: t.into(),
+        };
+        let g = armadai_model::TeamGraph {
+            delegation: "off".into(),
+            coordinator: None,
+            agents: vec![ag("a"), ag("b")],
+            edges: vec![e("a", "b"), e("b", "a")],
+            free_agents: vec![],
+        };
+        assert!(team_to_ascii(&g).ends_with("\nlinks not drawn:\n  b → a\n"));
+    }
+
+    #[test]
+    fn a_team_edge_with_an_unknown_end_is_listed() {
+        let g = armadai_model::TeamGraph {
+            delegation: "off".into(),
+            coordinator: None,
+            agents: vec![armadai_model::TeamAgent {
+                id: "dev".into(),
+                flows: vec![],
+            }],
+            edges: vec![
+                armadai_model::TeamEdge {
+                    from: None,
+                    to: "dev".into(),
+                },
+                armadai_model::TeamEdge {
+                    from: Some("dev".into()),
+                    to: "ghost".into(),
+                },
+            ],
+            free_agents: vec![],
+        };
+        assert_eq!(
+            team_to_ascii(&g),
+            "team (delegation: off, not enforced)
+  [main thread]
+        │
+        ↓
+      [dev]
+
+links not drawn:
+  dev → ghost
+"
+        );
+    }
+
+    #[test]
+    fn parallel_edges_are_drawn_once_and_the_others_listed() {
+        let step = |states: &[&str], on_failure: Option<&str>| armadai_model::Step {
+            agent: "x".into(),
+            states: states.iter().map(|s| s.to_string()).collect(),
+            on_failure: on_failure.map(String::from),
+        };
+        let link = |when: Option<&str>| armadai_model::Link {
+            from: "a".into(),
+            to: "b".into(),
+            when: when.map(String::from),
+        };
+        let flow = armadai_model::Flow {
+            description: None,
+            start: None,
+            steps: [
+                ("a".to_string(), step(&["ok", "ko"], Some("b"))),
+                ("b".to_string(), step(&[], None)),
+            ]
+            .into(),
+            links: vec![link(Some("ok")), link(Some("ko"))],
+        };
+        let out = flow_to_ascii(&armadai_model::flow_graph("f", &flow));
+        // the first edge of the pair is drawn, the two others are listed
+        assert!(out.lines().any(|l| l.trim() == "\"ok\""), "{out}");
+        assert!(
+            out.ends_with("\nlinks not drawn:\n  a → b (ko)\n  a → b (failed)\n"),
+            "{out}"
+        );
+        // an unconditional link first, then `on_failure` on the same pair
+        let mut flow = flow;
+        flow.links = vec![link(None)];
+        let out = flow_to_ascii(&armadai_model::flow_graph("f", &flow));
+        assert!(
+            out.ends_with("\nlinks not drawn:\n  a → b (failed)\n"),
+            "{out}"
+        );
+        assert!(!out.lines().any(|l| l.trim() == "\"failed\""), "{out}");
     }
 
     #[test]
