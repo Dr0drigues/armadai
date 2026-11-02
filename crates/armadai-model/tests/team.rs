@@ -96,6 +96,10 @@ fn edge(from: Option<&str>, to: &str) -> TeamEdge {
     }
 }
 
+fn free_ids(g: &TeamGraph) -> Vec<&str> {
+    g.free_agents.iter().map(|a| a.id.as_str()).collect()
+}
+
 fn targets(g: &TeamGraph, from: Option<&str>) -> Vec<String> {
     (g.edges.iter())
         .filter(|e| e.from.as_deref() == from)
@@ -147,7 +151,7 @@ fn the_repository_team() {
         assert!(targets(&g, Some("guardian")).contains(&b.to_string()));
     }
     assert_eq!(
-        g.free_agents,
+        free_ids(&g),
         [
             "Explore",
             "Plan",
@@ -182,7 +186,7 @@ fn without_a_coordinator_the_main_thread_reaches_entry_steps_only() {
 fn team_edges_match_allowed_targets() {
     let p = repo();
     let g = team_graph(&p);
-    let free: BTreeSet<String> = g.free_agents.iter().cloned().collect();
+    let free: BTreeSet<String> = free_ids(&g).into_iter().map(String::from).collect();
     let mut callers: Vec<Option<&str>> = vec![None];
     callers.extend(g.agents.iter().map(|a| Some(a.id.as_str())));
     for c in callers {
@@ -199,7 +203,11 @@ fn team_edges_match_allowed_targets() {
 #[test]
 fn free_agents_are_a_group_not_edges() {
     let g = team_graph(&repo());
-    assert!(g.edges.iter().all(|e| !g.free_agents.contains(&e.to)));
+    assert!(
+        g.edges
+            .iter()
+            .all(|e| !free_ids(&g).contains(&e.to.as_str()))
+    );
     let m = team_to_mermaid(&g);
     assert!(
         m.contains("subgraph free[\"free agents, callable from anywhere\"]"),
@@ -286,11 +294,11 @@ digraph "team" {
   "validator" [label="validator · lot", shape=box];
   subgraph "cluster_free" {
     label="free agents, callable from anywhere";
-    "Explore" [shape=box];
-    "Plan" [shape=box];
-    "claude" [shape=box];
-    "claude-code-guide" [shape=box];
-    "general-purpose" [shape=box];
+    "Explore" [label="Explore", shape=box];
+    "Plan" [label="Plan", shape=box];
+    "claude" [label="claude", shape=box];
+    "claude-code-guide" [label="claude-code-guide", shape=box];
+    "general-purpose" [label="general-purpose", shape=box];
   }
   "main thread" -> "adapter-specialist";
   "main thread" -> "analyst";
@@ -327,6 +335,118 @@ fn team_json_golden() {
     );
     assert_eq!(
         serde_json::to_string(&team_graph(&p)).unwrap(),
-        r#"{"delegation":"off","coordinator":"lead","agents":[{"id":"dev","flows":["ship"]}],"edges":[{"from":null,"to":"dev"}],"free_agents":["Explore"]}"#
+        r#"{"delegation":"off","coordinator":"lead","agents":[{"id":"dev","flows":["ship"]}],"edges":[{"from":null,"to":"dev"}],"free_agents":[{"id":"Explore","flows":[]}]}"#
+    );
+}
+
+const OWN: &str = "steps:
+  build: { agent: dev, on_failure: docs }
+  test: { agent: qa }
+  fix: { agent: dev }
+  docs: { agent: doc }
+links:
+  - { from: build, to: test }
+  - { from: test, to: fix }
+";
+
+/// `helper` is a project agent and `qa` runs a step, both free: each is one
+/// node, in the group, with its label and its own outgoing edges. `dev` reaches
+/// `doc` through `on_failure` only.
+fn own() -> TeamGraph {
+    team_graph(&project(
+        "schema_version: 1\ncoordinator: lead\npolicy:\n  delegation: strict\n  free_agents: [helper, qa]\n",
+        &["lead", "dev", "doc", "helper", "qa"],
+        &[("ship", OWN)],
+    ))
+}
+
+#[test]
+fn a_free_project_agent_is_one_node_in_the_group() {
+    let g = own();
+    let ids = |v: &[TeamAgent]| v.iter().map(|a| a.id.clone()).collect::<Vec<_>>();
+    assert_eq!(ids(&g.agents), ["dev", "doc"]);
+    assert_eq!(ids(&g.free_agents), ["helper", "qa"]);
+    assert_eq!(g.free_agents[1].flows, ["ship"]);
+    assert!(g.free_agents[0].flows.is_empty());
+    // on_failure is a path: dev -> doc, and a free agent keeps its own edges
+    assert_eq!(
+        g.edges,
+        [
+            edge(None, "dev"),
+            edge(None, "doc"),
+            edge(Some("dev"), "doc"),
+            edge(Some("qa"), "dev"),
+        ]
+    );
+    assert_eq!(
+        team_to_mermaid(&g),
+        r#"%% team (delegation: strict, enforced by the gate)
+flowchart TD
+  main(["main thread (lead)"])
+  n_dev["dev · ship"]
+  n_doc["doc · ship"]
+  subgraph free["free agents, callable from anywhere"]
+    n_helper["helper"]
+    n_qa["qa · ship"]
+  end
+  main --> n_dev
+  main --> n_doc
+  n_dev --> n_doc
+  n_qa --> n_dev
+"#
+    );
+    assert_eq!(
+        team_to_dot(&g),
+        r#"// team (delegation: strict, enforced by the gate)
+digraph "team" {
+  "main thread" [label="main thread (lead)", shape=box, style="rounded,bold"];
+  "dev" [label="dev · ship", shape=box];
+  "doc" [label="doc · ship", shape=box];
+  subgraph "cluster_free" {
+    label="free agents, callable from anywhere";
+    "helper" [label="helper", shape=box];
+    "qa" [label="qa · ship", shape=box];
+  }
+  "main thread" -> "dev";
+  "main thread" -> "doc";
+  "dev" -> "doc";
+  "qa" -> "dev";
+}
+"#
+    );
+    assert_eq!(
+        serde_json::to_string(&g.free_agents).unwrap(),
+        r#"[{"id":"helper","flows":[]},{"id":"qa","flows":["ship"]}]"#
+    );
+}
+
+/// Node ids carry an `n_` prefix, so an agent named `main` is not the main thread.
+#[test]
+fn an_agent_named_main_is_not_the_main_thread() {
+    let g = team_graph(&project(
+        "schema_version: 1\ncoordinator: lead\n",
+        &["lead", "main"],
+        &[("f", "steps:\n  s: { agent: main }\n")],
+    ));
+    assert_eq!(
+        team_to_mermaid(&g),
+        "%% team (delegation: off, not enforced)\nflowchart TD\n  main([\"main thread (lead)\"])\n  n_main[\"main · f\"]\n  main --> n_main\n"
+    );
+}
+
+/// Two ids sanitised to one node stay two nodes, edges included.
+#[test]
+fn colliding_agent_ids_are_told_apart() {
+    let g = team_graph(&project(
+        "schema_version: 1\ncoordinator: lead\n",
+        &["lead", "a-b", "a_b"],
+        &[(
+            "f",
+            "steps:\n  s: { agent: a-b }\n  t: { agent: a_b }\nlinks:\n  - { from: s, to: t }\n",
+        )],
+    ));
+    assert_eq!(
+        team_to_mermaid(&g),
+        "%% team (delegation: off, not enforced)\nflowchart TD\n  main([\"main thread (lead)\"])\n  n_a_b[\"a-b · f\"]\n  n_a_b_2[\"a_b · f\"]\n  main --> n_a_b\n  main --> n_a_b_2\n  n_a_b --> n_a_b_2\n"
     );
 }

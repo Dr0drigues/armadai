@@ -300,7 +300,7 @@ mod tests {
         // the coordinator also runs a step: the case where the copies could part
         std::fs::write(
             dir.path().join(".armadai/flows/own.yaml"),
-            "steps:\n  first: { agent: lead }\n  second: { agent: doc }\nlinks:\n  - { from: first, to: second }\n",
+            "steps:\n  first: { agent: lead }\n  second: { agent: dev, on_failure: third }\n  third: { agent: doc }\nlinks:\n  - { from: first, to: second }\n",
         )
         .unwrap();
         let project = armadai_model::load_project(dir.path()).project.unwrap();

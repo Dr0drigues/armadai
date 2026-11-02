@@ -98,7 +98,7 @@ pub fn flow_graph_to_mermaid(g: &FlowGraph) -> String {
 /// without edges.
 pub fn team_to_mermaid(g: &TeamGraph) -> String {
     let mut out = format!("%% {}\nflowchart TD\n", g.policy_note());
-    let mut taken = BTreeSet::from(["main".to_string()]);
+    let mut taken = BTreeSet::new();
     let mut unique = |id: &str| {
         let mut n = base(id);
         while !taken.insert(n.clone()) {
@@ -116,8 +116,9 @@ pub fn team_to_mermaid(g: &TeamGraph) -> String {
     if !g.free_agents.is_empty() {
         out.push_str("  subgraph free[\"free agents, callable from anywhere\"]\n");
         for f in &g.free_agents {
-            let n = unique(f);
-            out.push_str(&format!("    {n}[\"{}\"]\n", escape(f)));
+            let n = unique(&f.id);
+            out.push_str(&format!("    {n}[\"{}\"]\n", escape(&f.label())));
+            node.insert(&f.id, n);
         }
         out.push_str("  end\n");
     }

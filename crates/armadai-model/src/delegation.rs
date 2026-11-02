@@ -64,12 +64,14 @@ pub struct TeamGraph {
     /// `"off"` or `"strict"`, from `policy.delegation`.
     pub delegation: String,
     pub coordinator: Option<String>,
-    /// Project agents but the coordinator, by id.
+    /// Project agents but the coordinator and the free agents, by id.
     pub agents: Vec<TeamAgent>,
     /// The main thread first, then the agents by id; targets sorted.
     pub edges: Vec<TeamEdge>,
     /// `policy.free_agents`, sorted: callable from anywhere, so drawn as a group.
-    pub free_agents: Vec<String>,
+    /// A free agent declared in the project is here only (never in `agents`),
+    /// with its flows and its own outgoing edges; a built-in has no flows.
+    pub free_agents: Vec<TeamAgent>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -97,20 +99,24 @@ pub fn team_graph(project: &Project) -> TeamGraph {
         .iter()
         .cloned()
         .collect();
-    let agents: Vec<TeamAgent> = project
-        .agents
-        .keys()
+    let team_agent = |id: &String| TeamAgent {
+        id: id.clone(),
+        flows: (project.flows.iter())
+            .filter(|(_, f)| f.steps.values().any(|s| &s.agent == id))
+            .map(|(fid, _)| fid.clone())
+            .collect(),
+    };
+    // every project agent but the coordinator may call; a free one is drawn in the group only
+    let callers: Vec<&String> = (project.agents.keys())
         .filter(|id| Some(id.as_str()) != coordinator.as_deref())
-        .map(|id| TeamAgent {
-            id: id.clone(),
-            flows: (project.flows.iter())
-                .filter(|(_, f)| f.steps.values().any(|s| &s.agent == id))
-                .map(|(fid, _)| fid.clone())
-                .collect(),
-        })
         .collect();
-    let callers = std::iter::once(None).chain(agents.iter().map(|a| Some(a.id.as_str())));
-    let edges = callers
+    let agents: Vec<TeamAgent> = (callers.iter().copied())
+        .filter(|id| !free.contains(*id))
+        .map(team_agent)
+        .collect();
+    let free_agents: Vec<TeamAgent> = free.iter().map(team_agent).collect();
+    let edges = std::iter::once(None)
+        .chain(callers.iter().map(|id| Some(id.as_str())))
         .flat_map(|caller| {
             allowed_targets(project, caller)
                 .into_iter()
@@ -130,7 +136,7 @@ pub fn team_graph(project: &Project) -> TeamGraph {
         coordinator,
         agents,
         edges,
-        free_agents: free.into_iter().collect(),
+        free_agents,
     }
 }
 

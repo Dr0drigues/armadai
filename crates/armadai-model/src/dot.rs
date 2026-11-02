@@ -69,7 +69,11 @@ pub fn team_to_dot(g: &TeamGraph) -> String {
             "  subgraph \"cluster_free\" {\n    label=\"free agents, callable from anywhere\";\n",
         );
         for f in &g.free_agents {
-            out.push_str(&format!("    {} [shape=box];\n", q(f)));
+            out.push_str(&format!(
+                "    {} [label={}, shape=box];\n",
+                q(&f.id),
+                q(&f.label())
+            ));
         }
         out.push_str("  }\n");
     }
