@@ -216,7 +216,7 @@ fn the_flow_order_reaches_the_cli() {
 fn every_format_is_byte_stable() {
     let env = Env::new(ORDERED);
     for view in ["flows", "team"] {
-        for format in ["mermaid", "dot", "json"] {
+        for format in ["mermaid", "dot", "json", "ascii"] {
             let args = ["graph", "--view", view, "--format", format];
             let (c1, a, _) = env.run(&env.root(), &args);
             let (_, b, _) = env.run(&env.root(), &args);
@@ -344,7 +344,7 @@ fn the_team_view_agrees_with_the_gate() {
 #[test]
 fn a_flow_id_with_the_team_view_is_refused() {
     let env = Env::new(PROJECT);
-    for format in ["mermaid", "dot", "json"] {
+    for format in ["mermaid", "dot", "json", "ascii"] {
         let (code, out, err) = env.run(
             &env.root(),
             &["graph", "review", "--view", "team", "--format", format],
