@@ -126,7 +126,7 @@ Treize critères, un seul lot (décision de Dimitri) : si le plan juge le lot tr
 
 Tranchées par Dimitri le 2026-11-02 : Q1 rendu direct = `--open` mermaid.live ; Q2 ASCII = boîtes via un crate ; Q3 vue équipe = `--view flows|team` ; Q4 ordre des nœuds changé, assumé ; Q5 un seul lot.
 
-Tranchées ensuite (sources : `/Users/bl209054/.claude/jobs/a97c66fb/tmp/graph-frame.md` pour les réponses de Dimitri ; plan `docs/superpowers/plans/2026-11-02-graph-improvements.md`, `e1d57a3`, pour ce que le plan tranche) :
+Tranchées ensuite (sources : plan §3, `docs/superpowers/plans/2026-11-02-graph-improvements.md`, `e1d57a3`, qui reprend les réponses de Dimitri mot pour mot ; plan §2 pour ce que le plan tranche) :
 - **Crate ASCII** : Dimitri, après la mesure de T0 : « ascii-dag (Recommandé) » (0.11, MIT OR Apache-2.0 ; réserve de T0 sur `plan-build-verify` levée par la parade, voir 4.4).
 - **Compression** : Dimitri : « Compresser, pako (Recommandé) », donc `miniz_oxide` (`compress_to_vec_zlib`, niveau 9). **base64** : « Crate base64 0.22 (Recommandé) » (URL-safe sans `=`). **Où déclarer** : « Dans crates/armadai (Recommandé) ».
 - **Serde `pako` ou `base64`** : plan §2.2, par mesure : sans compression l'URL monte à 4 439 caractères pour 30 agents, au-dessus du seuil de 2 000 fixé d'avance ; `pako` retenu, confirmé par Dimitri (ci-dessus).
