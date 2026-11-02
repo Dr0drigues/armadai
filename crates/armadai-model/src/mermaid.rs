@@ -34,7 +34,10 @@ pub fn flow_to_mermaid(id: &str, flow: &Flow) -> String {
 }
 
 pub fn flow_graph_to_mermaid(g: &FlowGraph) -> String {
-    let mut out = format!("%% flow: {}\nflowchart TD\n", g.id);
+    let mut out = format!(
+        "%% flow: {}\nflowchart TD\n",
+        g.id.replace(['\n', '\r'], " ")
+    );
     let mut taken = BTreeSet::new();
     let mut node: BTreeMap<&str, String> = BTreeMap::new();
     let (mut starts, mut ends) = (Vec::new(), Vec::new());

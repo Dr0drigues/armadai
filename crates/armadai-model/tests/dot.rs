@@ -115,6 +115,7 @@ fn hostile_ids_are_quoted() {
             ("a\"b".to_string(), step("graph")),
             ("c\\d".to_string(), step("c\\d")),
             ("end".to_string(), step("end")),
+            ("graph".to_string(), step("graph")),
         ]),
         links: vec![Link {
             from: "a\"b".into(),
@@ -128,6 +129,7 @@ fn hostile_ids_are_quoted() {
 digraph "t" {
   "a\"b" [label="a\"b (graph)", shape=box, style="rounded,bold"];
   "end" [label="end", shape=box, style="rounded,bold", peripheries=2];
+  "graph" [label="graph", shape=box, style="rounded,bold", peripheries=2];
   "c\\d" [label="c\\d", shape=box, peripheries=2];
   "a\"b" -> "c\\d" [label="x\"y"];
 }
@@ -142,4 +144,60 @@ fn the_dot_export_is_deterministic() {
     for _ in 0..5 {
         assert_eq!(first, flow_to_dot("x", &f.clone()));
     }
+}
+
+/// `when: failed` is dashed like `on_failure`; `when: done` is a plain arrow.
+#[test]
+fn failed_and_done_links() {
+    let f = Flow {
+        description: None,
+        start: None,
+        steps: BTreeMap::from([
+            ("a".to_string(), step("p")),
+            ("b".to_string(), step("q")),
+            ("c".to_string(), step("r")),
+        ]),
+        links: vec![
+            Link {
+                from: "a".into(),
+                to: "b".into(),
+                when: Some("done".into()),
+            },
+            Link {
+                from: "a".into(),
+                to: "c".into(),
+                when: Some("failed".into()),
+            },
+        ],
+    };
+    assert_eq!(
+        flow_to_dot("w", &f),
+        r#"// flow: w
+digraph "w" {
+  "a" [label="a (p)", shape=box, style="rounded,bold"];
+  "b" [label="b (q)", shape=box, peripheries=2];
+  "c" [label="c (r)", shape=box, peripheries=2];
+  "a" -> "b";
+  "a" -> "c" [label="failed", style=dashed];
+}
+"#
+    );
+}
+
+/// A newline in the id must not leave the comment line, or the output is no
+/// longer DOT (nor Mermaid).
+#[test]
+fn a_newline_in_the_id_stays_in_the_comment() {
+    let f = Flow {
+        description: None,
+        start: None,
+        steps: BTreeMap::from([("a".to_string(), step("a"))]),
+        links: vec![],
+    };
+    let dot = flow_to_dot("x\ny", &f);
+    assert_eq!(dot.lines().next(), Some("// flow: x y"));
+    assert!(dot.contains("\ndigraph \"x\ny\" {\n"), "{dot}");
+    let mer = flow_to_mermaid("x\r\ny", &f);
+    assert_eq!(mer.lines().next(), Some("%% flow: x  y"));
+    assert_eq!(mer.lines().nth(1), Some("flowchart TD"));
 }

@@ -16,7 +16,11 @@ pub fn flow_to_dot(id: &str, flow: &Flow) -> String {
 }
 
 pub fn flow_graph_to_dot(g: &FlowGraph) -> String {
-    let mut out = format!("// flow: {}\ndigraph {} {{\n", g.id, q(&g.id));
+    let mut out = format!(
+        "// flow: {}\ndigraph {} {{\n",
+        g.id.replace(['\n', '\r'], " "),
+        q(&g.id)
+    );
     for n in &g.nodes {
         let label = if n.id == n.agent {
             n.id.clone()
