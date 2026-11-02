@@ -3,6 +3,7 @@
 - Spec : `docs/superpowers/specs/2026-11-02-graph-improvements-design.md` (commit `f2f3b3a`).
 - Cadre : rendu par `framer` le 2026-11-02 (règles, contrainte `--watch`, tableau des points à trancher). La réponse de Dimitri sur les dépendances est « Dans crates/armadai (Recommandé) ».
 - Branche `feat/graph-improvements`, worktree `/Users/bl209054/work/misc/armadai-graph`.
+- **État au 2026-11-02** (rapporté par `lead`) : T0 mesurée ; T1 (`c1eba3d`), T2 (`b69845c`, `d762532`) et T3 (`a5bf815`, `fb590aa`) approuvées par `guardian` ; T4 en cours ; T5 à T8 à faire.
 - Neuf tâches : `T0` (mesure seule) puis `T1` à `T8`. Le lot reste d'un seul tenant, comme Dimitri l'a décidé ; rien ne justifie de le couper.
 
 ## 0. Contraintes globales (toutes les tâches)
@@ -76,6 +77,8 @@ T0 mesure la longueur de l'URL complète, sous les deux serdes, pour : les flows
 
 **Règle.** Si toutes les URL `base64` mesurées font **2 000 caractères ou moins**, on retient `base64` : un crate de moins, pas de compression. Sinon on retient `pako`. Pourquoi 2 000 : c'est la longueur d'URL réputée sûre partout, et il reste une marge d'un facteur 4 sous la limite de 8 191 caractères d'une ligne `cmd` (`start` sous Windows). Le fragment n'est jamais envoyé au serveur, il n'y a donc pas de limite côté site. Une équipe deux fois plus grande que celle de ce dépôt dépasserait vite la limite en `base64`. Si la mesure tombe entre 1 000 et 2 000 caractères, `lead` le signale à Dimitri avec la mesure avant T7.
 
+**Conclusion de T0 (2026-11-02, rapportée par `lead`).** Sans compression, l'URL monte à 4 439 caractères pour une équipe de 30 agents, au-dessus du seuil de 2 000. La règle retient donc **`pako`**, et Dimitri l'a confirmé : « Compresser, pako (Recommandé) ».
+
 ### 2.3 Emplacement d'`allowed_targets` : déplacée dans `armadai-model`
 
 Aujourd'hui : `crates/armadai/src/claude_adapter/policy_gate.rs:116`, lue par le gate et par `compile/opencode.rs:14`. Elle ne dépend que de `Project` et d'`entry_steps`, tous deux dans `armadai-model`.
@@ -89,6 +92,23 @@ Aujourd'hui : `crates/armadai/src/claude_adapter/policy_gate.rs:116`, lue par le
 Elle touche l'adaptateur : T3 (schema) l'ajoute au modèle, T4 (adapter) supprime la copie du gate. Entre T3 et T4, deux copies coexistent sur la branche ; T4 suit immédiatement T3. Le texte du gate et sa sémantique ne changent pas.
 
 ## 3. Points que le plan propose et que Dimitri valide (réponses à reporter ici, datées)
+
+### Réponses de Dimitri (2026-11-02), mot pour mot
+
+Source : `graph-frame.md`, rapporté par `lead`.
+
+- **Q1, crates (après T0).**
+  - ASCII : « ascii-dag (Recommandé) ». Version 0.11, MIT OR Apache-2.0. Réserve de T0 : sur `plan-build-verify`, la flèche `build → check` n'est pas visible et le dessin se lit à l'envers. T6 la traite.
+  - Compression : « Compresser, pako (Recommandé) », donc `miniz_oxide` (`compress_to_vec_zlib`, niveau 9).
+  - base64 : « Crate base64 0.22 (Recommandé) ». Il est déjà au `Cargo.lock` via serde-saphyr. Écriture URL-safe sans `=`.
+  - Les dépendances vont dans `crates/armadai/Cargo.toml`.
+- **Q2** : « Comme recommandé (Recommandé) ».
+- **Q3** : « Forme native (Recommandé) », donc l'option A.
+- **Q4** : « Comme recommandé (Recommandé) ».
+- **Q5**, `--open` réussi : « Rien (Recommandé) ». Les autres textes du §3 Q5 (erreurs, repli ASCII, aides) : « Validés tels quels (Recommandé) ».
+- **Agent libre qui est aussi agent du projet** : « Un nœud dans le groupe libre (Recommandé) ». Il a un seul nœud, dans le groupe libre, libellé `id · flows`, et ses arêtes sortantes sont gardées.
+
+Le texte qui suit garde les propositions telles que soumises ; les réponses ci-dessus prévalent.
 
 ### Q1. Crates (posée après T0)
 Pour l'ASCII, la compression et le base64, T0 rend un tableau par candidat : licence, dernière version, `cargo audit`, dépendances ajoutées, présence dans `Cargo.lock` et comportement sur un cycle. Je n'ai rien mesuré, donc je ne propose aucun nom.
@@ -160,7 +180,9 @@ Ordre : `T0` ∥ (`T1` → `T2` → `T3` → `T4`) → `T5` → `T6` → `T7` �
 
 ---
 
-### T0 — Mesure des candidats (cli-specialist, sans écriture dans le dépôt, sans commit)
+### T0 — Mesure des candidats (cli-specialist, sans écriture dans le dépôt, sans commit) — FAITE
+
+La mesure est faite le 2026-11-02. Ses conclusions sont reportées au §2.2 et au §3 (réponses de Dimitri).
 
 Le travail se fait dans un crate jetable hors du dépôt (`/tmp/armadai-graph-t0/`, son propre `CARGO_TARGET_DIR`), avec `HOME` et `ARMADAI_CONFIG_DIR` isolés pour tout essai du binaire.
 
@@ -315,10 +337,13 @@ pub fn allowed_targets(project: &Project, caller: Option<&str>) -> BTreeSet<Stri
 pub struct TeamGraph {
     pub delegation: String,          // "off" | "strict", from project.manifest.policy.delegation
     pub coordinator: Option<String>,
-    pub agents: Vec<TeamAgent>,      // project agents except the coordinator, by id
+    pub agents: Vec<TeamAgent>,      // project agents except the coordinator and the free agents, by id
     pub edges: Vec<TeamEdge>,        // main thread first, then agents by id; targets sorted
-    pub free_agents: Vec<String>,    // policy.free_agents, sorted
+    pub free_agents: Vec<TeamAgent>, // policy.free_agents, sorted, each with its flows ({id, flows})
 }
+// Interface amended by T3 and approved by guardian (`fb590aa`, 2026-11-02): `agents` holds neither the
+// coordinator nor the free agents; `free_agents` became `Vec<TeamAgent>` (JSON: `free_agents: [{id, flows}]`).
+// A free agent that is also a project agent is one node, in the free group, with its outgoing edges.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct TeamAgent { pub id: String, pub flows: Vec<String> } // flows where the agent runs a step, sorted
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
@@ -329,7 +354,7 @@ pub fn team_to_mermaid(g: &TeamGraph) -> String;
 pub fn team_to_dot(g: &TeamGraph) -> String;
 ```
 
-**Arêtes.** Pour l'appelant `None` (le fil principal) puis pour chaque agent (hors coordinateur, qui est le fil principal) : les arêtes vont vers `allowed_targets(project, caller)` privé de `free_agents`. Les agents libres sont rendus comme un groupe sans arêtes (spec §4.2). La forme du rendu Mermaid et DOT (agents par flow, mention de la politique) suit Q4. `delegation: off` donne les mêmes arêtes avec la mention `off`.
+**Arêtes.** Pour l'appelant `None` (le fil principal) puis pour chaque agent (hors coordinateur, qui est le fil principal) : les arêtes vont vers `allowed_targets(project, caller)` privé de `free_agents`. Les agents libres sont rendus comme un groupe sans arêtes entrantes (spec §4.2). Un agent libre qui est aussi agent d'étape garde ses arêtes sortantes. La forme du rendu Mermaid et DOT (agents par flow, mention de la politique) suit Q4. `delegation: off` donne les mêmes arêtes avec la mention `off`.
 
 **Tests et mutations (`tests/team.rs`)**
 - `the_repository_team` : fixture qui reprend `.armadai/` de ce dépôt (coordinateur `lead`, `strict`, flows `lot` et `task` réduits à leurs étapes et liens). `edges` sont exactes. On vérifie aussi que `lead` n'est jamais `to`, que chaque `build-*` mène à `guard`, et que `guard` mène à chaque `build-*` (critère 7). Mutation : retirer l'exclusion du coordinateur dans `allowed_targets`.
@@ -403,7 +428,7 @@ pub fn execute(flow: Option<String>, format: GraphFormat, view: GraphView) -> an
 ### T6 — Rendu ASCII (cli-specialist), après la réponse de Dimitri à Q1
 
 **Fichiers**
-- `crates/armadai/Cargo.toml` : le crate choisi, en dépendance directe.
+- `crates/armadai/Cargo.toml` : `ascii-dag` 0.11 en dépendance directe (Dimitri, 2026-11-02).
 - Nouveau `crates/armadai/src/ascii_graph.rs`, déclaré dans `main.rs`. Il est au premier niveau, pas sous `cli/`, pour que `flow_status` l'atteigne.
 - `cli/graph.rs` : `GraphFormat::Ascii`.
 - `graph_cli.rs`.
@@ -416,11 +441,18 @@ pub fn team_to_ascii(g: &armadai_model::TeamGraph) -> String;
 - **Sans couleur.** Aucune séquence d'échappement, que stdout soit un terminal ou non : c'est le plus simple qui tienne le critère 6.
 - **Marquage.** `start`/`end` dans le libellé de la boîte, selon Q3.
 - **Repli sur cycle (critère 6).** Les arêtes que le crate ne dessine pas (refus de cycle, par exemple) sont écrites en liste sous le dessin, avec le titre et la forme de Q5. Si le crate échoue sur le graphe entier, on dessine le graphe sans les arêtes de retour (celles qui pointent vers un nœud déjà vu dans l'ordre de `FlowGraph`), puis on les liste. Jamais de panique, jamais de sortie vide, code 0. Si T0 montre que le crate retenu se bloque sur un cycle, `lead` le dit à Dimitri avant T6.
+- **Réserve de T0 sur `ascii-dag`.** Sur `plan-build-verify`, la flèche `build → check` n'est pas visible et le dessin se lit à l'envers. Parade, qui reste dans les textes validés :
+  - on ne passe **jamais** à `ascii-dag` que les arêtes « en avant » : celles dont la cible vient après la source dans l'ordre des nœuds de `FlowGraph` ;
+  - les arêtes de retour (`check → build` failed, `rev → dev` rejected) vont toujours dans la liste `links not drawn:` ;
+  - le crate reçoit donc un graphe sans cycle, dans l'ordre du flow.
+
+  C'est une hypothèse : le spécialiste la mesure d'abord sur `plan-build-verify`. Si la flèche `build → check` reste invisible ou si le dessin se lit encore à l'envers, il s'arrête et le rapporte à `lead`, qui le dira à Dimitri, sans bricoler le dessin. La même règle vaut pour la vue équipe : on prend l'ordre de `edges` et on ne passe que les arêtes vers un agent pas encore vu.
 
 **Tests et mutations**
 - Tests unitaires dans `ascii_graph.rs`, qui appellent `flow_to_ascii(&armadai_model::flow_graph(..))` sans la commande (contrainte `--watch`) :
   - `every_step_is_named` sur les quatre modèles : chaque id d'étape apparaît comme ligne de boîte ; comparer au golden complet si le crate est déterministe, sinon chaque libellé exact. Mutation : sauter le premier nœud.
   - `a_cycle_names_every_link` sur `plan-build-verify` et `review-loop` : golden exact, chaque arête dessinée ou listée. Mutation : supprimer la liste de repli.
+  - `plan_build_verify_reads_top_down` : golden exact sur `plan-build-verify`. Les boîtes `plan`, `build` et `check` y sont dans cet ordre de haut en bas, une flèche est visible de `build` vers `check`, et `check → build (failed)` figure sous `links not drawn:`. Mutation : passer toutes les arêtes à `ascii-dag`, cycle compris.
   - `no_escape_sequence` : aucun `\x1b`. Mutation : préfixer une couleur.
   - `it_terminates` : rendu dans un thread, `recv_timeout(10 s)`. Le défaut visé est une boucle infinie, donc toute borne finie le détecte ; 10 s laisse de la marge sous charge.
 - `graph_cli.rs` : `--format ascii` sur un flow à cycle, avec stdout redirigé (critère 6), code 0, sans ESC.
@@ -433,7 +465,7 @@ pub fn team_to_ascii(g: &armadai_model::TeamGraph) -> String;
 ### T7 — `--open` vers mermaid.live (cli-specialist), après Q1 et la conclusion de T0 sur le serde
 
 **Fichiers**
-- `crates/armadai/Cargo.toml` : le base64 choisi ; plus la compression si `pako`.
+- `crates/armadai/Cargo.toml` : `base64` 0.22 (`engine::general_purpose::URL_SAFE_NO_PAD`, déjà au `Cargo.lock`) et `miniz_oxide` (`deflate::compress_to_vec_zlib(data, 9)`) ; serde `pako` retenu (Dimitri, 2026-11-02). Le test décode avec `miniz_oxide::inflate::decompress_to_vec_zlib`.
 - `cli/graph.rs`.
 - `cli/mod.rs` : drapeau `--open`, aide.
 - `graph_cli.rs`.
@@ -446,9 +478,9 @@ fn mermaid_live_url(code: &str) -> String;
 fn open_url(url: &str) -> anyhow::Result<()>;
 ```
 - **État JSON.** `serde_json::json!({"code": code, "mermaid": "{}", "updateDiagram": true, "rough": false})` (§2.1).
-- **Encodage.** Si T0 conclut `base64` : `edit#base64:` et pas de compression.
+- **Encodage.** Toujours `edit#pako:` (T0 et Dimitri), sans variante `base64`.
 - **Ouverture.** `std::process::Command::status()`. Un échec de lancement ou un code non nul donne l'erreur de Q5, qui contient l'URL : stderr, code 1, stdout vide.
-- **Succès.** Rien sur stdout (spec) ; ligne stderr éventuelle selon Q5.
+- **Succès.** Rien sur stdout ni sur stderr (Q5 : « Rien (Recommandé) »). Test : stdout et stderr vides, code 0. Mutation : imprimer une ligne de confirmation.
 
 **Tests et mutations**
 - Unitaire `the_url_decodes_to_the_state` : enlever le préfixe, décoder le base64 URL-safe, inflater (zlib), parser le JSON ; `code` est exactement l'entrée et les trois autres champs valent ce qu'il faut. Mutations, chacune doit rougir :
@@ -496,4 +528,4 @@ fn open_url(url: &str) -> anyhow::Result<()>;
 
 ## 5. Ce qui est refait si `guardian` ou `validator` rejette
 
-Sans objet à cette première version.
+Sans rejet à ce jour. Mise à jour du 2026-11-02 (réponses de Dimitri, interface de T3 amendée, conclusions de T0) : aucune tâche approuvée n'est à refaire. T1 à T3 sont conformes aux réponses de Dimitri, d'après `lead`. T4 n'est pas touchée. Les changements portent sur T5, T6 et T7.
