@@ -437,7 +437,7 @@ impl Env {
 
     /// A directory holding an opener that logs its first argument to `opened.url`.
     #[cfg(unix)]
-    fn fake_opener(&self) -> (PathBuf, PathBuf) {
+    fn fake_opener(&self, exit: i32) -> (PathBuf, PathBuf) {
         use std::os::unix::fs::PermissionsExt;
         let bin = self.dir.path().join("bin");
         std::fs::create_dir_all(&bin).unwrap();
@@ -450,7 +450,13 @@ impl Env {
         let script = bin.join(name);
         std::fs::write(
             &script,
-            format!("#!/bin/sh\nprintf '%s' \"$1\" > '{}'\n", log.display()),
+            format!(
+                "#!/bin/sh
+printf '%s' \"$1\" > '{}'
+exit {exit}
+",
+                log.display()
+            ),
         )
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -476,7 +482,7 @@ fn decode_url(url: &str) -> String {
 #[test]
 fn open_hands_the_mermaid_of_the_flow_to_the_opener_and_says_nothing() {
     let env = Env::new(PROJECT);
-    let (bin, log) = env.fake_opener();
+    let (bin, log) = env.fake_opener(0);
     let (code, out, err) = env.run_with_path(&bin, &["graph", "review", "--open"]);
     assert_eq!((code, out.as_str(), err.as_str()), (Some(0), "", ""));
     assert_eq!(decode_url(&std::fs::read_to_string(log).unwrap()), REVIEW);
@@ -486,7 +492,7 @@ fn open_hands_the_mermaid_of_the_flow_to_the_opener_and_says_nothing() {
 #[test]
 fn open_accepts_the_team_view() {
     let env = Env::new(ORDERED);
-    let (bin, log) = env.fake_opener();
+    let (bin, log) = env.fake_opener(0);
     let (code, out, _) = env.run_with_path(&bin, &["graph", "--view", "team", "--open"]);
     assert_eq!((code, out.as_str()), (Some(0), ""));
     let (_, team, _) = env.run(&env.root(), &["graph", "--view", "team"]);
@@ -519,11 +525,12 @@ fn open_without_an_opener_prints_the_url_and_fails() {
 #[test]
 fn open_refuses_a_format_other_than_mermaid() {
     let env = Env::new(PROJECT);
+    // an empty PATH: a regression must fail here, never reach the real browser
+    let empty = env.dir.path().join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
     for format in ["dot", "json", "ascii"] {
-        let (code, out, err) = env.run(
-            &env.root(),
-            &["graph", "review", "--open", "--format", format],
-        );
+        let (code, out, err) =
+            env.run_with_path(&empty, &["graph", "review", "--open", "--format", format]);
         assert_eq!(code, Some(1), "{format}");
         assert!(out.is_empty(), "{out}");
         assert_eq!(
@@ -537,7 +544,7 @@ fn open_refuses_a_format_other_than_mermaid() {
 #[test]
 fn open_without_a_name_needs_a_single_flow() {
     let env = Env::new(PROJECT);
-    let (bin, log) = env.fake_opener();
+    let (bin, log) = env.fake_opener(0);
     let (code, out, err) = env.run_with_path(&bin, &["graph", "--open"]);
     assert_eq!(code, Some(1));
     assert!(out.is_empty(), "{out}");
@@ -548,8 +555,31 @@ fn open_without_a_name_needs_a_single_flow() {
     assert!(!log.exists(), "the opener must not run");
     // a project with one flow: accepted
     let one = Env::new(&PROJECT[..4]);
-    let (bin, log) = one.fake_opener();
+    let (bin, log) = one.fake_opener(0);
     let (code, _, _) = one.run_with_path(&bin, &["graph", "--open"]);
     assert_eq!(code, Some(0));
     assert_eq!(decode_url(&std::fs::read_to_string(log).unwrap()), SHIP);
+}
+
+#[cfg(unix)]
+#[test]
+fn an_opener_that_fails_gives_the_url_and_exit_1() {
+    let env = Env::new(PROJECT);
+    let (bin, _) = env.fake_opener(1);
+    let (code, out, err) = env.run_with_path(&bin, &["graph", "review", "--open"]);
+    assert_eq!(code, Some(1));
+    assert!(out.is_empty(), "{out}");
+    let lines: Vec<&str> = err.lines().collect();
+    let cmd = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    assert_eq!(
+        lines[0],
+        format!(
+            "Error: could not open the browser ({cmd}: exit status: 1); open this URL yourself:"
+        )
+    );
+    assert_eq!(decode_url(lines[1]), REVIEW);
 }

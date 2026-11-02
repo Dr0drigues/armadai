@@ -41,6 +41,7 @@ fn open_url(url: &str) -> anyhow::Result<()> {
     let (cmd, args): (&str, Vec<&str>) = if cfg!(target_os = "macos") {
         ("open", vec![url])
     } else if cfg!(windows) {
+        // safe in `cmd` only because the URL stays in the base64 URL-safe alphabet (no `&`, `%`, `^`)
         ("cmd", vec!["/C", "start", "", url])
     } else {
         ("xdg-open", vec![url])
