@@ -7,6 +7,7 @@
   - T0 mesurée ; T1 à T8 faites et approuvées par `guardian`, tête `6b6f775` ;
   - la revue de la branche (`reviewer`) a **rejeté** le lot avec 6 rejets (§5) ;
   - la vague de correction T9 à T11 est faite et approuvée par `guardian` (`6c4afbd`, `64ac62f`, `8747c7f`, `f16b6ed`, `21131df`, `02806a2`, `d2f0f90`) ; la branche est en deuxième revue, et la validation suivra.
+  - Validation rejetée sur un seul point : `cargo audit` signale RUSTSEC-2026-0433 dans pulldown-cmark 0.13.5, une dépendance qui vient déjà de `master`. Dimitri a choisi : « PR fix(deps) sur master (Recommandé) ». La branche sera rebasée sur ce correctif.
 - Douze tâches : `T0` (mesure seule), `T1` à `T8`, puis la vague de correction `T9` à `T11`. Le lot reste d'un seul tenant, comme Dimitri l'a décidé ; rien ne justifie de le couper.
 
 ## 0. Contraintes globales (toutes les tâches)
@@ -127,6 +128,7 @@ Source : `graph-frame.md`, fin de fichier, rapporté par `lead`.
   - libellé d'étape : « id seul, partout (Recommandé) », c'est-à-dire une fonction de libellé unique pour les quatre formats ;
   - aide de `--format ascii` : « Proposer un texte (Recommandé) ». Le texte est à proposer, puis à faire valider. Proposition au §4, T11.
 - **Aide de `--format ascii` (T11), 2026-11-02**, pour le texte « boxes for the terminal, without colour. A link the drawing cannot show is listed under `links not drawn:`: a link back to an earlier step, a second link between the same two steps, a link to an unknown step, and in the team view a delegation to an agent already drawn. » : « Validé tel quel (Recommandé) ».
+- **Ligne `dot` de l'aide, 2026-11-02, après la validation du lot** : « Nommer le flow (Recommandé) ». La ligne devient `  dot      Graphviz: armadai graph <flow> --format dot | dot -Tsvg > flow.svg`. La raison, mesurée par `validator` : sans nom de flow, l'exemple écrit deux SVG dans un même fichier.
 
 **Aide validée de `graph`.** Voici le `long_about`, tel qu'il est figé par la constante `GRAPH_HELP` de `crates/armadai/tests/graph_cli.rs` :
 
@@ -139,14 +141,14 @@ What to draw (--view):
 
 Output format (--format):
   mermaid  flowchart TD (default). Paste it into a Markdown ```mermaid block or a .mmd file.
-  dot      Graphviz: armadai graph --format dot | dot -Tsvg > graph.svg
+  dot      Graphviz: armadai graph <flow> --format dot | dot -Tsvg > flow.svg
   json     nodes and edges. With --view flows it is always {"flows": [...]}, even for one flow; with --view team it is the team object.
   ascii    boxes for the terminal, without colour. A link the drawing cannot show is listed under `links not drawn:`: a link back to an earlier step, a second link between the same two steps, a link to an unknown step, and in the team view a delegation to an agent already drawn.
 
 Several flows are several drawings, each opened by a `%% flow: <id>` comment (`// flow: <id>` in DOT, `flow: <id>` in ASCII) and separated by a blank line: Mermaid and Graphviz render one drawing per document, so take them one at a time. Conditional links are labelled with their state; failure paths (`when: failed`, `on_failure`) are dotted in Mermaid and dashed in DOT.
 ````
 
-Le résumé validé (`graph -h`, 1re ligne) est : `Draw a flow, every flow, or the team (Mermaid, DOT, JSON or ASCII)`. La ligne `ascii` ci-dessus est le texte de T11, validé par Dimitri le 2026-11-02 (« Validé tel quel (Recommandé) »). Elle remplace l'ancienne ligne, « Links that point back to an earlier step are not drawn: they are listed under `links not drawn:`. ».
+Le résumé validé (`graph -h`, 1re ligne) est : `Draw a flow, every flow, or the team (Mermaid, DOT, JSON or ASCII)`. La ligne `ascii` ci-dessus est le texte de T11, validé par Dimitri le 2026-11-02 (« Validé tel quel (Recommandé) »). Elle remplace l'ancienne ligne, « Links that point back to an earlier step are not drawn: they are listed under `links not drawn:`. ». La ligne `dot` ci-dessus est celle que Dimitri a validée le 2026-11-02 (« Nommer le flow (Recommandé) »). Elle remplace l'ancienne ligne, « Graphviz: armadai graph --format dot | dot -Tsvg > graph.svg ».
 
 Le texte qui suit garde les propositions telles que soumises ; les réponses ci-dessus prévalent.
 
