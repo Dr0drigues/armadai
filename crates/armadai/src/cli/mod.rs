@@ -90,7 +90,7 @@ pub enum Command {
         /// Agent id (its file name under .armadai/agents/)
         agent: String,
     },
-    /// Print the graph of a flow (or of every flow) as Mermaid
+    /// Print the graph of a flow, of every flow, or of the team
     #[command(
         long_about = "Print the graph of a flow as Mermaid (flowchart TD) on stdout, and \
             nothing else: redirect it to a .mmd file or paste it into a Markdown ```mermaid \
@@ -101,14 +101,19 @@ pub enum Command {
             with their state; failure paths (`when: failed`, `on_failure`) are dotted.",
         after_help = "Examples:\n  \
             armadai graph review > review.mmd\n  \
+            armadai graph review --format dot | dot -Tsvg > review.svg\n  \
+            armadai graph --view team\n  \
             armadai graph"
     )]
     Graph {
         /// Flow id (its file name under .armadai/flows/); every flow when omitted
         flow: Option<String>,
-        /// Output format
+        /// Output format: mermaid, dot (Graphviz), json (nodes and edges)
         #[arg(long, value_enum, default_value_t = graph::GraphFormat::Mermaid)]
         format: graph::GraphFormat,
+        /// What to draw: each flow's steps, or the team's delegations
+        #[arg(long, value_enum, default_value_t = graph::GraphView::Flows)]
+        view: graph::GraphView,
     },
     /// Show where each flow of a Claude Code session stands
     #[command(after_help = "Examples:\n  \
@@ -410,7 +415,7 @@ pub fn handle(cli: Cli) -> anyhow::Result<()> {
         Command::New { what } => new::execute(what),
         Command::List { tags } => list::execute(tags),
         Command::Inspect { agent } => inspect::execute(agent),
-        Command::Graph { flow, format } => graph::execute(flow, format),
+        Command::Graph { flow, format, view } => graph::execute(flow, format, view),
         Command::Flow { what } => flow::execute(what),
         Command::Validate { path, json } => validate::execute(path, json),
         Command::Migrate {
