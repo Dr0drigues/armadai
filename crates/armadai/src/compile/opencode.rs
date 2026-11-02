@@ -11,8 +11,8 @@ use serde_json::{Map, Value};
 
 use super::json_keys::JsonKeys;
 use super::{Artifact, ArtifactKind, Compiler, Plan, Report, Status};
-use crate::claude_adapter::policy_gate::allowed_targets;
 use crate::linker::manifest::ProducedBy;
+use armadai_model::allowed_targets;
 
 const T: &str = "opencode";
 

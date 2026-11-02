@@ -1,5 +1,8 @@
-//! Mermaid export of a flow: `flowchart TD`, deterministic (nodes by step id,
-//! edges in link order then the `on_failure` paths in step order).
+//! Mermaid export of a flow: `flowchart TD`, deterministic (nodes in the order
+//! of `FlowGraph`, edges in link order then the `on_failure` paths in step
+//! order). A start step is a stadium, an end step a subroutine box (a step that
+//! is both takes the stadium); `startStep`/`endStep` classes thicken them, and
+//! are declared only when a node carries one (`end` itself is a Mermaid keyword).
 //!
 //! Every node id is `n_` + the step id with `[^A-Za-z0-9_]` turned into `_`: the
 //! prefix keeps clear of Mermaid's keywords (`end`, `graph`, ...) and of ids a
@@ -8,6 +11,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::delegation::TeamGraph;
+use crate::graph::{EdgeKind, FlowGraph, flow_graph};
 use crate::load::Flow;
 
 fn escape(label: &str) -> String {
@@ -25,36 +30,103 @@ fn base(step: &str) -> String {
 
 /// The flow as one Mermaid block, opened by a `%% flow: <id>` comment line.
 pub fn flow_to_mermaid(id: &str, flow: &Flow) -> String {
-    let mut out = format!("%% flow: {id}\nflowchart TD\n");
+    flow_graph_to_mermaid(&flow_graph(id, flow))
+}
+
+pub fn flow_graph_to_mermaid(g: &FlowGraph) -> String {
+    let mut out = format!(
+        "%% flow: {}\nflowchart TD\n",
+        g.id.replace(['\n', '\r'], " ")
+    );
     let mut taken = BTreeSet::new();
     let mut node: BTreeMap<&str, String> = BTreeMap::new();
-    for (sid, step) in &flow.steps {
-        let mut n = base(sid);
+    let (mut starts, mut ends) = (Vec::new(), Vec::new());
+    for nd in &g.nodes {
+        let mut n = base(&nd.id);
         while !taken.insert(n.clone()) {
             n.push_str("_2");
         }
-        let label = if *sid == step.agent {
-            sid.clone()
+        let label = escape(&nd.label());
+        let shape = if nd.start {
+            format!("([\"{label}\"])")
+        } else if nd.end {
+            format!("[[\"{label}\"]]")
         } else {
-            format!("{sid} ({})", step.agent)
+            format!("[\"{label}\"]")
         };
-        out.push_str(&format!("  {n}[\"{}\"]\n", escape(&label)));
-        node.insert(sid, n);
+        out.push_str(&format!("  {n}{shape}\n"));
+        if nd.start {
+            starts.push(n.clone());
+        }
+        if nd.end {
+            ends.push(n.clone());
+        }
+        node.insert(&nd.id, n);
     }
     // a link to an unknown step is the validator's to report: drawn with a node named after it
     let id_of = |s: &str| node.get(s).cloned().unwrap_or_else(|| base(s));
-    let edges = (flow.links.iter())
-        .map(|l| (l.from.as_str(), l.to.as_str(), l.when.as_deref()))
-        .chain(flow.steps.iter().filter_map(|(sid, s)| {
-            (s.on_failure.as_deref()).map(|t| (sid.as_str(), t, Some("failed")))
-        }));
-    for (from, to, when) in edges {
-        let arrow = match when {
-            None | Some("done") => "-->".to_string(),
-            Some("failed") => "-.->|\"failed\"|".to_string(),
-            Some(w) => format!("-->|\"{}\"|", escape(w)),
+    for e in &g.edges {
+        let arrow = match (e.kind, e.when.as_deref()) {
+            (EdgeKind::OnFailure, _) | (_, Some("failed")) => "-.->|\"failed\"|".to_string(),
+            (_, None | Some("done")) => "-->".to_string(),
+            (_, Some(w)) => format!("-->|\"{}\"|", escape(w)),
         };
-        out.push_str(&format!("  {} {arrow} {}\n", id_of(from), id_of(to)));
+        out.push_str(&format!("  {} {arrow} {}\n", id_of(&e.from), id_of(&e.to)));
+    }
+    for (class, def, ids) in [
+        ("startStep", "stroke-width:3px", &starts),
+        ("endStep", "stroke-width:3px,stroke-dasharray:4 2", &ends),
+    ] {
+        if !ids.is_empty() {
+            out.push_str(&format!("  classDef {class} {def}\n"));
+        }
+    }
+    for (class, ids) in [("startStep", &starts), ("endStep", &ends)] {
+        if !ids.is_empty() {
+            out.push_str(&format!("  class {} {class}\n", ids.join(",")));
+        }
+    }
+    out
+}
+
+/// The team as one Mermaid block, opened by its policy mention. The main thread
+/// is `main`; each agent's flows follow its name; the free agents are a group
+/// without edges.
+pub fn team_to_mermaid(g: &TeamGraph) -> String {
+    let mut out = format!("%% {}\nflowchart TD\n", g.policy_note());
+    let mut taken = BTreeSet::new();
+    let mut unique = |id: &str| {
+        let mut n = base(id);
+        while !taken.insert(n.clone()) {
+            n.push_str("_2");
+        }
+        n
+    };
+    out.push_str(&format!("  main([\"{}\"])\n", escape(&g.main_label())));
+    let mut node: BTreeMap<&str, String> = BTreeMap::new();
+    for a in &g.agents {
+        let n = unique(&a.id);
+        out.push_str(&format!("  {n}[\"{}\"]\n", escape(&a.label())));
+        node.insert(&a.id, n);
+    }
+    if !g.free_agents.is_empty() {
+        out.push_str("  subgraph free[\"free agents, callable from anywhere\"]\n");
+        for f in &g.free_agents {
+            let n = unique(&f.id);
+            out.push_str(&format!("    {n}[\"{}\"]\n", escape(&f.label())));
+            node.insert(&f.id, n);
+        }
+        out.push_str("  end\n");
+    }
+    for e in &g.edges {
+        let from = e.from.as_deref().map_or("main".to_string(), |f| {
+            node.get(f).cloned().unwrap_or_else(|| base(f))
+        });
+        let to = node
+            .get(e.to.as_str())
+            .cloned()
+            .unwrap_or_else(|| base(&e.to));
+        out.push_str(&format!("  {from} --> {to}\n"));
     }
     out
 }

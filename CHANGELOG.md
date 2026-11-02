@@ -2,6 +2,7 @@
 
 ### Added
 
+- `armadai graph` draws more: `--format dot|json|ascii` next to Mermaid, `--view team` for who may delegate to whom (the policy gate's own rule, `allowed_targets`, now lives in `armadai-model`), and `--open` to see the Mermaid in mermaid.live (step and agent names leave this machine). The nodes follow the flow from its start and the start and end steps are marked.
 - New diagnostic: `ignored-pack-file` (warning), a file of a pack folder that `init --pack` does not install: counted by `validate`, present in `--json`, printed the same way by `init --pack` (#525).
 - New diagnostic: `skill-missing-path` (warning), a path under `scripts/` or `references/` that a `SKILL.md` names and its folder lacks (#524).
 - `armadai link --adopt-hooks` takes over the hooks of `.claude/settings.json` that are identical to the ones link adds (a clone or a worktree without `.armadai/link-manifest.yaml`), so `unlink` removes them; the report says so where it said `not owned` (#534).
