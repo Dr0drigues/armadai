@@ -85,12 +85,22 @@ pub fn team_to_ascii(g: &armadai_model::TeamGraph) -> String {
         Some(c) => format!("main thread ({c})"),
         None => "main thread".to_string(),
     }];
-    for a in g.agents.iter().chain(&g.free_agents) {
-        ids.push(Some(&a.id));
-        labels.push(if a.flows.is_empty() {
+    let label = |a: &armadai_model::TeamAgent| {
+        if a.flows.is_empty() {
             a.id.clone()
         } else {
             format!("{} · {}", a.id, a.flows.join(", "))
+        }
+    };
+    for (a, free) in
+        (g.agents.iter().map(|a| (a, false))).chain(g.free_agents.iter().map(|a| (a, true)))
+    {
+        ids.push(Some(&a.id));
+        // the group of free agents is a subgraph in Mermaid; a box has none
+        labels.push(if free {
+            format!("{} (free)", label(a))
+        } else {
+            label(a)
         });
     }
     let enforced = if g.delegation == "strict" {
@@ -272,19 +282,19 @@ links not drawn:
                 e(Some("dev"), "rev"),
                 e(Some("rev"), "dev"),
             ],
-            free_agents: vec![a("Explore", &[])],
+            free_agents: vec![a("Explore", &[]), a("helper", &["task"])],
         };
         assert_eq!(
             team_to_ascii(&g),
             "team (delegation: strict, enforced by the gate)
-  [main thread (lead)]   [Explore]
-            └──┬──────┐
-               ↓      │
-         [dev · ship] │
-               └──┐   │
-                  ├───┘
-                  ↓
-            [rev · ship]
+  [main thread (lead)]   [Explore (free)]   [helper · task (free)]
+            └──────────┬───────┐
+                       │       ↓
+                       │ [dev · ship]
+                       │       └──┐
+                       └──────────┤
+                                  ↓
+                            [rev · ship]
 
 links not drawn:
   rev · ship → dev · ship
