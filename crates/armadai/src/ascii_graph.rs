@@ -87,9 +87,10 @@ pub fn team_to_ascii(g: &armadai_model::TeamGraph) -> String {
             a.label()
         });
     }
-    // In the order of `edges`, an edge is drawn when its target has not appeared in an
-    // earlier edge: the first delegation that leads to an agent. Each drawn edge reaches a
-    // new box, so the drawing is acyclic; the others are listed.
+    // In the order of `edges`: the main thread counts as drawn, each edge first counts its
+    // caller as drawn, then is drawn only if its target has not appeared yet, as a caller or
+    // as a target, in an earlier edge. Each drawn edge reaches a new box, so the drawing is
+    // acyclic; the others are listed.
     let name = |id: Option<&str>| id.map_or(main.clone(), String::from);
     let mut seen = vec![false; ids.len()];
     seen[0] = true;
