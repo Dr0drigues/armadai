@@ -322,14 +322,14 @@ flowchart TD
 
 ```
 flow: review
-          [▶ dev (dev)]
-                │
-                ↓
-      [reviewer (reviewer)]
-                │
-           "approved"
-                ↓
-      [release (release) ■]
+        [▶ dev]
+           │
+           ↓
+      [reviewer]
+           │
+      "approved"
+           ↓
+      [release ■]
 
 links not drawn:
   reviewer → dev (rejected)
@@ -359,9 +359,12 @@ flowchart TD
   n_reviewer --> n_release
 ```
 
-- In ASCII, the first delegation that leads to an agent is drawn, in the order of the edges
-  (the main thread first, then the agents by id); the other delegations are listed under
-  `links not drawn:`, by agent id.
+- In ASCII, the delegations are taken in the order of the edges (the main thread first, then
+  the agents by id). The main thread counts as already drawn; each delegation first counts its
+  caller as drawn, then is drawn only if its target has not appeared yet, as a caller or as a
+  target, in an earlier delegation. The others are listed under `links not drawn:`, by agent id.
+  An agent that delegates before any delegation reaches it is therefore drawn without an incoming
+  arrow, on the main thread's row.
 - The first line says whether the gate enforces the drawing (`delegation: strict, enforced by
   the gate`) or not (`delegation: off, not enforced`).
 - A node is `agent · flows`, the flows where the agent runs a step. With a coordinator, the main
