@@ -6,7 +6,7 @@
 - **État au 2026-11-02** (rapporté par `lead` et par la revue de branche) :
   - T0 mesurée ; T1 à T8 faites et approuvées par `guardian`, tête `6b6f775` ;
   - la revue de la branche (`reviewer`) a **rejeté** le lot avec 6 rejets (§5) ;
-  - la vague de correction T9 à T11 est à faire, puis une nouvelle revue de la branche et la validation.
+  - la vague de correction T9 à T11 est faite et approuvée par `guardian` (`6c4afbd`, `64ac62f`, `8747c7f`, `f16b6ed`, `21131df`, `02806a2`, `d2f0f90`) ; la branche est en deuxième revue, et la validation suivra.
 - Douze tâches : `T0` (mesure seule), `T1` à `T8`, puis la vague de correction `T9` à `T11`. Le lot reste d'un seul tenant, comme Dimitri l'a décidé ; rien ne justifie de le couper.
 
 ## 0. Contraintes globales (toutes les tâches)
@@ -126,6 +126,7 @@ Source : `graph-frame.md`, fin de fichier, rapporté par `lead`.
   - règle « déjà vu » : « Garder, corriger la doc (Recommandé) » ;
   - libellé d'étape : « id seul, partout (Recommandé) », c'est-à-dire une fonction de libellé unique pour les quatre formats ;
   - aide de `--format ascii` : « Proposer un texte (Recommandé) ». Le texte est à proposer, puis à faire valider. Proposition au §4, T11.
+- **Aide de `--format ascii` (T11), 2026-11-02**, pour le texte « boxes for the terminal, without colour. A link the drawing cannot show is listed under `links not drawn:`: a link back to an earlier step, a second link between the same two steps, a link to an unknown step, and in the team view a delegation to an agent already drawn. » : « Validé tel quel (Recommandé) ».
 
 **Aide validée de `graph`.** Voici le `long_about`, tel qu'il est figé par la constante `GRAPH_HELP` de `crates/armadai/tests/graph_cli.rs` :
 
@@ -140,12 +141,12 @@ Output format (--format):
   mermaid  flowchart TD (default). Paste it into a Markdown ```mermaid block or a .mmd file.
   dot      Graphviz: armadai graph --format dot | dot -Tsvg > graph.svg
   json     nodes and edges. With --view flows it is always {"flows": [...]}, even for one flow; with --view team it is the team object.
-  ascii    boxes for the terminal, without colour. Links that point back to an earlier step are not drawn: they are listed under `links not drawn:`.
+  ascii    boxes for the terminal, without colour. A link the drawing cannot show is listed under `links not drawn:`: a link back to an earlier step, a second link between the same two steps, a link to an unknown step, and in the team view a delegation to an agent already drawn.
 
 Several flows are several drawings, each opened by a `%% flow: <id>` comment (`// flow: <id>` in DOT, `flow: <id>` in ASCII) and separated by a blank line: Mermaid and Graphviz render one drawing per document, so take them one at a time. Conditional links are labelled with their state; failure paths (`when: failed`, `on_failure`) are dotted in Mermaid and dashed in DOT.
 ````
 
-Le résumé validé (`graph -h`, 1re ligne) est : `Draw a flow, every flow, or the team (Mermaid, DOT, JSON or ASCII)`. La ligne `ascii` de cette aide sera remplacée par le texte de T11 une fois que Dimitri l'aura validé.
+Le résumé validé (`graph -h`, 1re ligne) est : `Draw a flow, every flow, or the team (Mermaid, DOT, JSON or ASCII)`. La ligne `ascii` ci-dessus est le texte de T11, validé par Dimitri le 2026-11-02 (« Validé tel quel (Recommandé) »). Elle remplace l'ancienne ligne, « Links that point back to an earlier step are not drawn: they are listed under `links not drawn:`. ».
 
 Le texte qui suit garde les propositions telles que soumises ; les réponses ci-dessus prévalent.
 
@@ -692,7 +693,10 @@ L'aide validée (§3) dit « Links that point back to an earlier step are not dr
 - `fb590aa` corrige T3 : `TeamGraph.agents` ne contient plus ni le coordinateur ni les agents libres, et `free_agents` devient un `Vec<TeamAgent>` (§4, T3) ;
 - `74f67f4` : l'ASCII liste aussi les arêtes parallèles et celles dont une extrémité est inconnue (T6).
 
-Je ne connais pas l'objet de `3d1b767`, `3077067` et `6b6f775` : je n'ai pas d'accès à git. `lead` le complète d'après les rapports de `guardian`.
+Pour les trois autres, l'objet vient des sujets de commit, rapportés par `lead` :
+- `3d1b767` : l'aide validée est comparée en entier ;
+- `3077067` : un ouvreur qui échoue est testé, et les tests de `--open` ne lancent plus le vrai navigateur ;
+- `6b6f775` : le wiki décrit la liste ASCII et l'exemple d'équipe tels qu'ils sortent.
 
 **Rejet de la branche par `reviewer` (2026-11-02, tête `6b6f775`), 6 rejets :**
 
