@@ -402,3 +402,143 @@ fn the_help_describes_the_views_and_the_formats() {
         "{out}"
     );
 }
+
+// ---- --open ----------------------------------------------------------------
+
+impl Env {
+    /// `run` with `PATH` set to `path_dir` alone (a fake opener, or nothing).
+    fn run_with_path(&self, path_dir: &Path, args: &[&str]) -> (Option<i32>, String, String) {
+        let out = Command::cargo_bin("armadai")
+            .unwrap()
+            .current_dir(self.root())
+            .env("ARMADAI_CONFIG_DIR", self.dir.path().join("config"))
+            .env("HOME", self.dir.path())
+            .env("PATH", path_dir)
+            .args(args)
+            .output()
+            .unwrap();
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+
+    /// A directory holding an opener that logs its first argument to `opened.url`.
+    #[cfg(unix)]
+    fn fake_opener(&self) -> (PathBuf, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = self.dir.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let log = self.dir.path().join("opened.url");
+        let name = if cfg!(target_os = "macos") {
+            "open"
+        } else {
+            "xdg-open"
+        };
+        let script = bin.join(name);
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\nprintf '%s' \"$1\" > '{}'\n", log.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (bin, log)
+    }
+}
+
+/// The Mermaid carried by a mermaid.live link.
+fn decode_url(url: &str) -> String {
+    use base64::Engine as _;
+    let payload = url
+        .strip_prefix("https://mermaid.live/edit#pako:")
+        .expect(url);
+    let zipped = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .unwrap();
+    let json = miniz_oxide::inflate::decompress_to_vec_zlib(&zipped).unwrap();
+    let state: serde_json::Value = serde_json::from_slice(&json).unwrap();
+    state["code"].as_str().unwrap().to_string()
+}
+
+#[cfg(unix)]
+#[test]
+fn open_hands_the_mermaid_of_the_flow_to_the_opener_and_says_nothing() {
+    let env = Env::new(PROJECT);
+    let (bin, log) = env.fake_opener();
+    let (code, out, err) = env.run_with_path(&bin, &["graph", "review", "--open"]);
+    assert_eq!((code, out.as_str(), err.as_str()), (Some(0), "", ""));
+    assert_eq!(decode_url(&std::fs::read_to_string(log).unwrap()), REVIEW);
+}
+
+#[cfg(unix)]
+#[test]
+fn open_accepts_the_team_view() {
+    let env = Env::new(ORDERED);
+    let (bin, log) = env.fake_opener();
+    let (code, out, _) = env.run_with_path(&bin, &["graph", "--view", "team", "--open"]);
+    assert_eq!((code, out.as_str()), (Some(0), ""));
+    let (_, team, _) = env.run(&env.root(), &["graph", "--view", "team"]);
+    assert_eq!(decode_url(&std::fs::read_to_string(log).unwrap()), team);
+}
+
+#[cfg(unix)]
+#[test]
+fn open_without_an_opener_prints_the_url_and_fails() {
+    let env = Env::new(PROJECT);
+    let empty = env.dir.path().join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    let (code, out, err) = env.run_with_path(&empty, &["graph", "review", "--open"]);
+    assert_eq!(code, Some(1));
+    assert!(out.is_empty(), "{out}");
+    let lines: Vec<&str> = err.lines().collect();
+    let cmd = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    assert!(
+        lines[0].starts_with(&format!("Error: could not open the browser ({cmd}: "))
+            && lines[0].ends_with("); open this URL yourself:"),
+        "{err}"
+    );
+    assert_eq!(decode_url(lines[1]), REVIEW);
+}
+
+#[test]
+fn open_refuses_a_format_other_than_mermaid() {
+    let env = Env::new(PROJECT);
+    for format in ["dot", "json", "ascii"] {
+        let (code, out, err) = env.run(
+            &env.root(),
+            &["graph", "review", "--open", "--format", format],
+        );
+        assert_eq!(code, Some(1), "{format}");
+        assert!(out.is_empty(), "{out}");
+        assert_eq!(
+            err.trim_end(),
+            format!("Error: --open draws Mermaid only; drop --format {format}")
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn open_without_a_name_needs_a_single_flow() {
+    let env = Env::new(PROJECT);
+    let (bin, log) = env.fake_opener();
+    let (code, out, err) = env.run_with_path(&bin, &["graph", "--open"]);
+    assert_eq!(code, Some(1));
+    assert!(out.is_empty(), "{out}");
+    assert_eq!(
+        err.trim_end(),
+        "Error: --open draws one diagram: name a flow (flows: review, ship)"
+    );
+    assert!(!log.exists(), "the opener must not run");
+    // a project with one flow: accepted
+    let one = Env::new(&PROJECT[..4]);
+    let (bin, log) = one.fake_opener();
+    let (code, _, _) = one.run_with_path(&bin, &["graph", "--open"]);
+    assert_eq!(code, Some(0));
+    assert_eq!(decode_url(&std::fs::read_to_string(log).unwrap()), SHIP);
+}

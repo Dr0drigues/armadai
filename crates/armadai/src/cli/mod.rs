@@ -119,6 +119,9 @@ pub enum Command {
         /// What to draw: each flow's steps, or the team's delegations
         #[arg(long, value_enum, default_value_t = graph::GraphView::Flows)]
         view: graph::GraphView,
+        /// Open the Mermaid diagram in mermaid.live, in your browser (step and agent names leave this machine)
+        #[arg(long)]
+        open: bool,
     },
     /// Show where each flow of a Claude Code session stands
     #[command(after_help = "Examples:\n  \
@@ -420,7 +423,12 @@ pub fn handle(cli: Cli) -> anyhow::Result<()> {
         Command::New { what } => new::execute(what),
         Command::List { tags } => list::execute(tags),
         Command::Inspect { agent } => inspect::execute(agent),
-        Command::Graph { flow, format, view } => graph::execute(flow, format, view),
+        Command::Graph {
+            flow,
+            format,
+            view,
+            open,
+        } => graph::execute(flow, format, view, open),
         Command::Flow { what } => flow::execute(what),
         Command::Validate { path, json } => validate::execute(path, json),
         Command::Migrate {
