@@ -2,6 +2,7 @@
 
 pub mod agent_templates;
 pub mod check;
+pub mod delegation;
 pub mod diag;
 pub mod dot;
 pub mod graph;
@@ -14,11 +15,12 @@ pub mod types;
 pub mod write;
 pub mod yaml;
 pub use check::{check, entry_steps, has_errors, is_valid_id, load_checked, validate};
+pub use delegation::{TeamAgent, TeamEdge, TeamGraph, allowed_targets, team_graph};
 pub use diag::{Diagnostic, Severity, locate, locate_key};
-pub use dot::{flow_graph_to_dot, flow_to_dot};
+pub use dot::{flow_graph_to_dot, flow_to_dot, team_to_dot};
 pub use graph::{EdgeKind, FlowGraph, GraphEdge, GraphNode, flow_graph};
 pub use load::*;
-pub use mermaid::{flow_graph_to_mermaid, flow_to_mermaid};
+pub use mermaid::{flow_graph_to_mermaid, flow_to_mermaid, team_to_mermaid};
 pub use schema::schemas;
 pub use slots::{agent_skills, slot_fills};
 pub use templates::{FLOW_TEMPLATES, FlowTemplate, TemplateError, flow_from_template};

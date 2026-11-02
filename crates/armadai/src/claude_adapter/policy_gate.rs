@@ -292,6 +292,35 @@ mod tests {
         dir
     }
 
+    /// The model's copy (drawn by `graph --view team`) gives the gate's answer
+    /// for every caller. Dropped with the gate's copy when it goes (T4).
+    #[test]
+    fn the_model_copy_agrees_with_the_gate() {
+        let dir = strict();
+        // the coordinator also runs a step: the case where the copies could part
+        std::fs::write(
+            dir.path().join(".armadai/flows/own.yaml"),
+            "steps:\n  first: { agent: lead }\n  second: { agent: doc }\nlinks:\n  - { from: first, to: second }\n",
+        )
+        .unwrap();
+        let project = armadai_model::load_project(dir.path()).project.unwrap();
+        for caller in [
+            None,
+            Some("lead"),
+            Some("dev"),
+            Some("qa"),
+            Some("doc"),
+            Some("helper"),
+        ] {
+            assert_eq!(
+                armadai_model::allowed_targets(&project, caller),
+                allowed_targets(&project, caller),
+                "caller {caller:?}"
+            );
+        }
+        assert!(!allowed_targets(&project, Some("dev")).is_empty());
+    }
+
     fn reason(out: Option<String>) -> String {
         let v: Value = serde_json::from_str(&out.expect("expected a denial")).unwrap();
         assert_eq!(v["hookSpecificOutput"]["hookEventName"], "PreToolUse");

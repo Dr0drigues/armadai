@@ -11,6 +11,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::delegation::TeamGraph;
 use crate::graph::{EdgeKind, FlowGraph, flow_graph};
 use crate::load::Flow;
 
@@ -85,6 +86,47 @@ pub fn flow_graph_to_mermaid(g: &FlowGraph) -> String {
         if !ids.is_empty() {
             out.push_str(&format!("  class {} {class}\n", ids.join(",")));
         }
+    }
+    out
+}
+
+/// The team as one Mermaid block, opened by its policy mention. The main thread
+/// is `main`; each agent's flows follow its name; the free agents are a group
+/// without edges.
+pub fn team_to_mermaid(g: &TeamGraph) -> String {
+    let mut out = format!("%% {}\nflowchart TD\n", g.policy_note());
+    let mut taken = BTreeSet::from(["main".to_string()]);
+    let mut unique = |id: &str| {
+        let mut n = base(id);
+        while !taken.insert(n.clone()) {
+            n.push_str("_2");
+        }
+        n
+    };
+    out.push_str(&format!("  main([\"{}\"])\n", escape(&g.main_label())));
+    let mut node: BTreeMap<&str, String> = BTreeMap::new();
+    for a in &g.agents {
+        let n = unique(&a.id);
+        out.push_str(&format!("  {n}[\"{}\"]\n", escape(&a.label())));
+        node.insert(&a.id, n);
+    }
+    if !g.free_agents.is_empty() {
+        out.push_str("  subgraph free[\"free agents, callable from anywhere\"]\n");
+        for f in &g.free_agents {
+            let n = unique(f);
+            out.push_str(&format!("    {n}[\"{}\"]\n", escape(f)));
+        }
+        out.push_str("  end\n");
+    }
+    for e in &g.edges {
+        let from = e.from.as_deref().map_or("main".to_string(), |f| {
+            node.get(f).cloned().unwrap_or_else(|| base(f))
+        });
+        let to = node
+            .get(e.to.as_str())
+            .cloned()
+            .unwrap_or_else(|| base(&e.to));
+        out.push_str(&format!("  {from} --> {to}\n"));
     }
     out
 }

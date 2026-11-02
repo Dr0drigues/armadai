@@ -2,6 +2,7 @@
 //! strings (`\` and `"` escaped), a start step is `rounded,bold`, an end step
 //! has a double outline, `failed` edges are dashed.
 
+use crate::delegation::TeamGraph;
 use crate::graph::{EdgeKind, FlowGraph, flow_graph};
 use crate::load::Flow;
 
@@ -40,6 +41,40 @@ pub fn flow_graph_to_dot(g: &FlowGraph) -> String {
             (_, Some(w)) => format!(" [label={}]", q(w)),
         };
         out.push_str(&format!("  {} -> {}{attrs};\n", q(&e.from), q(&e.to)));
+    }
+    out.push_str("}\n");
+    out
+}
+
+/// The team as one `digraph "team"`, opened by its policy mention.
+pub fn team_to_dot(g: &TeamGraph) -> String {
+    let mut out = format!("// {}\ndigraph \"team\" {{\n", g.policy_note());
+    out.push_str(&format!(
+        "  \"main thread\" [label={}, shape=box, style=\"rounded,bold\"];\n",
+        q(&g.main_label())
+    ));
+    for a in &g.agents {
+        out.push_str(&format!(
+            "  {} [label={}, shape=box];\n",
+            q(&a.id),
+            q(&a.label())
+        ));
+    }
+    if !g.free_agents.is_empty() {
+        out.push_str(
+            "  subgraph \"cluster_free\" {\n    label=\"free agents, callable from anywhere\";\n",
+        );
+        for f in &g.free_agents {
+            out.push_str(&format!("    {} [shape=box];\n", q(f)));
+        }
+        out.push_str("  }\n");
+    }
+    for e in &g.edges {
+        out.push_str(&format!(
+            "  {} -> {};\n",
+            q(e.from.as_deref().unwrap_or("main thread")),
+            q(&e.to)
+        ));
     }
     out.push_str("}\n");
     out
