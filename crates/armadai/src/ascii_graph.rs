@@ -47,13 +47,10 @@ pub fn flow_to_ascii(g: &armadai_model::FlowGraph) -> String {
     let labels: Vec<String> = g
         .nodes
         .iter()
-        .map(|n| {
-            let base = format!("{} ({})", n.id, n.agent);
-            match (n.start, n.end) {
-                (true, _) => format!("▶ {base}"),
-                (false, true) => format!("{base} ■"),
-                _ => base,
-            }
+        .map(|n| match (n.start, n.end) {
+            (true, _) => format!("▶ {}", n.label()),
+            (false, true) => format!("{} ■", n.label()),
+            _ => n.label(),
         })
         .collect();
     let index = |id: &str| g.nodes.iter().position(|n| n.id == id);
@@ -76,35 +73,20 @@ pub fn flow_to_ascii(g: &armadai_model::FlowGraph) -> String {
 }
 
 pub fn team_to_ascii(g: &armadai_model::TeamGraph) -> String {
-    let main = match &g.coordinator {
-        Some(c) => format!("main thread ({c})"),
-        None => "main thread".to_string(),
-    };
+    let main = g.main_label();
     let mut ids: Vec<Option<&str>> = vec![None];
     let mut labels = vec![main.clone()];
-    let label = |a: &armadai_model::TeamAgent| {
-        if a.flows.is_empty() {
-            a.id.clone()
-        } else {
-            format!("{} · {}", a.id, a.flows.join(", "))
-        }
-    };
     for (a, free) in
         (g.agents.iter().map(|a| (a, false))).chain(g.free_agents.iter().map(|a| (a, true)))
     {
         ids.push(Some(&a.id));
         // the group of free agents is a subgraph in Mermaid; a box has none
         labels.push(if free {
-            format!("{} (free)", label(a))
+            format!("{} (free)", a.label())
         } else {
-            label(a)
+            a.label()
         });
     }
-    let enforced = if g.delegation == "strict" {
-        "enforced by the gate"
-    } else {
-        "not enforced"
-    };
     // In the order of `edges`, an edge is drawn when its target has not appeared in an
     // earlier edge: the first delegation that leads to an agent. Each drawn edge reaches a
     // new box, so the drawing is acyclic; the others are listed.
@@ -128,11 +110,7 @@ pub fn team_to_ascii(g: &armadai_model::TeamGraph) -> String {
             _ => not_drawn.push(link_line(&name(e.from.as_deref()), &e.to, None)),
         }
     }
-    format!(
-        "team (delegation: {}, {enforced})\n{}",
-        g.delegation,
-        draw(&labels, &drawn, &not_drawn)
-    )
+    format!("{}\n{}", g.policy_note(), draw(&labels, &drawn, &not_drawn))
 }
 
 #[cfg(test)]
@@ -147,47 +125,47 @@ mod tests {
     }
 
     const PBV: &str = "flow: plan-build-verify
-  [▶ plan (plan)]
-         │
-         ↓
-  [build (build)]
-         │
-         ↓
-  [check (check)]
+  [▶ plan]
+     ┌┘
+     ↓
+  [build]
+     │
+     ↓
+  [check]
 
 links not drawn:
   check → build (failed)
 ";
 
     const REVIEW_LOOP: &str = "flow: review-loop
-      [▶ dev (dev)]
-            │
-            ↓
-       [rev (rev)]
-            │
-       \"approved\"
-            ↓
-      [ops (ops) ■]
+      [▶ dev]
+         │
+         ↓
+       [rev]
+         │
+    \"approved\"
+         ↓
+      [ops ■]
 
 links not drawn:
   rev → dev (rejected)
 ";
 
     const PIPELINE: &str = "flow: pipeline
-  [▶ a (a)]
-      │
-      ↓
-   [b (b)]
-      │
-      ↓
-  [c (c) ■]
+  [▶ a]
+    │
+    ↓
+   [b]
+    │
+    ↓
+  [c ■]
 ";
 
     const FAN_OUT: &str = "flow: fan-out
-     [▶ lead (lead)]
-      ┌─────┴─────┐
-      ↓           ↓
-  [x (x) ■]   [y (y) ■]
+    [▶ lead]
+    ┌───┴───┐
+    ↓       ↓
+  [x ■]   [y ■]
 ";
 
     fn all() -> [(String, &'static str); 4] {
@@ -221,18 +199,14 @@ links not drawn:
         );
         let rl = template(FlowTemplate::ReviewLoop, &["dev", "rev", "ops"]);
         assert!(rl.lines().any(|l| l == "  rev → dev (rejected)"), "{rl}");
-        assert!(rl.lines().any(|l| l == "       \"approved\""), "{rl}");
+        assert!(rl.lines().any(|l| l == "    \"approved\""), "{rl}");
     }
 
     #[test]
     fn plan_build_verify_reads_top_down() {
         let out = template(FlowTemplate::PlanBuildVerify, &["plan", "build", "check"]);
         let line = |needle: &str| out.lines().position(|l| l.trim() == needle).unwrap();
-        let (plan, build, check) = (
-            line("[▶ plan (plan)]"),
-            line("[build (build)]"),
-            line("[check (check)]"),
-        );
+        let (plan, build, check) = (line("[▶ plan]"), line("[build]"), line("[check]"));
         assert!(plan < build && build < check);
         // an arrow reaches `check` from `build`, and the return path is listed
         assert!(
@@ -304,6 +278,39 @@ links not drawn:
 links not drawn:
   dev → rev
   rev → dev
+"
+        );
+    }
+
+    #[test]
+    fn a_caller_met_first_is_not_a_target_again() {
+        // `team_graph` of a project without coordinator and with the flow s1(z) -> s2(a) -> s3(b):
+        // `a` delegates (a -> b) before `z -> a` is met
+        let ag = |id: &str| armadai_model::TeamAgent {
+            id: id.into(),
+            flows: vec!["f".into()],
+        };
+        let e = |f: Option<&str>, t: &str| armadai_model::TeamEdge {
+            from: f.map(String::from),
+            to: t.into(),
+        };
+        let g = armadai_model::TeamGraph {
+            delegation: "off".into(),
+            coordinator: None,
+            agents: vec![ag("a"), ag("b"), ag("z")],
+            edges: vec![e(None, "z"), e(Some("a"), "b"), e(Some("z"), "a")],
+            free_agents: vec![],
+        };
+        assert_eq!(
+            team_to_ascii(&g),
+            "team (delegation: off, not enforced)
+  [main thread]   [a · f]
+        │         ┌──┘
+        ↓         ↓
+     [z · f]   [b · f]
+
+links not drawn:
+  z → a
 "
         );
     }
