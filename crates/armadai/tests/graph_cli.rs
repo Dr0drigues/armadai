@@ -17,18 +17,24 @@ const PROJECT: &[(&str, &str)] = &[
 
 const SHIP: &str = "%% flow: ship
 flowchart TD
-  n_dev[\"dev\"]
-  n_rev[\"rev\"]
+  n_dev([\"dev\"])
+  n_rev[[\"rev\"]]
   n_dev --> n_rev
+  classDef startStep stroke-width:3px
+  classDef endStep stroke-width:3px,stroke-dasharray:4 2
+  class n_dev startStep
+  class n_rev endStep
 ";
 
 const REVIEW: &str = "%% flow: review
 flowchart TD
+  n_write([\"write (dev)\"])
   n_check[\"check (rev)\"]
-  n_write[\"write (dev)\"]
   n_write --> n_check
   n_check -->|\"rejected\"| n_write
   n_check -.->|\"failed\"| n_write
+  classDef startStep stroke-width:3px
+  class n_write startStep
 ";
 
 struct Env {

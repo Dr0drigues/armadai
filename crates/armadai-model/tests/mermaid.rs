@@ -48,11 +48,15 @@ fn pipeline_golden() {
         flow_to_mermaid("ship", &f),
         "%% flow: ship
 flowchart TD
-  n_publisher[\"publisher\"]
+  n_writer([\"writer\"])
   n_reviewer[\"reviewer\"]
-  n_writer[\"writer\"]
+  n_publisher[[\"publisher\"]]
   n_writer --> n_reviewer
   n_reviewer --> n_publisher
+  classDef startStep stroke-width:3px
+  classDef endStep stroke-width:3px,stroke-dasharray:4 2
+  class n_writer startStep
+  class n_publisher endStep
 "
     );
 }
@@ -65,12 +69,16 @@ fn review_loop_golden() {
         flow_to_mermaid("review", &f),
         "%% flow: review
 flowchart TD
-  n_dev[\"dev\"]
-  n_ops[\"ops\"]
+  n_dev([\"dev\"])
   n_rev[\"rev\"]
+  n_ops[[\"ops\"]]
   n_dev --> n_rev
   n_rev -->|\"rejected\"| n_dev
   n_rev -->|\"approved\"| n_ops
+  classDef startStep stroke-width:3px
+  classDef endStep stroke-width:3px,stroke-dasharray:4 2
+  class n_dev startStep
+  class n_ops endStep
 "
     );
 }
@@ -87,12 +95,14 @@ fn plan_build_verify_golden_draws_on_failure_dotted() {
         flow_to_mermaid("pbv", &f),
         "%% flow: pbv
 flowchart TD
+  n_plan([\"plan\"])
   n_build[\"build\"]
   n_check[\"check\"]
-  n_plan[\"plan\"]
   n_plan --> n_build
   n_build --> n_check
   n_check -.->|\"failed\"| n_build
+  classDef startStep stroke-width:3px
+  class n_plan startStep
 "
     );
 }
@@ -105,11 +115,15 @@ fn fan_out_golden() {
         flow_to_mermaid("delivery", &f),
         "%% flow: delivery
 flowchart TD
-  n_cli[\"cli\"]
-  n_lead[\"lead\"]
-  n_schema[\"schema\"]
+  n_lead([\"lead\"])
+  n_schema[[\"schema\"]]
+  n_cli[[\"cli\"]]
   n_lead --> n_schema
   n_lead --> n_cli
+  classDef startStep stroke-width:3px
+  classDef endStep stroke-width:3px,stroke-dasharray:4 2
+  class n_lead startStep
+  class n_schema,n_cli endStep
 "
     );
 }
@@ -133,11 +147,15 @@ fn step_labels_and_link_kinds() {
         flow_to_mermaid("f", &f),
         "%% flow: f
 flowchart TD
-  n_corrections[\"corrections (developpeur)\"]
-  n_premier_jet[\"premier-jet (developpeur)\"]
+  n_premier_jet([\"premier-jet (developpeur)\"])
   n_revue[\"revue (relecteur)\"]
+  n_corrections[[\"corrections (developpeur)\"]]
   n_premier_jet --> n_revue
   n_revue -.->|\"failed\"| n_corrections
+  classDef startStep stroke-width:3px
+  classDef endStep stroke-width:3px,stroke-dasharray:4 2
+  class n_premier_jet startStep
+  class n_corrections endStep
 "
     );
 }
@@ -168,16 +186,20 @@ fn hostile_ids_and_labels_are_neutralised() {
         flow_to_mermaid("t", &f),
         "%% flow: t
 flowchart TD
-  n_1_a[\"1-a (subgraph)\"]
-  n_a_b[\"a b\"]
-  n_end[\"end\"]
+  n_1_a([\"1-a (subgraph)\"])
+  n_xray([\"xray (graph)\"])
+  n__([\"é (x#quot;[y](z))\"])
+  n_a_b[[\"a b\"]]
   n_o[\"o\"]
-  n_xray[\"xray (graph)\"]
-  n__[\"é (x#quot;[y](z))\"]
+  n_end[[\"end\"]]
   n_o --> n_end
   n_xray --> n_o
   n_1_a --> n_a_b
   n__ -->|\"a#124;b#quot;c\"| n_end
+  classDef startStep stroke-width:3px
+  classDef endStep stroke-width:3px,stroke-dasharray:4 2
+  class n_1_a,n_xray,n__ startStep
+  class n_a_b,n_end endStep
 "
     );
 }
@@ -193,11 +215,15 @@ fn colliding_node_ids_are_told_apart() {
         flow_to_mermaid("c", &f),
         "%% flow: c
 flowchart TD
-  n_a_b[\"a-b (p)\"]
+  n_a_b([\"a-b (p)\"])
   n_a_b_2[\"a_b (q)\"]
-  n_a_b_2_2[\"a_b_2 (r)\"]
+  n_a_b_2_2[[\"a_b_2 (r)\"]]
   n_a_b --> n_a_b_2
   n_a_b_2 --> n_a_b_2_2
+  classDef startStep stroke-width:3px
+  classDef endStep stroke-width:3px,stroke-dasharray:4 2
+  class n_a_b startStep
+  class n_a_b_2_2 endStep
 "
     );
 }
@@ -212,4 +238,21 @@ fn an_empty_flow_is_a_bare_flowchart() {
 fn the_export_is_deterministic() {
     let f = flow_from_template(FlowTemplate::ReviewLoop, &ids(&["a", "b", "c"]), None).unwrap();
     assert_eq!(flow_to_mermaid("x", &f), flow_to_mermaid("x", &f.clone()));
+}
+
+/// A lone step is both start and end: the stadium wins, both classes apply.
+#[test]
+fn a_step_that_is_start_and_end_takes_the_stadium() {
+    let f = flow(&[("solo", step("solo"))], vec![]);
+    assert_eq!(
+        flow_to_mermaid("s", &f),
+        "%% flow: s
+flowchart TD
+  n_solo([\"solo\"])
+  classDef startStep stroke-width:3px
+  classDef endStep stroke-width:3px,stroke-dasharray:4 2
+  class n_solo startStep
+  class n_solo endStep
+"
+    );
 }
