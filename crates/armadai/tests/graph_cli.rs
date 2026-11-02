@@ -379,27 +379,38 @@ fn a_cycle_is_drawn_as_ascii_with_its_return_links_listed() {
     );
 }
 
+/// The validated `long_about` of `graph`, which opens `graph --help`.
+const GRAPH_HELP: &str = "Draw how the project works, on stdout and nothing else: redirect it to a file or pipe it into a renderer.
+
+What to draw (--view):
+  flows  each flow's steps and links (default). Name a flow, or omit it to draw every flow.
+  team   who may delegate to whom, as the delegation gate reads it. It draws the whole team, so it takes no flow id.
+
+Output format (--format):
+  mermaid  flowchart TD (default). Paste it into a Markdown ```mermaid block or a .mmd file.
+  dot      Graphviz: armadai graph --format dot | dot -Tsvg > graph.svg
+  json     nodes and edges. With --view flows it is always {\"flows\": [...]}, even for one flow; with --view team it is the team object.
+  ascii    boxes for the terminal, without colour. Links that point back to an earlier step are not drawn: they are listed under `links not drawn:`.
+
+Several flows are several drawings, each opened by a `%% flow: <id>` comment (`// flow: <id>` in DOT, `flow: <id>` in ASCII) and separated by a blank line: Mermaid and Graphviz render one drawing per document, so take them one at a time. Conditional links are labelled with their state; failure paths (`when: failed`, `on_failure`) are dotted in Mermaid and dashed in DOT.
+";
+
 #[test]
-fn the_help_describes_the_views_and_the_formats() {
+fn the_help_is_the_validated_text() {
     let env = Env::new(&[]);
     let (code, out, _) = env.run(&env.root(), &["graph", "--help"]);
     assert_eq!(code, Some(0));
-    let lines: Vec<&str> = out.lines().collect();
-    for want in [
-        "Draw how the project works, on stdout and nothing else: redirect it to a file or pipe it into a renderer.",
-        "  flows  each flow's steps and links (default). Name a flow, or omit it to draw every flow.",
-        "  team   who may delegate to whom, as the delegation gate reads it. It draws the whole team, so it takes no flow id.",
-        "  mermaid  flowchart TD (default). Paste it into a Markdown ```mermaid block or a .mmd file.",
-        "  dot      Graphviz: armadai graph --format dot | dot -Tsvg > graph.svg",
-        "  ascii    boxes for the terminal, without colour. Links that point back to an earlier step are not drawn: they are listed under `links not drawn:`.",
-        "  armadai graph review --format ascii",
-    ] {
-        assert!(lines.contains(&want), "missing line: {want}\n{out}");
-    }
+    let head: Vec<&str> = out.lines().take(GRAPH_HELP.lines().count()).collect();
+    assert_eq!(head.join("\n") + "\n", GRAPH_HELP);
     assert!(
-        !out.lines()
-            .any(|l| l.starts_with("Print the graph of a flow as Mermaid")),
+        out.lines()
+            .any(|l| l == "  armadai graph review --format ascii"),
         "{out}"
+    );
+    let (_, short, _) = env.run(&env.root(), &["graph", "-h"]);
+    assert_eq!(
+        short.lines().next(),
+        Some("Draw a flow, every flow, or the team (Mermaid, DOT, JSON or ASCII)")
     );
 }
 
