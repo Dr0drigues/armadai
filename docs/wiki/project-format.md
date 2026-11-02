@@ -336,8 +336,9 @@ links not drawn:
 ```
 
 The drawing has no colour and no escape sequence, whether stdout is a terminal or not. Only the
-links that go forward in the order above are drawn; every link that goes back (a `rejected`
-loop, an `on_failure`) is listed under `links not drawn:`, so every link appears once.
+links that go forward in the order above are drawn, one arrow per pair of steps; every other link
+(a `rejected` loop, an `on_failure`, a second link between the same two steps, a link to a step
+that does not exist) is listed under `links not drawn:`, so every link appears once.
 
 ### The team
 
@@ -350,12 +351,17 @@ It takes no flow id (`--view team draws the whole team: drop the flow id <id>`).
 flowchart TD
   main(["main thread"])
   n_dev["dev · review"]
+  n_release["release · review"]
   n_reviewer["reviewer · review"]
   main --> n_dev
   n_dev --> n_reviewer
   n_reviewer --> n_dev
+  n_reviewer --> n_release
 ```
 
+- In ASCII, the first delegation that leads to an agent is drawn, in the order of the edges
+  (the main thread first, then the agents by id); the other delegations are listed under
+  `links not drawn:`, by agent id.
 - The first line says whether the gate enforces the drawing (`delegation: strict, enforced by
   the gate`) or not (`delegation: off, not enforced`).
 - A node is `agent · flows`, the flows where the agent runs a step. With a coordinator, the main
