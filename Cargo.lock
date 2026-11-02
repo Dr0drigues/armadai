@@ -96,6 +96,7 @@ dependencies = [
  "anyhow",
  "armadai-core",
  "armadai-model",
+ "ascii-dag",
  "assert_cmd",
  "chrono",
  "clap",
@@ -144,6 +145,12 @@ name = "arraydeque"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d902e3d592a523def97af8f317b08ce16b7ab854c1985a0c671e6f15cebc236"
+
+[[package]]
+name = "ascii-dag"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c4b39df9b298a34bc644332c381bc3740e2eb95ff755b6c5318bbd86f5a4c536"
 
 [[package]]
 name = "assert_cmd"

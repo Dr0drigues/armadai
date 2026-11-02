@@ -108,7 +108,7 @@ pub enum Command {
     Graph {
         /// Flow id (its file name under .armadai/flows/); every flow when omitted
         flow: Option<String>,
-        /// Output format: mermaid, dot (Graphviz), json (nodes and edges)
+        /// Output format: mermaid, dot (Graphviz), json (nodes and edges), ascii (boxes for the terminal)
         #[arg(long, value_enum, default_value_t = graph::GraphFormat::Mermaid)]
         format: graph::GraphFormat,
         /// What to draw: each flow's steps, or the team's delegations

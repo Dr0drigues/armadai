@@ -13,6 +13,7 @@ pub enum GraphFormat {
     Mermaid,
     Dot,
     Json,
+    Ascii,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
@@ -44,6 +45,7 @@ pub fn execute(flow: Option<String>, format: GraphFormat, view: GraphView) -> an
                 GraphFormat::Mermaid => armadai_model::team_to_mermaid(&g),
                 GraphFormat::Dot => armadai_model::team_to_dot(&g),
                 GraphFormat::Json => format!("{}\n", serde_json::to_string_pretty(&g)?),
+                GraphFormat::Ascii => crate::ascii_graph::team_to_ascii(&g),
             }
         );
         return Ok(());
@@ -76,6 +78,7 @@ pub fn execute(flow: Option<String>, format: GraphFormat, view: GraphView) -> an
                 .iter()
                 .map(|g| match format {
                     GraphFormat::Dot => armadai_model::flow_graph_to_dot(g),
+                    GraphFormat::Ascii => crate::ascii_graph::flow_to_ascii(g),
                     _ => armadai_model::flow_graph_to_mermaid(g),
                 })
                 .collect();

@@ -45,6 +45,7 @@ sha2 = { workspace = true }
 tempfile = { workspace = true }
 anstyle = "1.0.14"
 anstream = "1.0.0"
+ascii-dag = "0.11"
 
 [dev-dependencies]
 armadai-core = { path = "../armadai-core", features = ["test-support"] }

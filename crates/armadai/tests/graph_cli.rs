@@ -359,9 +359,22 @@ fn a_flow_id_with_the_team_view_is_refused() {
 }
 
 #[test]
-fn ascii_is_not_a_format_yet() {
+fn a_cycle_is_drawn_as_ascii_with_its_return_links_listed() {
     let env = Env::new(PROJECT);
-    let (code, out, _) = env.run(&env.root(), &["graph", "--format", "ascii"]);
-    assert_eq!(code, Some(2));
-    assert!(out.is_empty(), "{out}");
+    let (code, out, err) = env.run(&env.root(), &["graph", "review", "--format", "ascii"]);
+    assert_eq!(code, Some(0), "{err}");
+    assert!(!out.contains('\x1b'), "{out:?}");
+    assert_eq!(
+        out,
+        "flow: review\n  [▶ write (dev)]\n         │\n         ↓\n   [check (rev)]\n\nlinks not drawn:\n  check → write (rejected)\n  check → write (failed)\n"
+    );
+    let (code, out, _) = env.run(
+        &env.root(),
+        &["graph", "--view", "team", "--format", "ascii"],
+    );
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        out.lines().next(),
+        Some("team (delegation: off, not enforced)")
+    );
 }
