@@ -2,8 +2,8 @@
 //! `.armadai/` (never to the versioned files). Pure: the values arrive already
 //! resolved (environment, `vars.local.yaml`, `vars.yaml` are read by the caller).
 //!
-//! `{{var.name}}` or `{{ var.name }}` with `name` a valid id is a variable; `\{{` is a
-//! literal `{{`; anything else (`{{var.Bad Name}}`, `{{name}}`, which belongs to agent
+//! `{{var.name}}` or `{{ var.name }}` with `name` a valid id is a variable; `\{{` starts
+//! none; anything else (`{{var.Bad Name}}`, `{{name}}`, which belongs to agent
 //! templates) is kept as is. A value is inserted verbatim: never rendered again.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -29,7 +29,8 @@ fn scan<'a>(text: &'a str, mut var: impl FnMut(&'a str, &mut String)) -> String 
     while let Some(i) = rest.find("{{") {
         let after = &rest[i + 2..];
         if rest[..i].ends_with('\\') {
-            out.push_str(&rest[..i - 1]);
+            // kept as is, backslash included: the text may still be an agent template
+            out.push_str(&rest[..i]);
             out.push_str("{{");
             rest = after;
             continue;
@@ -147,7 +148,7 @@ fn body_start(text: &str) -> usize {
 }
 
 fn manifest(path: &Path, text: &str) -> Result<Value, String> {
-    let v: Value = crate::yaml::from_str(text).map_err(|e| format!("{}: {e}", path.display()))?;
+    let v = crate::yaml::from_str_manifest(text).map_err(|e| format!("{}: {e}", path.display()))?;
     match v {
         Value::Null => Ok(Value::Object(Default::default())),
         v @ Value::Object(_) => Ok(v),
@@ -257,10 +258,42 @@ mod tests {
             "{{vara}}",
             "{{var.a",
         ] {
-            assert_eq!(render(t, &vals(&[("a", "X")])).0, t.replace(r"\{{", "{{"));
+            assert_eq!(render(t, &vals(&[("a", "X")])).0, t);
             assert!(names(t).is_empty(), "{t}");
         }
-        assert_eq!(render(r"\{{var.a}}", &vals(&[])).0, "{{var.a}}");
+    }
+
+    #[test]
+    fn an_escape_is_kept_with_its_backslash() {
+        // a template body: the escape must survive for `agent_templates::render`
+        let mut f = files(&[(
+            "templates/t.md",
+            "---\nname: t\n---\nlit \\{{name}} {{var.a}}\n",
+        )]);
+        render_files(&mut f, &vals(&[("a", "X")])).unwrap();
+        let body = std::str::from_utf8(&f[Path::new("templates/t.md")]).unwrap();
+        assert!(body.ends_with("---\nlit \\{{name}} X\n"), "{body}");
+        let (_, rest, _) = crate::load::split_frontmatter(body).unwrap();
+        let n = vals(&[("name", "N")]);
+        assert_eq!(
+            crate::agent_templates::render(rest, &n),
+            Ok("lit {{name}} X\n".to_string())
+        );
+    }
+
+    #[test]
+    fn the_manifest_outside_native_keeps_its_values() {
+        let src = "name: 1.10\nversion: \"1.10\"\nnative:\n  claude:\n    x: \"{{var.a}}\"\n    q: \"1.10\"\n    big: 12345678901234567890123\n";
+        let mut f = files(&[("project.yaml", src)]);
+        render_files(&mut f, &vals(&[("a", "X")])).unwrap();
+        let m = crate::yaml::from_str_manifest(
+            std::str::from_utf8(&f[Path::new("project.yaml")]).unwrap(),
+        )
+        .unwrap();
+        let before = crate::yaml::from_str_manifest(&src.replace("{{var.a}}", "X")).unwrap();
+        assert_eq!(m["name"], json!("1.10"));
+        assert_eq!(m["version"], json!("1.10"));
+        assert_eq!(m, before);
     }
 
     #[test]
@@ -274,6 +307,13 @@ mod tests {
 
     #[test]
     fn render_value_touches_strings_only() {
+        let mut again = json!("{{var.a}}");
+        render_value(
+            &mut again,
+            &vals(&[("a", "{{var.b}}"), ("b", "Y")]),
+            &mut BTreeSet::new(),
+        );
+        assert_eq!(again, json!("{{var.b}}"));
         let mut v = json!({"p": ["{{var.a}}", 7, true, null, {"k": "{{var.a}}"}], "{{var.a}}": 1});
         let mut missing = BTreeSet::new();
         render_value(&mut v, &vals(&[("a", "X")]), &mut missing);
@@ -336,9 +376,15 @@ mod tests {
 
     #[test]
     fn unreadable_files_are_errors() {
-        let mut f = files(&[("project.yaml", "native: [")]);
-        assert!(render_files(&mut f, &vals(&[])).is_err());
-        assert!(files_names(&f).is_err());
+        for (name, bytes) in [
+            ("project.yaml", &b"native: ["[..]),
+            ("project.yaml", &b"- a\n"[..]),
+            ("agents/x.md", &[0xff, 0xfe][..]),
+        ] {
+            let mut f = BTreeMap::from([(PathBuf::from(name), bytes.to_vec())]);
+            assert!(render_files(&mut f, &vals(&[])).is_err(), "{bytes:?}");
+            assert!(files_names(&f).is_err(), "{bytes:?}");
+        }
     }
 
     #[test]
