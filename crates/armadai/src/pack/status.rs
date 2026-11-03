@@ -98,7 +98,10 @@ pub fn note(n: &Newer) -> String {
 
 /// First 12 characters of a commit, or of a digest without its `sha256:` prefix.
 pub fn id12(id: &str) -> &str {
-    let id = id.strip_prefix("sha256:").unwrap_or(id);
+    let id = (id
+        .strip_prefix("sha256:")
+        .or_else(|| id.strip_prefix("sha256-")))
+    .unwrap_or(id);
     &id[..id.len().min(12)]
 }
 

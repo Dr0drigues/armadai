@@ -53,6 +53,7 @@ fn resolve_in(
     source: &RegistrySource,
     name: &str,
     range_text: &str,
+    in_project_yaml: bool,
 ) -> anyhow::Result<(Available, String)> {
     let range = resolve::parse_range(range_text).map_err(anyhow::Error::msg)?;
     let pack = cache::versions_in(registry, &source.url).and_then(|v| v.packs.get(name).cloned());
@@ -66,9 +67,15 @@ fn resolve_in(
                 .collect::<Vec<_>>()
                 .join(", ")
         };
+        // `pack add` has no `pack.version` to change yet
+        let way_out = if in_project_yaml {
+            ", or change pack.version in .armadai/project.yaml"
+        } else {
+            ""
+        };
         bail!(
             "no cached version of pack {name} matches {range_text} (cached: {cached}): run \
-             `armadai pack sync`, or change pack.version in .armadai/project.yaml"
+             `armadai pack sync`{way_out}"
         );
     };
     let path = pack.as_ref().map(|p| p.path.clone()).unwrap_or_default();
@@ -89,7 +96,21 @@ fn lock_of(name: &str, source: &str, a: &Available) -> PackLock {
     }
 }
 
-/// The project as it would be with `lock`: valid (M13), or an error and nothing changed.
+type Errors = std::collections::BTreeSet<(String, String)>;
+
+/// The errors of the project as it is now, by (code, message): a diagnostic's file differs
+/// from one pack version to the next, what it says does not. Unreadable counts as none.
+fn errors_now(root: &Path, registry: &Path, env: Env) -> Errors {
+    let Ok(view) = effective::open_in(root, effective::Vars::Resolve(env), registry) else {
+        return Errors::new();
+    };
+    (view.load_checked().err().unwrap_or_default().into_iter())
+        .map(|d| (d.code.to_string(), d.message))
+        .collect()
+}
+
+/// The project as it would be with `lock`: no error the lock introduces (M13), else an
+/// error and nothing changed. A project already invalid stays so: `link` reports it.
 fn check(
     root: &Path,
     lock: &PackLock,
@@ -97,8 +118,13 @@ fn check(
     env: Env,
     version: &str,
 ) -> anyhow::Result<()> {
+    let before = errors_now(root, registry, env);
     let view = effective::open_with_lock_in(root, lock, effective::Vars::Resolve(env), registry)?;
-    if let Err(ds) = view.load_checked() {
+    if let Err(ds) = view.load_checked()
+        && ds
+            .iter()
+            .any(|d| !before.contains(&(d.code.to_string(), d.message.clone())))
+    {
         for d in &ds {
             eprintln!("{}", d.render());
         }
@@ -164,7 +190,24 @@ pub fn update_in(
     };
     let source = source_of(known, &d.source);
     sync_or_stop(registry, &source)?;
-    let (best, path) = resolve_in(registry, &source, &d.name, version.unwrap_or(&d.version))?;
+    let (best, path) = resolve_in(
+        registry,
+        &source,
+        &d.name,
+        version.unwrap_or(&d.version),
+        true,
+    )?;
+    if version.is_some() {
+        let range = resolve::parse_range(&d.version).map_err(anyhow::Error::msg)?;
+        ensure!(
+            resolve::best(&range, std::slice::from_ref(&best)).is_some(),
+            "pack {} {} is outside the range {} of .armadai/project.yaml; nothing was changed: \
+             change pack.version there to move to it",
+            d.name,
+            best.version,
+            d.version
+        );
+    }
     cache::ensure_snapshot_in(registry, &source, &d.name, &path, &best)?;
     let new = lock_of(&d.name, &d.source, &best);
     let old = lock::read(root)?;
@@ -301,7 +344,7 @@ pub fn add_in(
         }
     };
 
-    let (best, path) = resolve_in(registry, &source, name, given.unwrap_or("latest"))?;
+    let (best, path) = resolve_in(registry, &source, name, given.unwrap_or("latest"), false)?;
     let range = given.map_or_else(|| format!("^{}", best.version), str::to_string);
     cache::ensure_snapshot_in(registry, &source, name, &path, &best)?;
     let new = lock_of(name, &source.url, &best);

@@ -992,3 +992,186 @@ fn an_overlay_never_reaches_the_other_project() {
     let agent = |t: &Tree| t[".claude/agents/a.md"].clone();
     assert_eq!(agent(&tree(&second)), agent(&before_second));
 }
+
+#[test]
+fn add_without_a_matching_version_does_not_offer_to_edit_project_yaml() {
+    let (env, ..) = released();
+    let r = env.run(&["pack", "add", "demo@^9"], &[]);
+    assert_ne!(r.code, Some(0));
+    assert!(
+        r.err_has("Error: no cached version of pack demo matches ^9 (cached: 1.0.0, 1.1.0): run `armadai pack sync`"),
+        "{}",
+        r.err
+    );
+    assert!(!env.root().join(".armadai").exists());
+}
+
+#[test]
+fn update_outside_the_range_is_refused() {
+    let (env, _second) = two_projects();
+    env.release("2.0.0", &[], &[]);
+    let before = tree(&env.root());
+    let r = env.run(&["pack", "update", "2.0.0"], &[]);
+    assert_ne!(r.code, Some(0), "{}{}", r.out, r.err);
+    assert!(
+        r.err_has("Error: pack demo 2.0.0 is outside the range ^1.0.0 of .armadai/project.yaml; nothing was changed: change pack.version there to move to it"),
+        "{}",
+        r.err
+    );
+    assert_eq!(tree(&env.root()), before);
+}
+
+#[test]
+fn update_inside_the_range_by_exact_version_is_allowed() {
+    let (env, _second) = two_projects();
+    env.release("1.2.0", &[], &[]);
+    env.release("1.3.0", &[], &[]);
+    ok(&env.run(&["pack", "update", "1.2.0"], &[]));
+    assert!(
+        env.text(".armadai/pack.lock")
+            .contains("version: \"1.2.0\"\n")
+    );
+}
+
+/// The project already has an error the pack does not cause (`skills: [nope]`).
+fn already_invalid() -> (Env, PathBuf) {
+    let (env, second) = two_projects();
+    put(
+        &env.root(),
+        ".armadai/agents/mine.md",
+        "---\ndescription: mine\nskills: [nope]\n---\nM\n",
+    );
+    (env, second)
+}
+
+#[test]
+fn an_already_invalid_project_is_not_blamed_on_the_new_version() {
+    let (env, _second) = already_invalid();
+    env.release("1.2.0", &[], &[]);
+    let r = env.run(&["pack", "update"], &[]);
+    assert!(
+        !r.err.contains("would make the project invalid"),
+        "{}",
+        r.err
+    );
+    assert!(
+        r.err.contains("error["),
+        "its diagnostics are shown: {}",
+        r.err
+    );
+    assert!(
+        env.text(".armadai/pack.lock")
+            .contains("version: \"1.2.0\"\n")
+    );
+}
+
+#[test]
+fn a_new_error_on_an_already_invalid_project_is_still_blamed() {
+    let (env, _second) = already_invalid();
+    put(
+        &env.root(),
+        ".armadai/agents/mine.md",
+        "---\ndescription: mine\nskills: [nope, s]\n---\nM\n",
+    );
+    env.release("1.2.0", &[], &["skills/s/SKILL.md"]);
+    let before = tree(&env.root());
+    let r = env.run(&["pack", "update"], &[]);
+    assert_ne!(r.code, Some(0));
+    assert!(
+        r.err_has("Error: pack demo 1.2.0 would make the project invalid; nothing was changed"),
+        "{}",
+        r.err
+    );
+    assert_eq!(tree(&env.root()), before);
+}
+
+#[test]
+fn add_goes_on_after_a_failing_source() {
+    let (env, _c1, c2) = released();
+    let bad = format!("file://{}/missing", env.dir.path().display());
+    env.registries(&[&bad, &env.url()]);
+    let r = env.run(&["pack", "add", "demo"], &[]);
+    ok(&r);
+    let warn = format!("  warn: failed to sync starter source {bad}: ");
+    assert_eq!(
+        r.err.lines().filter(|l| l.starts_with(&warn)).count(),
+        1,
+        "{}",
+        r.err
+    );
+    assert!(env.text(".armadai/pack.lock").contains(&c2));
+}
+
+#[test]
+fn an_archive_source_shows_twelve_characters_of_the_digest() {
+    let env = Env::new();
+    let src = env.dir.path().join("archive-src");
+    put(&src, "armadai-packs.yaml", &index("1.0.0"));
+    put(&src, "demo/pack.yaml", "name: demo\n");
+    put(
+        &src,
+        "demo/project.yaml",
+        "schema_version: 1\ntargets: [claude]\n",
+    );
+    put(&src, "demo/agents/a.md", "---\ndescription: d\n---\nA\n");
+    let tgz = env.dir.path().join("packs.tar.gz");
+    let made = Std::new("tar")
+        .args([
+            "czf",
+            tgz.to_str().unwrap(),
+            "-C",
+            src.to_str().unwrap(),
+            ".",
+        ])
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let bin = env.dir.path().join("fakebin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let curl = bin.join("curl");
+    std::fs::write(
+        &curl,
+        format!(
+            "#!/bin/sh\nwhile [ $# -gt 1 ]; do [ \"$1\" = -o ] && out=$2; shift; done\ncp '{}' \"$out\"\n",
+            tgz.display()
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&curl, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let url = "https://example.com/packs.tar.gz";
+    env.registries(&[url]);
+
+    let added = env.run(&["pack", "add", "demo"], &[("PATH", &path)]);
+    ok(&added);
+    let lock = env.text(".armadai/pack.lock");
+    let hex = lock
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("digest: sha256:"))
+        .unwrap_or_else(|| panic!("no digest in {lock}"))
+        .trim_matches('"')
+        .to_string();
+    let id = &hex[..12];
+    assert_eq!(
+        added.out.lines().last().unwrap(),
+        format!(
+            "Added pack demo 1.0.0 ({id}): .armadai/project.yaml (version: ^1.0.0) and .armadai/pack.lock"
+        )
+    );
+    let again = env.run(&["pack", "update"], &[("PATH", &path)]);
+    ok(&again);
+    assert_eq!(
+        again.out.lines().last().unwrap(),
+        format!("Pack demo is up to date: 1.0.0 ({id})")
+    );
+    let status = env.run(&["pack", "status"], &[("PATH", &path)]);
+    assert!(
+        status
+            .out
+            .lines()
+            .any(|l| l == format!("  locked:    1.0.0 ({id})")),
+        "{}",
+        status.out
+    );
+}
