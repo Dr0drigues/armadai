@@ -115,8 +115,12 @@ impl Env {
     }
 
     fn run(&self, args: &[&str], envs: &[(&str, &str)]) -> Run {
+        self.run_in(&self.root(), args, envs)
+    }
+
+    fn run_in(&self, cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> Run {
         let mut cmd = Command::cargo_bin("armadai").unwrap();
-        cmd.current_dir(self.root())
+        cmd.current_dir(cwd)
             .env("ARMADAI_CONFIG_DIR", self.config())
             .env("HOME", self.dir.path())
             .env("NO_COLOR", "1")
@@ -699,4 +703,292 @@ fn an_unreadable_versions_file_of_a_copy_is_reported_once_too() {
     let prefix = format!("  warn: {} is not readable: ", versions.display());
     let n = run.err.lines().filter(|l| l.starts_with(&prefix)).count();
     assert_eq!(n, 1, "{}", run.err);
+}
+
+// ---- pack add and pack update (reference mode) ----
+
+impl Env {
+    /// A valid `demo` at `version` in the origin (an agent, a skill), tagged `demo-v<version>`;
+    /// `extra` files are written, `gone` ones removed. Returns the commit.
+    fn release(&self, version: &str, extra: &[(&str, &str)], gone: &[&str]) -> String {
+        let o = self.origin();
+        put(&o, "demo/pack.yaml", "name: demo\n");
+        put(
+            &o,
+            "demo/project.yaml",
+            "schema_version: 1\ntargets: [claude]\n",
+        );
+        put(
+            &o,
+            "demo/agents/a.md",
+            "---\ndescription: from the pack\n---\nA\n",
+        );
+        put(
+            &o,
+            "demo/skills/s/SKILL.md",
+            "---\nname: s\ndescription: d\n---\nS\n",
+        );
+        put(&o, "demo/marker", version);
+        put(&o, "armadai-packs.yaml", &index(version));
+        for (rel, text) in extra {
+            put(&o, &format!("demo/{rel}"), text);
+        }
+        for rel in gone {
+            std::fs::remove_file(o.join("demo").join(rel)).unwrap();
+        }
+        git(&o, &["add", "-A"]);
+        git(&o, &["commit", "-qm", version]);
+        git(&o, &["tag", &format!("demo-v{version}")]);
+        git(&o, &["rev-parse", "HEAD"])
+    }
+
+    /// A second project on its own directory.
+    fn other_project(&self, name: &str) -> PathBuf {
+        let p = self.dir.path().join(name);
+        std::fs::create_dir_all(p.join(".git")).unwrap();
+        p
+    }
+
+    fn text(&self, rel: &str) -> String {
+        std::fs::read_to_string(self.root().join(rel)).unwrap()
+    }
+}
+
+type Tree = std::collections::BTreeMap<String, Vec<u8>>;
+
+/// Every file under `dir` (relative path -> bytes).
+fn tree(dir: &Path) -> Tree {
+    fn walk(base: &Path, dir: &Path, out: &mut Tree) {
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(base, &p, out);
+            } else {
+                let rel = p.strip_prefix(base).unwrap().display().to_string();
+                out.insert(rel, std::fs::read(&p).unwrap());
+            }
+        }
+    }
+    let mut out = Tree::new();
+    walk(dir, dir, &mut out);
+    out
+}
+
+fn ok(r: &Run) {
+    assert_eq!(r.code, Some(0), "{}{}", r.out, r.err);
+}
+
+fn released() -> (Env, String, String) {
+    let env = Env::new();
+    let c1 = env.release("1.0.0", &[], &[]);
+    let c2 = env.release("1.1.0", &[], &[]);
+    env.registries(&[&env.url()]);
+    (env, c1, c2)
+}
+
+#[test]
+fn add_writes_the_reference_and_the_lock() {
+    let (env, _c1, c2) = released();
+    let r = env.run(&["pack", "add", "demo@^1.0"], &[]);
+    ok(&r);
+    let url = env.url();
+    assert_eq!(
+        env.text(".armadai/project.yaml"),
+        format!("schema_version: 1\npack:\n  name: demo\n  source: '{url}'\n  version: '^1.0'\n")
+    );
+    assert_eq!(
+        env.text(".armadai/pack.lock"),
+        format!(
+            "format: 1\npack: demo\nsource: {url}\nresolved:\n  version: \"1.1.0\"\n  tag: demo-v1.1.0\n  commit: {c2}\n"
+        )
+    );
+    assert_eq!(
+        r.out.lines().last().unwrap(),
+        format!(
+            "Added pack demo 1.1.0 ({}): .armadai/project.yaml (version: ^1.0) and .armadai/pack.lock",
+            id12(&c2)
+        )
+    );
+    assert!(
+        env.root().join(".claude/agents/a.md").is_file(),
+        "{}",
+        r.out
+    );
+    let referents = std::fs::read_to_string(env.config().join("pack-referents.yaml")).unwrap();
+    assert!(referents.contains("pack: demo"), "{referents}");
+}
+
+#[test]
+fn add_defaults_the_range_to_the_caret_of_the_resolved_version() {
+    let (env, ..) = released();
+    ok(&env.run(&["pack", "add", "demo"], &[]));
+    assert!(
+        env.text(".armadai/project.yaml")
+            .ends_with("  version: '^1.1.0'\n")
+    );
+}
+
+#[test]
+fn add_keeps_the_comments_of_an_existing_project_yaml() {
+    let (env, ..) = released();
+    let before = "schema_version: 1\n# my own note\ntargets: [claude]";
+    put(&env.root(), ".armadai/project.yaml", before);
+    ok(&env.run(&["pack", "add", "demo"], &[]));
+    assert_eq!(
+        env.text(".armadai/project.yaml"),
+        format!(
+            "{before}\npack:\n  name: demo\n  source: '{}'\n  version: '^1.1.0'\n",
+            env.url()
+        )
+    );
+}
+
+#[test]
+fn add_refuses_a_second_pack_and_an_unknown_one() {
+    let (env, ..) = released();
+    ok(&env.run(&["pack", "add", "demo"], &[]));
+    let again = env.run(&["pack", "add", "demo"], &[]);
+    assert_ne!(again.code, Some(0));
+    assert!(
+        again.err_has(
+            "Error: .armadai/project.yaml already references pack demo: use `armadai pack update`"
+        ),
+        "{}",
+        again.err
+    );
+    let (env, ..) = released();
+    let none = env.run(&["pack", "add", "nope"], &[]);
+    assert_ne!(none.code, Some(0));
+    assert!(none.err_has(
+        "Error: pack nope is in none of your sources (registries.yaml): add its source there, or pass --source <url>"
+    ), "{}", none.err);
+    assert!(!env.root().join(".armadai/pack.lock").exists());
+}
+
+/// Two projects on `demo` 1.0.0.
+fn two_projects() -> (Env, PathBuf) {
+    let env = Env::new();
+    env.release("1.0.0", &[], &[]);
+    env.registries(&[&env.url()]);
+    let second = env.other_project("project2");
+    ok(&env.run(&["pack", "add", "demo"], &[]));
+    ok(&env.run_in(&second, &["pack", "add", "demo"], &[]));
+    (env, second)
+}
+
+#[test]
+fn update_advances_the_lock_and_lists_other_projects() {
+    let (env, second) = two_projects();
+    let c3 = env.release("1.2.0", &[("marker2", "x")], &[]);
+    let before = tree(&second);
+    let r = env.run(&["pack", "update"], &[]);
+    ok(&r);
+    assert!(
+        env.text(".armadai/pack.lock")
+            .contains("version: \"1.2.0\"\n")
+    );
+    assert!(
+        env.text(".armadai/pack.lock")
+            .contains(&format!("commit: {c3}"))
+    );
+    let lines: Vec<&str> = r.out.lines().collect();
+    let n = lines.len();
+    assert_eq!(
+        lines[n - 3],
+        format!(
+            "Pack demo: 1.0.0 -> 1.2.0 ({}), .armadai/pack.lock updated",
+            id12(&c3)
+        )
+    );
+    assert_eq!(
+        lines[n - 2],
+        "Other projects referencing pack demo (not changed; run `armadai pack update` in each):"
+    );
+    let canon = std::fs::canonicalize(&second).unwrap();
+    assert_eq!(lines[n - 1], format!("  {}", canon.display()));
+    assert_eq!(tree(&second), before, "the other project is not touched");
+}
+
+#[test]
+fn update_that_would_break_changes_nothing() {
+    let (env, _second) = two_projects();
+    put(
+        &env.root(),
+        ".armadai/agents/mine.md",
+        "---\ndescription: mine\nskills: [s]\n---\nM\n",
+    );
+    env.release("1.2.0", &[], &["skills/s/SKILL.md"]);
+    let before = tree(&env.root());
+    let r = env.run(&["pack", "update"], &[]);
+    assert_ne!(r.code, Some(0), "{}{}", r.out, r.err);
+    assert!(
+        r.err_has("Error: pack demo 1.2.0 would make the project invalid; nothing was changed"),
+        "{}",
+        r.err
+    );
+    assert!(r.err.contains("error["), "{}", r.err);
+    assert_eq!(tree(&env.root()), before);
+}
+
+#[test]
+fn update_never_touches_state() {
+    let (env, _second) = two_projects();
+    put(&env.root(), ".armadai/state/flow.json", "{\"a\":1}");
+    put(&env.root(), ".armadai/state/sub/x", "x");
+    env.release("1.2.0", &[], &[]);
+    let before = tree(&env.root().join(".armadai/state"));
+    ok(&env.run(&["pack", "update"], &[]));
+    assert_eq!(tree(&env.root().join(".armadai/state")), before);
+}
+
+#[test]
+fn update_with_an_unknown_version_names_it() {
+    let (env, _second) = two_projects();
+    let before = env.lock_bytes();
+    let r = env.run(&["pack", "update", "9.9.9"], &[]);
+    assert_ne!(r.code, Some(0));
+    assert!(
+        r.err_has("Error: no cached version of pack demo matches 9.9.9 (cached: 1.0.0): run `armadai pack sync`, or change pack.version in .armadai/project.yaml"),
+        "{}",
+        r.err
+    );
+    assert_eq!(env.lock_bytes(), before);
+}
+
+#[test]
+fn update_with_nothing_new_says_so() {
+    let (env, _second) = two_projects();
+    let r = env.run(&["pack", "update"], &[]);
+    ok(&r);
+    let lock = env.text(".armadai/pack.lock");
+    let commit = lock
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("commit: "))
+        .unwrap();
+    assert_eq!(
+        r.out.lines().last().unwrap(),
+        format!("Pack demo is up to date: 1.0.0 ({})", id12(commit))
+    );
+}
+
+#[test]
+fn an_overlay_never_reaches_the_other_project() {
+    let (env, second) = two_projects();
+    let snapshots = env.config().join("registry/packs");
+    let before_snap = tree(&snapshots);
+    let before_second = tree(&second);
+    put(
+        &env.root(),
+        ".armadai/agents/a.md",
+        "---\ndescription: overlaid\n---\nO\n",
+    );
+    ok(&env.run(&["link"], &[]));
+    assert!(env.text(".claude/agents/a.md").contains("O"));
+    assert_eq!(tree(&snapshots), before_snap);
+    ok(&env.run_in(&second, &["link"], &[]));
+    let agent = |t: &Tree| t[".claude/agents/a.md"].clone();
+    assert_eq!(agent(&tree(&second)), agent(&before_second));
 }
