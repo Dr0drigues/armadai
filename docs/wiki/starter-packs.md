@@ -94,7 +94,8 @@ note: pack demo 1.4.0 is in the cache (locked: 1.3.0): run `armadai pack update`
 ```
 
 A project that references a pack with no lock, or a lock for another pack or source, is refused
-by `link`, `list`, `inspect`, `graph` and `flow`, with a message that names the cure
+by every command that reads the project (`link`, `list`, `inspect`, `graph`, `flow`, `validate`,
+`new`, `skills`, `unlink`), with a message that names the cure
 (`armadai pack update`).
 
 **The cache.** `pack sync` clones each git source (`--depth 1` first, then the whole history and
@@ -179,8 +180,8 @@ replaces it, in the files it compiles:
 - in the body (after the frontmatter) of agents, templates, commands and `SKILL.md`;
 - in the text values of the `native` block of `project.yaml`.
 
-Frontmatters, `scripts/`, `references/` and `native/<target>/` files are never substituted. `\{{`
-writes the two braces; `{{name}}` without `var.` belongs to agent templates. A value is inserted
+Frontmatters, `scripts/`, `references/` and `native/<target>/` files are never substituted. `\{{` is kept as it is, backslash
+included, and starts no variable; `{{name}}` without `var.` belongs to agent templates. A value is inserted
 as it is, never rendered again.
 
 Three layers give the value, the first that sets it wins:
@@ -223,8 +224,8 @@ For a git source, the history comes from the tags `<pack>-vX.Y.Z` (`demo-v1.3.0`
 the index at the current commit is offered too when no tag carries it. An archive has no tags: it
 needs the index to have versions at all, and keeps in the cache the versions of its earlier syncs
 (each identified by a digest). A source without an index lists its packs with no version, so a
-range cannot be used with it. A source is cloned with `git clone --depth 1`, then completed with a
-plain `git fetch`: submodules are not initialized, so a pack cannot rely on one.
+range cannot be used with it. A source is cloned with `git clone --depth 1`, then completed with
+`git fetch --unshallow --force --prune --prune-tags`: submodules are not initialized, so a pack cannot rely on one.
 
 `.armadai/project.yaml`, `.armadai/pack.lock` and `pack-referents.yaml` are versioned or shared:
 a source that carries a secret (`user:pass@`, a token in the userinfo of an `https` URL, a query)
@@ -246,12 +247,16 @@ sources (registries.yaml): add it there, with its credentials` otherwise). An SS
   gets "this project references no pack and records no installed pack: use `armadai pack add
   <name>` or `armadai init --pack <name>`".
 - Two packs installed by copy in one project: `pack update` refuses and changes nothing.
-- `vars.yaml` and `vars.local.yaml` are read through a symbolic link; and a `{{var.…}}` in a file
-  that is a symbolic link makes `link` refuse (`<file> is a symbolic link, refused`).
+- `vars.yaml` and `vars.local.yaml` are read through a symbolic link. The effective view copies the
+  files it compiles and does not follow links: in a project with `pack:`, or whenever any file
+  holds a `{{var.…}}`, every symbolic link among the listed files (agents, templates, commands,
+  skills, flows, automations) makes the command refuse (`<file> is a symbolic link, refused`),
+  whether or not that file holds a variable.
 - The undo of a failed `link` after `pack add` or `pack update` does not cover the process being
   interrupted (Ctrl-C) between the writes and the end of the link.
-- A pack view that opens but whose merge is invalid leaves the policy gate with no opinion
-  (see [Policy gate](policy-gate.md)); one that does not open is refused.
+- For the policy gate (see [Policy gate](policy-gate.md)), a view that does not open is refused:
+  missing cache, missing or foreign lock, a nested `pack:` in the pack, an unreadable pack
+  `project.yaml`. A view that opens but whose merged project has errors leaves it with no opinion.
 - Whole snapshot files lose their write bits, folders keep theirs: a file can be added to a
   snapshot by hand, none edited.
 - A tag deleted in the source, followed by a `gc` of the local clone, can make a lock

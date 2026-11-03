@@ -90,10 +90,12 @@ the project's pack cannot be read, so the delegation policy cannot be checked: <
 ```
 
 and stderr says `armadai policy gate: <dir> could not be opened, delegation refused: <reason>`.
-The reason names the cure (`armadai pack sync`, or `armadai pack update`). The policy itself lives
+The reason names the cure when there is one (cache missing: `armadai pack sync`; lock missing or
+for another pack: `armadai pack update`). A pack that holds a `pack:` of its own, or a `project.yaml`
+the gate cannot read, is refused too, with no cure to name. The policy itself lives
 in that view, so the gate cannot tell whether it was `strict`: a project that was linked under
 `strict` and then lost its snapshot would otherwise silently lose its gate. A view that opens but
-whose merge is invalid is still "no opinion" (the invalid-project case above).
+whose merged project has errors is still "no opinion" (the invalid-project case above).
 
 The gate finds the project from the session's directory upwards (without crossing a `.git`
 boundary), and from a git worktree falls back to the main checkout when the worktree has no
@@ -114,4 +116,4 @@ Uncertainty resolves to *no opinion*: an unreadable payload, an absent, legacy o
 tool other than `Agent`/`Task`, `policy.delegation: off`. The one exception is a pack the gate
 cannot read (above), which is refused, with the cure in the message. A gate that refuses because it
 failed to understand is a gate you uninstall the same day, so the refusal is kept to the case where
-the gate knows what is missing.
+the gate knows the project cannot be read.
