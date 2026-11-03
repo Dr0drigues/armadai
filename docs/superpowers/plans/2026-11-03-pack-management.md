@@ -1,6 +1,6 @@
 # Plan : gestion des packs (mise à jour, sync forcé, scaffolding, variables, signal de version)
 
-Date : 2026-11-03 · Étape `plan` du flow `lot` · Branche `feat/pack-management` (worktree `/Users/bl209054/work/misc/armadai-packcmd`, tête `dd32842`, sur master `2ee093e`).
+Date : 2026-11-03 · Étape `plan` du flow `lot` · Branche `feat/pack-management` (tête `dd32842`, sur master `2ee093e`).
 Spec : `docs/superpowers/specs/2026-11-03-pack-management-design.md` (17 critères, décisions A-L et décisions de cadre, non rediscutées ici). Cadre : `docs/superpowers/specs/2026-11-03-pack-management-frame.md` (Q1-Q8 en « 3 bis »). Règles : skill `armadai-rules` (dont, depuis `dd32842` : aucun réseau dans les tests ; rien de privé dans le dépôt public).
 
 Lu pour ce plan (sans Bash ni recherche : ce qui suppose une recherche dans tout le dépôt est marqué « à recenser par grep ») : la spec, le cadre, `crates/armadai/src/starters_registry/mod.rs`, `linker/manifest.rs` (l. 1-1347), `cli/{mod,link,init,native_pack,new_wizard}.rs` (en-têtes), `compile/{mod,claude}.rs` (en-tête de `claude.rs`), `claude_adapter/policy_gate.rs` (en-tête), `crates/armadai/Cargo.toml`, `crates/armadai-model/src/{lib,types,load,agent_templates,write}.rs`, `crates/armadai-core/src/{starter,registries,project_registry}.rs`, `docs/wiki/project-format.md`, `docs/wiki/starter-packs.md` (début).
