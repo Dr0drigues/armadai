@@ -242,7 +242,8 @@ fn pack_new_without_a_flag_needs_a_terminal() {
     let r = env.run(&["pack", "new", "demo"]);
     assert_eq!(r.code, Some(1));
     assert!(
-        r.err.contains("pass --empty or --from-project instead"),
+        r.err.lines().any(|l| l
+            == "Error: interactive mode needs a terminal; pass --empty or --from-project instead (armadai pack new --help)"),
         "{}",
         r.err
     );
@@ -297,6 +298,10 @@ fn a_link_in_the_project_is_refused() {
     .unwrap();
     let r = env.run(&["pack", "new", "cap", "--from-project"]);
     assert_eq!(r.code, Some(1), "{}{}", r.out, r.err);
-    assert!(r.err.contains("is a symbolic link, refused"), "{}", r.err);
+    let want = format!(
+        "Error: {} is a symbolic link, refused",
+        env.root().join(".armadai/agents/a.md").display()
+    );
+    assert!(r.err.lines().any(|l| l == want), "{}", r.err);
     assert!(!env.root().join("cap").exists());
 }

@@ -423,8 +423,16 @@ fn write_all(dir: &Path, files: &[(PathBuf, Vec<u8>, bool)]) -> anyhow::Result<(
         .last()
         .unwrap_or(dir)
         .to_path_buf();
+    // exclusive creation: a folder that appears meanwhile is never written into nor removed
+    let made = std::fs::create_dir_all(dir.parent().context("a pack folder has a parent")?)
+        .and_then(|()| std::fs::create_dir(dir));
+    if let Err(e) = made {
+        if e.kind() != std::io::ErrorKind::AlreadyExists {
+            let _ = std::fs::remove_dir_all(&top);
+        }
+        return Err(e).with_context(|| format!("creating {}", dir.display()));
+    }
     let built = (|| -> anyhow::Result<()> {
-        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         for (rel, bytes, exec) in files {
             let at = dir.join(rel);
             std::fs::create_dir_all(at.parent().context("a file has a parent")?)?;
@@ -465,5 +473,20 @@ mod tests {
         assert!(write_all(&dir, &files).is_err());
         assert!(kept.is_dir(), "a folder that was there stays");
         assert_eq!(std::fs::read_dir(&kept).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_folder_that_appeared_is_neither_written_into_nor_removed() {
+        let t = tempfile::tempdir().unwrap();
+        let dir = t.path().join("pack");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("mine.txt"), "mine").unwrap();
+        let files = vec![(PathBuf::from("pack.yaml"), b"x".to_vec(), false)];
+        assert!(write_all(&dir, &files).is_err());
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("mine.txt")).unwrap(),
+            "mine"
+        );
     }
 }
