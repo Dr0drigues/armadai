@@ -63,6 +63,8 @@ impl StarterFetcher for GitFetcher {
                 "--depth",
                 "1",
                 "-q",
+                // a source starting with `-` is a URL, never an option
+                "--",
                 url,
                 dest.to_str().unwrap_or("."),
             ])?;

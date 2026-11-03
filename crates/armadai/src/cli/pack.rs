@@ -94,7 +94,9 @@ fn sync(root: Option<&Path>, registry: &Path, only: Option<String>) -> anyhow::R
     {
         failed += check_lock(root, registry, &sources, &synced);
     }
-    if let Some(root) = root
+    // a source that failed keeps its old `versions.yaml`: no signal from it
+    if failed == 0
+        && let Some(root) = root
         && let Some(n) = status::newer(root, registry)
     {
         eprintln!("{}", status::note(&n));

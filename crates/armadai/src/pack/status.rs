@@ -4,6 +4,7 @@
 use std::path::Path;
 
 use anyhow::anyhow;
+use armadai_core::registries::redact_url;
 
 use super::cache::{self, Available};
 use super::resolve::{self, Range};
@@ -106,11 +107,7 @@ pub fn report(root: &Path, registry: &Path, config: &Path) -> anyhow::Result<Str
     let mut blocks = Vec::new();
     if let Some(d) = declared(root) {
         let Some(lock) = lock::read(root)? else {
-            return Err(anyhow!(
-                ".armadai/project.yaml references pack {} but .armadai/pack.lock is missing: \
-                 run `armadai pack update`",
-                d.name
-            ));
+            return Err(anyhow!(super::effective::lock_missing(&d.name)));
         };
         let all = cached(registry, &d.source, &d.name);
         let newest = resolve::best(&Range::Latest, &all);
@@ -129,7 +126,10 @@ pub fn report(root: &Path, registry: &Path, config: &Path) -> anyhow::Result<Str
         };
         let mut b = format!(
             "Pack {} (reference)\n  source:    {}\n  range:     {}\n  locked:    {} ({at})\n  in cache:  {in_cache}\n",
-            d.name, d.source, d.version, r.version
+            d.name,
+            redact_url(&d.source),
+            d.version,
+            r.version
         );
         let others = referents::others(config, &d.name, &d.source, root)?;
         if !others.is_empty() {
@@ -155,7 +155,7 @@ pub fn report(root: &Path, registry: &Path, config: &Path) -> anyhow::Result<Str
         };
         let mut b = format!(
             "Pack {name} (copy)\n  source:    {}\n  installed: {installed}\n",
-            p.source
+            redact_url(&p.source)
         );
         if let Some(n) = resolve::best(&Range::Latest, &cached(registry, &p.source, &name)) {
             b.push_str(&format!("  in cache:  {}\n", n.version));

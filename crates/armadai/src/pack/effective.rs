@@ -69,12 +69,17 @@ pub fn open_in(root: &Path, vars: Vars, registry: &Path) -> anyhow::Result<Effec
         return build(root, None, vars, registry);
     };
     let Some(lock) = lock::read(root)? else {
-        bail!(
-            ".armadai/project.yaml references pack {name} but .armadai/pack.lock is missing: \
-             run `armadai pack update`"
-        );
+        bail!("{}", lock_missing(&name));
     };
     build(root, Some(&lock), vars, registry)
+}
+
+/// M5a.
+pub(super) fn lock_missing(name: &str) -> String {
+    format!(
+        ".armadai/project.yaml references pack {name} but .armadai/pack.lock is missing: \
+         run `armadai pack update`"
+    )
 }
 
 /// Same, with the lock given (`pack add` and `pack update` check a lock before writing it).

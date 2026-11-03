@@ -288,18 +288,96 @@ fn sync_reports_an_unreadable_file() {
     );
 }
 
+const M_FAIL: &str = "Error: 1 source(s) or check(s) did not complete: see the warnings above";
+
 #[test]
 fn sync_continues_after_a_failing_source() {
     let env = Env::new();
     env.publish("1.0.0");
-    let bad = "https://user:s3cret@127.0.0.1:1/nope.git";
-    env.registries(&[bad, &env.url()]);
+    let bad = format!("file://{}/absent", env.dir.path().display());
+    env.registries(&[&bad, &env.url()]);
     let run = env.run(&["pack", "sync"], &[]);
     assert_eq!(run.code, Some(1), "{}{}", run.out, run.err);
     assert_eq!(
         run.out,
         format!("Synced {}: 1 pack(s), 1 version(s)\n", env.url())
     );
+    let prefix = format!("  warn: failed to sync starter source {bad}: ");
+    assert!(
+        run.err.lines().any(|l| l.starts_with(&prefix)),
+        "{}",
+        run.err
+    );
+    assert_eq!(run.err.lines().last(), Some(M_FAIL), "{}", run.err);
+}
+
+/// The `git` found on the PATH now.
+fn real_git() -> String {
+    let path = std::env::var("PATH").unwrap();
+    path.split(':')
+        .map(|d| Path::new(d).join("git"))
+        .find(|p| p.is_file())
+        .unwrap()
+        .display()
+        .to_string()
+}
+
+/// A `git` in front of the PATH running `body`, with `$REAL` the real one.
+fn fake_git(dir: &Path, body: &str) -> String {
+    let bin = dir.join("gitbin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let p = bin.join("git");
+    std::fs::write(&p, format!("#!/bin/sh\nREAL='{}'\n{body}\n", real_git())).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    format!("{}:{}", bin.display(), std::env::var("PATH").unwrap())
+}
+
+#[test]
+fn sync_masks_the_secrets_of_a_source() {
+    let env = Env::new();
+    let c1 = env.publish("1.0.0");
+    git(&env.origin(), &["tag", "demo-v1.0.0"]);
+    let bad = "https://u:s3cret@example.com/nope.git?token=QSECRET";
+    let good = "https://u:s3cret@example.com/p.git?token=QSECRET";
+    env.registries(&[bad]);
+    env.reference(good, "^1", &c1);
+    // `good` is served by the local origin; `bad` fails, echoing its URL as git does
+    let path = fake_git(
+        env.dir.path(),
+        r#"for a in "$@"; do
+  case "$a" in
+    *nope*) echo "fatal: unable to access '$a'" >&2; exit 128;;
+  esac
+done
+for a in "$@"; do
+  case "$a" in
+    https://u:s3cret@*) a="$ORIGIN";;
+  esac
+  set -- "$@" "$a"; shift
+done
+exec "$REAL" "$@""#,
+    );
+    let origin = env.url();
+    let run = env.run(&["pack", "sync"], &[("PATH", &path), ("ORIGIN", &origin)]);
+    assert_eq!(run.code, Some(1), "{}{}", run.out, run.err);
+    let shown = armadai_core::registries::redact_url(good);
+    assert_eq!(
+        run.out,
+        format!("Synced {shown}: 1 pack(s), 1 version(s)\n")
+    );
+    let m2 = format!(
+        "note: {shown} comes from .armadai/project.yaml (pack demo), not from your registries.yaml"
+    );
+    assert!(run.err_has(&m2), "{}", run.err);
+    for secret in ["s3cret", "QSECRET"] {
+        assert!(
+            !run.out.contains(secret) && !run.err.contains(secret),
+            "{}{}",
+            run.out,
+            run.err
+        );
+    }
     assert!(
         run.err
             .lines()
@@ -307,7 +385,27 @@ fn sync_continues_after_a_failing_source() {
         "{}",
         run.err
     );
-    assert!(!run.err.contains("s3cret"), "{}", run.err);
+}
+
+#[test]
+fn the_source_is_never_read_as_a_git_option() {
+    let env = Env::new();
+    env.publish("1.0.0");
+    env.registries(&[&env.url()]);
+    let log = env.dir.path().join("argv");
+    let path = fake_git(
+        env.dir.path(),
+        &format!("echo \"$*\" >> '{}'\nexec \"$REAL\" \"$@\"", log.display()),
+    );
+    let run = env.run(&["pack", "sync"], &[("PATH", &path)]);
+    assert_eq!(run.code, Some(0), "{}{}", run.out, run.err);
+    let dest = env
+        .config()
+        .join("registry/starters")
+        .join(armadai_core::registries::cache_key(&env.url()));
+    let want = format!("clone --depth 1 -q -- {} {}", env.url(), dest.display());
+    let argv = std::fs::read_to_string(&log).unwrap();
+    assert!(argv.lines().any(|l| l == want), "{argv}");
 }
 
 /// `git` and `curl` that leave a witness and fail.
@@ -431,4 +529,139 @@ fn sync_takes_the_projects_own_source_and_says_so() {
         env.url()
     );
     assert!(run.err_has(&m2), "{}", run.err);
+}
+
+fn status_env() -> Env {
+    let env = Env::new();
+    env.reference(URL, "^3", LOCK_C);
+    env
+}
+
+#[test]
+fn status_says_when_no_cached_version_matches_the_range() {
+    let env = status_env();
+    cached_versions(&env);
+    let run = env.run(&["pack", "status"], &[]);
+    assert_eq!(run.code, Some(0), "{}{}", run.out, run.err);
+    assert_eq!(
+        run.out,
+        "Pack demo (reference)\n  source:    https://example.com/packs.git\n  range:     ^3\n  locked:    1.0.0 (tag demo-v1.0.0, 111111111111)\n  in cache:  none matches the range (newest: 2.0.0)\n"
+    );
+}
+
+#[test]
+fn status_says_when_nothing_is_cached() {
+    let env = status_env();
+    let run = env.run(&["pack", "status"], &[]);
+    assert_eq!(run.code, Some(0), "{}{}", run.out, run.err);
+    assert_eq!(
+        run.out,
+        "Pack demo (reference)\n  source:    https://example.com/packs.git\n  range:     ^3\n  locked:    1.0.0 (tag demo-v1.0.0, 111111111111)\n  in cache:  nothing (run `armadai pack sync`)\n"
+    );
+}
+
+#[test]
+fn status_without_a_lock_names_pack_update() {
+    let env = status_env();
+    std::fs::remove_file(env.root().join(".armadai/pack.lock")).unwrap();
+    let run = env.run(&["pack", "status"], &[]);
+    assert_eq!(run.code, Some(1), "{}{}", run.out, run.err);
+    assert_eq!(
+        run.err,
+        "Error: .armadai/project.yaml references pack demo but .armadai/pack.lock is missing: run `armadai pack update`\n"
+    );
+}
+
+#[test]
+fn status_masks_the_secrets_of_the_source() {
+    let env = Env::new();
+    let url = "https://u:s3cret@example.com/p.git?token=QSECRET";
+    env.reference(url, "^1", LOCK_C);
+    let shown = armadai_core::registries::redact_url(url);
+    let run = env.run(&["pack", "status"], &[]);
+    assert_eq!(run.code, Some(0), "{}{}", run.out, run.err);
+    assert!(
+        !run.out.contains("s3cret") && !run.out.contains("QSECRET"),
+        "{}",
+        run.out
+    );
+    assert_eq!(
+        run.out.lines().nth(1),
+        Some(format!("  source:    {shown}").as_str())
+    );
+
+    // a copy
+    let env = Env::new();
+    put(&env.root(), ".armadai/project.yaml", "schema_version: 1\n");
+    put(
+        &env.root(),
+        ".armadai/link-manifest.yaml",
+        &format!("version: 1\npacks:\n  demo:\n    source: '{url}'\n    version: 1.0.0\n"),
+    );
+    let run = env.run(&["pack", "status"], &[]);
+    assert_eq!(run.code, Some(0), "{}{}", run.out, run.err);
+    assert_eq!(
+        run.out,
+        format!("Pack demo (copy)\n  source:    {shown}\n  installed: 1.0.0\n")
+    );
+}
+
+#[test]
+fn status_of_a_copy_without_a_version() {
+    let env = Env::new();
+    put(&env.root(), ".armadai/project.yaml", "schema_version: 1\n");
+    put(
+        &env.root(),
+        ".armadai/link-manifest.yaml",
+        &format!("version: 1\npacks:\n  demo:\n    source: '{URL}'\n"),
+    );
+    let run = env.run(&["pack", "status"], &[]);
+    assert_eq!(run.code, Some(0), "{}{}", run.out, run.err);
+    assert_eq!(
+        run.out,
+        "Pack demo (copy)\n  source:    https://example.com/packs.git\n  installed: (no version)\n"
+    );
+}
+
+#[test]
+fn sync_warns_on_an_unreadable_lock_and_on_an_unverifiable_tag() {
+    let (env, c1, _) = locked();
+    put(&env.root(), ".armadai/pack.lock", "format: [\n");
+    let run = env.run(&["pack", "sync"], &[]);
+    assert_eq!(run.code, Some(1), "{}{}", run.out, run.err);
+    let line = run
+        .err
+        .lines()
+        .find(|l| l.starts_with("  warn: .armadai/pack.lock: "));
+    assert!(line.is_some_and(|l| l.len() > 28), "{}", run.err);
+    assert_eq!(run.err.lines().last(), Some(M_FAIL));
+
+    env.reference(&env.url(), "^1", &c1);
+    let lock = std::fs::read_to_string(env.root().join(".armadai/pack.lock")).unwrap();
+    put(
+        &env.root(),
+        ".armadai/pack.lock",
+        &lock.replace("tag: demo-v1.0.0", "tag: ../x"),
+    );
+    let run = env.run(&["pack", "sync"], &[]);
+    assert_eq!(run.code, Some(1), "{}{}", run.out, run.err);
+    assert!(
+        run.err_has("  warn: pack demo has an invalid name or version id: ../x"),
+        "{}",
+        run.err
+    );
+    assert_eq!(run.err.lines().last(), Some(M_FAIL));
+}
+
+#[test]
+fn an_unreadable_versions_file_is_reported_once_when_the_source_fails() {
+    let env = Env::new();
+    let url = format!("file://{}/absent", env.dir.path().display());
+    env.reference(&url, "^1", LOCK_C);
+    let versions = env.versions_path(&url);
+    put(versions.parent().unwrap(), "versions.yaml", "format: [\n");
+    let run = env.run(&["pack", "sync"], &[]);
+    let prefix = format!("  warn: {} is not readable: ", versions.display());
+    let n = run.err.lines().filter(|l| l.starts_with(&prefix)).count();
+    assert_eq!(n, 1, "{}", run.err);
 }
