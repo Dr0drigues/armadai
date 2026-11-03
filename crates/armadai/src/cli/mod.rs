@@ -315,6 +315,27 @@ pub enum Command {
     )]
     Skills(skills::SkillsAction),
     /// Install, refresh, update and create starter packs
+    #[command(
+        long_about = "Install, refresh, update and create starter packs.\n\n\
+            A pack can be copied into the project (armadai init --pack) or referenced: pack add \
+            writes a pack: key in .armadai/project.yaml and a lock in .armadai/pack.lock, and \
+            link compiles the locked version of the pack from the local cache with your own \
+            files laid over it. Only pack sync, pack add and pack update reach the network; \
+            link, list, inspect and pack status never do.\n\n\
+            Ranges: latest, an exact version (1.2.3), or a semver range (^1.3, ~1.2).\n\
+            Variables: {{var.name}} in the native block of project.yaml and in agent, template, \
+            command and skill bodies is set by ARMADAI_VAR_<NAME>, .armadai/vars.local.yaml, \
+            then .armadai/vars.yaml.",
+        after_help = "Examples:\n  \
+            armadai pack sync\n  \
+            armadai pack add demo\n  \
+            armadai pack add demo@^1.3 --source https://example.com/packs.git\n  \
+            armadai pack status\n  \
+            armadai pack update\n  \
+            armadai pack update 1.4.0\n  \
+            armadai pack new demo --empty\n  \
+            armadai pack new demo --from-project"
+    )]
     Pack {
         #[command(subcommand)]
         what: pack::PackCommand,
@@ -612,6 +633,65 @@ mod tests {
                 "`pack {cmd}` has no short description (doc comment) in --help"
             );
         }
+    }
+
+    #[test]
+    fn pack_help_texts_are_pinned_line_for_line() {
+        use clap::CommandFactory;
+        let root = Cli::command();
+        let pack = root.find_subcommand("pack").expect("pack");
+        assert_eq!(
+            pack.get_about().map(|a| a.to_string()).as_deref(),
+            Some("Install, refresh, update and create starter packs")
+        );
+        let long = pack.get_long_about().expect("long_about").to_string();
+        let want = "Install, refresh, update and create starter packs.\n\n\
+A pack can be copied into the project (armadai init --pack) or referenced: pack add writes a pack: key in .armadai/project.yaml and a lock in .armadai/pack.lock, and link compiles the locked version of the pack from the local cache with your own files laid over it. Only pack sync, pack add and pack update reach the network; link, list, inspect and pack status never do.\n\n\
+Ranges: latest, an exact version (1.2.3), or a semver range (^1.3, ~1.2).\n\
+Variables: {{var.name}} in the native block of project.yaml and in agent, template, command and skill bodies is set by ARMADAI_VAR_<NAME>, .armadai/vars.local.yaml, then .armadai/vars.yaml.";
+        assert_eq!(
+            long.lines().collect::<Vec<_>>(),
+            want.lines().collect::<Vec<_>>()
+        );
+        let examples = pack.get_after_help().expect("after_help").to_string();
+        assert_eq!(
+            examples.lines().collect::<Vec<_>>(),
+            [
+                "Examples:",
+                "  armadai pack sync",
+                "  armadai pack add demo",
+                "  armadai pack add demo@^1.3 --source https://example.com/packs.git",
+                "  armadai pack status",
+                "  armadai pack update",
+                "  armadai pack update 1.4.0",
+                "  armadai pack new demo --empty",
+                "  armadai pack new demo --from-project",
+            ]
+        );
+        let about = |c: &str| {
+            let sub = pack.find_subcommand(c).expect(c);
+            sub.get_about().map(|a| a.to_string()).unwrap_or_default()
+        };
+        assert_eq!(
+            about("sync"),
+            "Refresh the pack sources now (network), and the snapshot the project locks"
+        );
+        assert_eq!(
+            about("status"),
+            "Show the project's pack, its locked and newest cached versions (no network)"
+        );
+        assert_eq!(
+            about("add"),
+            "Build the project on a pack of a source, by reference (cache and lock)"
+        );
+        assert_eq!(
+            about("update"),
+            "Move the pack to the best cached version of its range (or the one given), then link"
+        );
+        assert_eq!(
+            about("new"),
+            "Create a native pack: guided, minimal (--empty) or from this project (--from-project)"
+        );
     }
 
     #[test]
