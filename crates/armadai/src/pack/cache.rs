@@ -170,7 +170,7 @@ pub fn ensure_snapshot_in(
 }
 
 /// One plain path component, not an option for `git`.
-fn valid_name(name: &str) -> bool {
+pub(crate) fn valid_name(name: &str) -> bool {
     let mut parts = Path::new(name).components();
     matches!(parts.next(), Some(std::path::Component::Normal(_)))
         && parts.next().is_none()
@@ -179,7 +179,7 @@ fn valid_name(name: &str) -> bool {
 }
 
 /// A commit (40 or 64 lowercase hex) or `sha256-<64 hex>`.
-fn valid_id(id: &str) -> bool {
+pub(crate) fn valid_id(id: &str) -> bool {
     let hex = |s: &str, n: &[usize]| {
         n.contains(&s.len()) && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
     };

@@ -18,7 +18,7 @@ const IGNORED: &str = "ignored-pack-file";
 /// `project.yaml` of a pack that ships none.
 pub const DEFAULT_PROJECT: &str = "schema_version: 1\ntargets: [claude]\n";
 
-fn listed(rel: &Path) -> bool {
+pub(crate) fn listed(rel: &Path) -> bool {
     let c: Vec<&str> = rel.iter().filter_map(|s| s.to_str()).collect();
     match c.as_slice() {
         ["project.yaml"] => true,
@@ -73,6 +73,55 @@ pub fn files(pack_dir: &Path) -> anyhow::Result<PackFiles> {
         files: out,
         ignored,
     })
+}
+
+/// The white-listed files of a project's `.armadai/` (`base`), as `files` reads a pack's,
+/// descending only into the folders the list names (`state/`, `.migrated/` and the
+/// like are never visited). A symbolic link on a listed path, or standing for a folder
+/// inside one of those folders, is refused; any other link is left alone.
+pub(crate) fn read_listed(base: &Path) -> anyhow::Result<Vec<(PathBuf, Vec<u8>, bool)>> {
+    const DIRS: [&str; 6] = [
+        "agents",
+        "templates",
+        "commands",
+        "skills",
+        "flows",
+        "automations",
+    ];
+    let mut out = Vec::new();
+    let mut todo: Vec<PathBuf> = DIRS.iter().map(|d| base.join(d)).collect();
+    let manifest = base.join("project.yaml");
+    if std::fs::symlink_metadata(&manifest).is_ok() {
+        todo.push(manifest);
+    }
+    while let Some(path) = todo.pop() {
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(m) => m,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        let rel = path.strip_prefix(base)?.to_path_buf();
+        if meta.file_type().is_symlink() {
+            let to_dir = std::fs::metadata(&path).is_ok_and(|m| m.is_dir());
+            if listed(&rel) || to_dir {
+                bail!("{} is a symbolic link, refused", path.display());
+            }
+        } else if meta.is_dir() {
+            for e in
+                std::fs::read_dir(&path).with_context(|| format!("reading {}", path.display()))?
+            {
+                todo.push(e?.path());
+            }
+        } else if meta.is_file() && listed(&rel) {
+            #[cfg(unix)]
+            let exec = std::os::unix::fs::PermissionsExt::mode(&meta.permissions()) & 0o111 != 0;
+            #[cfg(not(unix))]
+            let exec = false;
+            out.push((rel, std::fs::read(&path)?, exec));
+        }
+    }
+    out.sort();
+    Ok(out)
 }
 
 /// The pack as a scratch project (`<tmp>/.armadai/`, the default `project.yaml`
