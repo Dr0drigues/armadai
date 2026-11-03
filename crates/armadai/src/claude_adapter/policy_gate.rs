@@ -190,8 +190,8 @@ pub fn decide(raw: &str) -> Option<String> {
         return None;
     };
     // the project as `link` compiled it: a pack reference reads its locked snapshot,
-    // variables stay as written. Any failure of the view is "no opinion", like an
-    // invalid project.
+    // variables stay as written. A view that does not open is refused below; a project
+    // that opens but does not load is "no opinion".
     let invalid = |why: String| {
         eprintln!(
             "armadai policy gate: {} is invalid, the delegation gate is inactive{why}",

@@ -432,8 +432,6 @@ fn the_gate_reads_the_pack_flows() {
     );
 }
 
-const M6_OPENCODE: &str = "set by none of ARMADAI_VAR_DATA, .armadai/vars.local.yaml, .armadai/vars.yaml: replaced by an empty value";
-
 #[test]
 fn a_missing_variable_is_reported_for_each_target() {
     let mut files = VARS_PROJECT.to_vec();
@@ -444,7 +442,7 @@ fn a_missing_variable_is_reported_for_each_target() {
     let env = Env::new(&files);
     let text = env.ok(&["link"], &[]);
     for target in ["claude", "opencode"] {
-        let line = format!("{target}: var data: approximated ({M6_OPENCODE})");
+        let line = format!("{target}: var data: approximated ({M6})");
         assert_eq!(
             text.lines().filter(|l| *l == line).count(),
             1,
