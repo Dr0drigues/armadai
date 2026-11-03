@@ -149,6 +149,62 @@ pub fn plan_command(a: CommandAnswers) -> (String, armadai_model::Command) {
     (a.id, command)
 }
 
+/// What `armadai pack new` is told, whether by options or by the guide.
+#[derive(Debug, Clone)]
+pub struct PackAnswers {
+    pub name: String,
+    pub description: String,
+}
+
+/// The description of a pack created without one.
+pub const DEFAULT_PACK_DESCRIPTION: &str = "A starter pack";
+
+/// The answers for `name` and a description that may be absent or blank: the one
+/// place the default is applied, for `--empty` and for the guide alike.
+pub fn pack_answers(name: &str, description: Option<&str>) -> PackAnswers {
+    let description = description.map(str::trim).filter(|d| !d.is_empty());
+    PackAnswers {
+        name: name.to_string(),
+        description: description.unwrap_or(DEFAULT_PACK_DESCRIPTION).to_string(),
+    }
+}
+
+/// The empty folders of a minimal native pack.
+pub const PACK_FOLDERS: [&str; 4] = ["agents", "skills", "flows", "automations"];
+
+/// The files of a minimal native pack, relative to its folder: `pack.yaml`
+/// (`format: 1`, `name`, `description`) and `project.yaml`. The folders of `PACK_FOLDERS`
+/// are created empty: a `.gitkeep` in each would be reported by `validate` as an ignored
+/// pack file.
+pub fn plan_pack(a: &PackAnswers) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    // a JSON string is a YAML double-quoted scalar
+    let description = serde_json::to_string(&a.description).unwrap_or_default();
+    vec![
+        (
+            "pack.yaml".into(),
+            format!("format: 1\nname: {}\ndescription: {description}\n", a.name).into_bytes(),
+        ),
+        (
+            "project.yaml".into(),
+            crate::cli::native_pack::DEFAULT_PROJECT.as_bytes().to_vec(),
+        ),
+    ]
+}
+
+/// The guide of `pack new`: the name (the argument is the default) and the description.
+pub fn ask_pack(name: &str) -> anyhow::Result<PackAnswers> {
+    require_terminal("pass --empty or --from-project instead (armadai pack new --help)")?;
+    let name: String = dialoguer::Input::<String>::new()
+        .with_prompt("Pack name")
+        .with_initial_text(name)
+        .validate_with(|s: &String| -> Result<(), String> {
+            crate::cli::new_target::check_id(s).map_err(|e| e.to_string())
+        })
+        .interact_text()?;
+    let description = ask_text("Description (empty: A starter pack)")?;
+    Ok(pack_answers(&name, Some(&description)))
+}
+
 /// The valid id an invalid answer most likely meant (`Mon Agent` → `mon-agent`),
 /// to propose, never to apply silently.
 pub fn suggest_id(input: &str) -> Option<String> {
@@ -165,18 +221,17 @@ pub fn suggest_id(input: &str) -> Option<String> {
     (out != input && crate::cli::new_target::check_id(&out).is_ok()).then_some(out)
 }
 
-fn require_terminal() -> anyhow::Result<()> {
+fn require_terminal(instead: &str) -> anyhow::Result<()> {
     if !(std::io::stdin().is_terminal() && std::io::stderr().is_terminal()) {
-        anyhow::bail!(
-            "interactive mode needs a terminal; pass the options instead \
-             (armadai new <agent|flow|automation|skill|command> --help)"
-        );
+        anyhow::bail!("interactive mode needs a terminal; {instead}");
     }
     Ok(())
 }
 
 pub fn run(kind: Option<WizardKind>) -> anyhow::Result<()> {
-    require_terminal()?;
+    require_terminal(
+        "pass the options instead (armadai new <agent|flow|automation|skill|command> --help)",
+    )?;
     let kind = match kind {
         Some(k) => k,
         None => {
@@ -444,6 +499,35 @@ fn ask_automation() -> anyhow::Result<AutomationAnswers> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_wizard_writes_what_empty_writes() {
+        // the guide hands `pack_answers` what was typed; `--empty` hands it the flag
+        for (typed, flag) in [("", None), ("  ", None), ("Demo pack", Some("Demo pack"))] {
+            assert_eq!(
+                plan_pack(&pack_answers("demo", Some(typed))),
+                plan_pack(&pack_answers("demo", flag)),
+                "{typed:?}"
+            );
+        }
+        let files = plan_pack(&pack_answers("demo", Some("Demo pack")));
+        let text = |f: &str| {
+            let (_, b) = files
+                .iter()
+                .find(|(r, _)| r == std::path::Path::new(f))
+                .unwrap();
+            String::from_utf8(b.clone()).unwrap()
+        };
+        assert_eq!(
+            text("pack.yaml"),
+            "format: 1\nname: demo\ndescription: \"Demo pack\"\n"
+        );
+        assert_eq!(
+            text("project.yaml"),
+            crate::cli::native_pack::DEFAULT_PROJECT
+        );
+        assert_eq!(files.len(), 2);
+    }
 
     #[test]
     fn empty_answers_keep_the_template_defaults() {

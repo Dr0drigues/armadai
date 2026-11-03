@@ -1,11 +1,12 @@
 //! `armadai pack sync`, `status`, `add` and `update`.
 
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use armadai_core::registries::{RegistrySource, cache_key};
 use clap::Subcommand;
 
+use crate::cli::new_wizard::{PACK_FOLDERS, PackAnswers, ask_pack, pack_answers, plan_pack};
 use crate::pack::cache::{self, Available};
 use crate::pack::lock::{self, TagState};
 use crate::pack::{source, status};
@@ -34,9 +35,55 @@ pub enum PackCommand {
         /// An exact version instead of the range's best
         version: Option<String>,
     },
+    /// Create a native pack: guided, minimal (--empty) or from this project (--from-project)
+    New {
+        name: String,
+        /// A minimal pack, no questions
+        #[arg(long, conflicts_with = "from_project")]
+        empty: bool,
+        /// Capture this project's .armadai/ (not the link manifest, state or variables)
+        #[arg(long)]
+        from_project: bool,
+        #[arg(long)]
+        description: Option<String>,
+        /// Parent folder (default: the current directory)
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
 }
 
 pub fn execute(what: PackCommand) -> anyhow::Result<()> {
+    if let PackCommand::New {
+        name,
+        empty,
+        from_project,
+        description,
+        dir,
+    } = what
+    {
+        let parent = match dir {
+            Some(d) => d,
+            None => std::env::current_dir()?,
+        };
+        let line = if from_project {
+            let cwd = std::env::current_dir()?;
+            new_from_project(
+                &crate::compile::find_project(&cwd)?,
+                &parent,
+                &name,
+                description,
+            )?
+        } else {
+            let answers = if empty {
+                pack_answers(&name, description.as_deref())
+            } else {
+                ask_pack(&name)?
+            };
+            new_minimal(&parent, &answers)?
+        };
+        println!("{line}");
+        return Ok(());
+    }
     let root = crate::compile::find_project(&std::env::current_dir()?);
     let registry = armadai_core::config::registry_cache_dir();
     match what {
@@ -72,6 +119,7 @@ pub fn execute(what: PackCommand) -> anyhow::Result<()> {
             )?;
             finish(done)
         }
+        PackCommand::New { .. } => unreachable!("handled above"),
         PackCommand::Status => {
             let config = armadai_core::config::config_dir();
             print!("{}", status::report(&root?, &registry, &config)?);
@@ -250,4 +298,115 @@ fn check_lock(
         }
     }
     failed
+}
+
+/// `pack new --empty` and the guide: the plan of `plan_pack`, written.
+fn new_minimal(parent: &Path, a: &PackAnswers) -> anyhow::Result<String> {
+    crate::cli::new_target::check_id(&a.name)?;
+    let files = plan_pack(a)
+        .into_iter()
+        .map(|(r, b)| (r, b, false))
+        .collect();
+    let dir = write_pack(parent, &a.name, files, &PACK_FOLDERS)?;
+    Ok(format!(
+        "Created pack {} in {}: pack.yaml, project.yaml, agents/, skills/, flows/, automations/",
+        a.name,
+        dir.display()
+    ))
+}
+
+/// `pack new --from-project`: the white list of the project's `.armadai/`, plus `pack.yaml`.
+fn new_from_project(
+    root: &Path,
+    parent: &Path,
+    name: &str,
+    description: Option<String>,
+) -> anyhow::Result<String> {
+    crate::cli::new_target::check_id(name)?;
+    if let Some(d) = status::declared(root) {
+        anyhow::bail!(
+            "this project references pack {}: its .armadai/ is an overlay, not a pack; \
+             create the pack from its source instead",
+            d.name
+        );
+    }
+    let mut files = crate::cli::native_pack::read_listed(&root.join(".armadai"), true)?;
+    let pack_yaml = plan_pack(&pack_answers(name, description.as_deref()))
+        .into_iter()
+        .find(|(r, _)| r == Path::new("pack.yaml"))
+        .map(|(r, b)| (r, b, false));
+    files.extend(pack_yaml);
+    let count = |dir: &str| {
+        (files.iter())
+            .filter(|(r, ..)| r.starts_with(dir))
+            .filter(|(r, ..)| dir != "skills" || r.ends_with("SKILL.md"))
+            .count()
+    };
+    let (a, s, f, u, t, c) = (
+        count("agents"),
+        count("skills"),
+        count("flows"),
+        count("automations"),
+        count("templates"),
+        count("commands"),
+    );
+    let dir = write_pack(parent, name, files, &[])?;
+    Ok(format!(
+        "Created pack {name} in {} from .armadai/: {a} agent(s), {s} skill(s), {f} flow(s), \
+         {u} automation(s), {t} template(s), {c} command(s) \
+         (link-manifest.yaml, state/, pack.lock and the vars files left out)",
+        dir.display()
+    ))
+}
+
+/// Write the files in a new folder `parent/name` and validate the result; any failure
+/// removes the folder (it did not exist before, so nothing else is touched).
+fn write_pack(
+    parent: &Path,
+    name: &str,
+    files: Vec<(PathBuf, Vec<u8>, bool)>,
+    folders: &[&str],
+) -> anyhow::Result<PathBuf> {
+    use anyhow::Context;
+    let dir = parent.join(name);
+    if std::fs::symlink_metadata(&dir).is_ok() {
+        anyhow::bail!(
+            "{} already exists: choose another name, or --dir",
+            dir.display()
+        );
+    }
+    std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    std::fs::create_dir(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    let built = (|| -> anyhow::Result<()> {
+        for f in folders {
+            std::fs::create_dir(dir.join(f))?;
+        }
+        for (rel, bytes, exec) in &files {
+            let at = dir.join(rel);
+            std::fs::create_dir_all(at.parent().context("a file has a parent")?)?;
+            std::fs::write(&at, bytes).with_context(|| format!("writing {}", at.display()))?;
+            #[cfg(unix)]
+            if *exec {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = std::fs::metadata(&at)?.permissions().mode();
+                std::fs::set_permissions(&at, std::fs::Permissions::from_mode(mode | 0o111))?;
+            }
+            #[cfg(not(unix))]
+            let _ = exec;
+        }
+        let pack = crate::cli::native_pack::files(&dir)?;
+        let (_tmp, ds) = crate::cli::native_pack::stage(&dir, &pack)?;
+        if armadai_model::has_errors(&ds) {
+            for d in &ds {
+                eprintln!("{}", d.render());
+            }
+            anyhow::bail!("pack '{name}' is invalid; nothing was written");
+        }
+        Ok(())
+    })();
+    if let Err(e) = built {
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err(e);
+    }
+    Ok(dir)
 }
