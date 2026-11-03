@@ -153,7 +153,7 @@ fn check_lock(
             status::id12(&r.id())
         ),
         Ok(Some(TagState::Gone)) => eprintln!(
-            "warn: tag {} of pack {} no longer exists, .armadai/pack.lock keeps {}",
+            "  warn: tag {} of pack {} no longer exists, .armadai/pack.lock keeps {}",
             r.tag.as_deref().unwrap_or_default(),
             lock.pack,
             status::id12(&r.id())

@@ -214,7 +214,7 @@ fn sync_signals_a_gone_tag() {
     let gone = env.run(&["pack", "sync"], &[]);
     assert_eq!(gone.code, Some(0), "{}{}", gone.out, gone.err);
     let m3b = format!(
-        "warn: tag demo-v1.0.0 of pack demo no longer exists, .armadai/pack.lock keeps {}",
+        "  warn: tag demo-v1.0.0 of pack demo no longer exists, .armadai/pack.lock keeps {}",
         id12(&c1)
     );
     assert!(gone.err_has(&m3b), "{}", gone.err);
