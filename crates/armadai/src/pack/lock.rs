@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::starters_registry::path_arg;
+use crate::starters_registry::{git_failure, path_arg};
 
 pub const LOCK: &str = ".armadai/pack.lock";
 
@@ -89,7 +89,8 @@ pub enum TagState {
 
 /// A tag of the lock is always `<pack>-v<semver>`: nothing else becomes a `git` argument.
 fn valid_tag(pack: &str, tag: &str) -> bool {
-    let plain = !pack.starts_with('-')
+    let plain = !pack.is_empty()
+        && !pack.starts_with('-')
         && pack
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
@@ -115,24 +116,24 @@ pub fn tag_moved(
         "pack {pack} has an invalid name or version id: {tag}"
     );
     let dir = path_arg(clone)?;
-    let out = std::process::Command::new("git")
-        .args([
-            "-C",
-            dir,
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            "--end-of-options",
-        ])
-        .arg(format!("refs/tags/{tag}^{{commit}}"))
-        .output()?;
+    let rev = format!("refs/tags/{tag}^{{commit}}");
+    let args = [
+        "-C",
+        dir,
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        "--end-of-options",
+        &rev,
+    ];
+    let out = std::process::Command::new("git").args(args).output()?;
     match out.status.code() {
         Some(0) => {
             let now = String::from_utf8_lossy(&out.stdout).trim().to_string();
             Ok((now != *commit).then_some(TagState::Moved(now)))
         }
         Some(1) => Ok(Some(TagState::Gone)),
-        _ => anyhow::bail!("git rev-parse failed for tag {tag}"),
+        _ => anyhow::bail!(git_failure(&args, &String::from_utf8_lossy(&out.stderr))),
     }
 }
 
@@ -268,6 +269,63 @@ mod tests {
                 format!("pack demo has an invalid name or version id: {tag}"),
             );
         }
+    }
+
+    #[test]
+    fn an_empty_pack_name_never_makes_a_tag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let resolved = Resolved {
+            version: "1.0.0".into(),
+            tag: Some("-v1.0.0".into()),
+            commit: Some("0".repeat(40)),
+            digest: None,
+        };
+        assert_eq!(
+            tag_moved(tmp.path(), "", &resolved)
+                .unwrap_err()
+                .to_string(),
+            "pack  has an invalid name or version id: -v1.0.0"
+        );
+    }
+
+    #[test]
+    fn a_failing_git_reports_git_s_own_message() {
+        let tmp = tempfile::tempdir().unwrap(); // not a repository
+        let resolved = Resolved {
+            version: "1.0.0".into(),
+            tag: Some("demo-v1.0.0".into()),
+            commit: Some("0".repeat(40)),
+            digest: None,
+        };
+        let dir = tmp.path().to_str().unwrap();
+        let rev = "refs/tags/demo-v1.0.0^{commit}";
+        let out = std::process::Command::new("git")
+            .args([
+                "-C",
+                dir,
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                "--end-of-options",
+                rev,
+            ])
+            .output()
+            .unwrap();
+        let want = git_failure(
+            &[
+                "-C",
+                dir,
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                "--end-of-options",
+                rev,
+            ],
+            &String::from_utf8_lossy(&out.stderr),
+        );
+        assert!(want.contains("not a git repository"), "{want}");
+        let got = tag_moved(tmp.path(), "demo", &resolved).unwrap_err();
+        assert_eq!(got.to_string(), want);
     }
 
     #[cfg(unix)]

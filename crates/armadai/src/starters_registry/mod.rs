@@ -110,7 +110,7 @@ fn masked(err: anyhow::Error, url: &str) -> anyhow::Error {
 }
 
 /// The error for a failed `git` run, with any URL credential in argv or stderr masked.
-fn git_failure(args: &[&str], stderr: &str) -> String {
+pub(crate) fn git_failure(args: &[&str], stderr: &str) -> String {
     let msg = format!("git {} failed: {}", args.join(" "), stderr.trim());
     args.iter()
         .fold(msg, |msg, arg| mask_url_secrets(&msg, arg))
