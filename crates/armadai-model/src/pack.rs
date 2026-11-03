@@ -59,7 +59,7 @@ fn manifest_path() -> &'static Path {
 fn read(layer: Layer, bytes: &[u8]) -> Result<Value, OverlayError> {
     let bad = |message: String| OverlayError::InvalidYaml { layer, message };
     let text = std::str::from_utf8(bytes).map_err(|e| bad(e.to_string()))?;
-    match crate::yaml::from_str::<Value>(text).map_err(|e| bad(e.to_string()))? {
+    match crate::yaml::from_str_manifest(text).map_err(|e| bad(e.to_string()))? {
         Value::Null => Ok(Value::Object(Default::default())),
         v @ Value::Object(_) => Ok(v),
         _ => Err(bad("not a mapping".into())),
@@ -248,5 +248,51 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    fn merged_text(pack: &str, project: &str) -> String {
+        let f = |s: &str| BTreeMap::from([(PathBuf::from("project.yaml"), s.as_bytes().to_vec())]);
+        let out = overlay(&f(pack), &f(project)).unwrap();
+        String::from_utf8(out[Path::new("project.yaml")].1.clone()).unwrap()
+    }
+
+    #[test]
+    fn empty_or_comment_only_manifest_is_an_empty_mapping() {
+        for empty in ["", "# nothing here\n"] {
+            assert_eq!(
+                y(&merged_text("coordinator: lead\n", empty)),
+                json!({"coordinator": "lead"})
+            );
+        }
+    }
+
+    #[test]
+    fn a_manifest_that_is_not_a_mapping_is_refused() {
+        let f = |s: &str| BTreeMap::from([(PathBuf::from("project.yaml"), s.as_bytes().to_vec())]);
+        assert_eq!(
+            overlay(&f("coordinator: lead\n"), &f("[a, b]\n")),
+            Err(OverlayError::InvalidYaml {
+                layer: Layer::Project,
+                message: "not a mapping".into()
+            })
+        );
+    }
+
+    #[test]
+    fn a_duplicate_within_the_project_list_is_dropped() {
+        let v = merge_manifest_values(&json!({"l": ["a"]}), &json!({"l": ["c", "c"]}));
+        assert_eq!(v, json!({"l": ["a", "c"]}));
+    }
+
+    #[test]
+    fn decimal_looking_text_keeps_its_spelling_but_native_numbers_stay_numbers() {
+        let text = merged_text(
+            "name: 1.10\ntargets: [2.50]\nnative:\n  claude:\n    ratio: 1.5\n",
+            "coordinator: 3.0\n",
+        );
+        assert_eq!(
+            text,
+            "name: \"1.10\"\ntargets:\n- \"2.50\"\nnative:\n  claude:\n    ratio: 1.5\ncoordinator: \"3.0\"\n"
+        );
     }
 }
