@@ -1,0 +1,252 @@
+//! Pure merge of a project onto the pack it references (reference mode).
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+use serde_json::Value;
+
+use crate::types::NativeValue;
+
+/// Where a file of the effective `.armadai/` comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Layer {
+    Pack,
+    Project,
+    Merged,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OverlayError {
+    /// `project.yaml` of `layer` is not YAML.
+    InvalidYaml { layer: Layer, message: String },
+    /// The pack's own `project.yaml` has a `pack:` key.
+    NestedPack,
+}
+
+/// Two `project.yaml` values merged: maps key by key (recursively), lists completed
+/// (the pack's items, then the project's absent from them, order kept), any other
+/// value taken from the project.
+pub fn merge_manifest_values(pack: &Value, project: &Value) -> Value {
+    match (pack, project) {
+        (Value::Object(a), Value::Object(b)) => {
+            let mut out = a.clone();
+            for (k, v) in b {
+                let merged = match a.get(k) {
+                    Some(p) => merge_manifest_values(p, v),
+                    None => v.clone(),
+                };
+                out.insert(k.clone(), merged);
+            }
+            Value::Object(out)
+        }
+        (Value::Array(a), Value::Array(b)) => {
+            let mut out = a.clone();
+            for v in b {
+                if !out.contains(v) {
+                    out.push(v.clone());
+                }
+            }
+            Value::Array(out)
+        }
+        (_, p) => p.clone(),
+    }
+}
+
+fn manifest_path() -> &'static Path {
+    Path::new("project.yaml")
+}
+
+fn read(layer: Layer, bytes: &[u8]) -> Result<Value, OverlayError> {
+    let bad = |message: String| OverlayError::InvalidYaml { layer, message };
+    let text = std::str::from_utf8(bytes).map_err(|e| bad(e.to_string()))?;
+    match crate::yaml::from_str::<Value>(text).map_err(|e| bad(e.to_string()))? {
+        Value::Null => Ok(Value::Object(Default::default())),
+        v @ Value::Object(_) => Ok(v),
+        _ => Err(bad("not a mapping".into())),
+    }
+}
+
+/// The effective `.armadai/` of a project referencing a pack (paths relative to
+/// `.armadai/`): every pack file, replaced by the project's file at the same path,
+/// plus the project's other files; `project.yaml` merged by `merge_manifest_values`,
+/// without the project's `pack` key, written with `crate::yaml` (numbers kept plain
+/// through `NativeValue`).
+pub fn overlay(
+    pack: &BTreeMap<PathBuf, Vec<u8>>,
+    project: &BTreeMap<PathBuf, Vec<u8>>,
+) -> Result<BTreeMap<PathBuf, (Layer, Vec<u8>)>, OverlayError> {
+    let mut out: BTreeMap<PathBuf, (Layer, Vec<u8>)> = BTreeMap::new();
+    for (p, b) in pack {
+        out.insert(p.clone(), (Layer::Pack, b.clone()));
+    }
+    for (p, b) in project {
+        out.insert(p.clone(), (Layer::Project, b.clone()));
+    }
+
+    let pack_value = pack
+        .get(manifest_path())
+        .map(|b| read(Layer::Pack, b))
+        .transpose()?;
+    if pack_value.as_ref().is_some_and(|v| v.get("pack").is_some()) {
+        return Err(OverlayError::NestedPack);
+    }
+    let project_value = project
+        .get(manifest_path())
+        .map(|b| read(Layer::Project, b))
+        .transpose()?;
+
+    let merged = match (pack_value, project_value) {
+        (None, None) => return Ok(out),
+        (Some(_), None) => return Ok(out), // already Layer::Pack
+        (None, Some(mut p)) => {
+            p.as_object_mut().map(|m| m.remove("pack"));
+            p
+        }
+        (Some(a), Some(mut p)) => {
+            p.as_object_mut().map(|m| m.remove("pack"));
+            merge_manifest_values(&a, &p)
+        }
+    };
+    let text =
+        crate::yaml::to_string(&NativeValue(merged)).map_err(|e| OverlayError::InvalidYaml {
+            layer: Layer::Merged,
+            message: e.to_string(),
+        })?;
+    out.insert(manifest_path().into(), (Layer::Merged, text.into_bytes()));
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn y(s: &str) -> Value {
+        crate::yaml::from_str(s).unwrap()
+    }
+
+    #[test]
+    fn lists_are_completed_from_both_sides() {
+        let v = merge_manifest_values(
+            &json!({"policy": {"free_agents": ["a", "b"]}}),
+            &json!({"policy": {"free_agents": ["c", "a"]}}),
+        );
+        assert_eq!(v, json!({"policy": {"free_agents": ["a", "b", "c"]}}));
+    }
+
+    #[test]
+    fn project_scalar_wins_and_pack_keys_stay() {
+        let v = merge_manifest_values(
+            &json!({"coordinator": "lead", "targets": ["claude"]}),
+            &json!({"coordinator": "boss"}),
+        );
+        assert_eq!(v, json!({"coordinator": "boss", "targets": ["claude"]}));
+    }
+
+    #[test]
+    fn explicit_off_of_the_project_wins() {
+        let pack = BTreeMap::from([(
+            "project.yaml".into(),
+            b"policy:\n  delegation: strict\n".to_vec(),
+        )]);
+        let project = BTreeMap::from([(
+            "project.yaml".into(),
+            b"policy:\n  delegation: off\n".to_vec(),
+        )]);
+        let out = overlay(&pack, &project).unwrap();
+        let (layer, bytes) = &out[Path::new("project.yaml")];
+        assert_eq!(*layer, Layer::Merged);
+        assert_eq!(
+            y(std::str::from_utf8(bytes).unwrap()),
+            json!({"policy": {"delegation": "off"}})
+        );
+    }
+
+    #[test]
+    fn native_maps_merge_recursively() {
+        let pack = BTreeMap::from([(
+            "project.yaml".into(),
+            b"native:\n  claude:\n    permissions:\n      allow: [x]\n    env:\n      A: \"1\"\n    port: 7\n    b: true\n".to_vec(),
+        )]);
+        let project = BTreeMap::from([(
+            "project.yaml".into(),
+            b"native:\n  claude:\n    permissions:\n      allow: [z]\n".to_vec(),
+        )]);
+        let out = overlay(&pack, &project).unwrap();
+        let text = std::str::from_utf8(&out[Path::new("project.yaml")].1).unwrap();
+        assert_eq!(
+            y(text),
+            json!({"native": {"claude": {
+                "permissions": {"allow": ["x", "z"]},
+                "env": {"A": "1"}, "port": 7, "b": true}}})
+        );
+        assert!(
+            text.contains("port: 7") && text.contains("b: true"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn files_overlay_by_path() {
+        let f = |s: &str| s.as_bytes().to_vec();
+        let pack = BTreeMap::from([
+            (PathBuf::from("agents/a.md"), f("A1")),
+            (PathBuf::from("skills/s/SKILL.md"), f("S1")),
+            (PathBuf::from("skills/s/scripts/x.sh"), f("X1")),
+        ]);
+        let project = BTreeMap::from([
+            (PathBuf::from("agents/a.md"), f("A2")),
+            (PathBuf::from("agents/b.md"), f("B2")),
+        ]);
+        let out = overlay(&pack, &project).unwrap();
+        assert_eq!(
+            out,
+            BTreeMap::from([
+                (PathBuf::from("agents/a.md"), (Layer::Project, f("A2"))),
+                (PathBuf::from("agents/b.md"), (Layer::Project, f("B2"))),
+                (PathBuf::from("skills/s/SKILL.md"), (Layer::Pack, f("S1"))),
+                (
+                    PathBuf::from("skills/s/scripts/x.sh"),
+                    (Layer::Pack, f("X1"))
+                ),
+            ])
+        );
+    }
+
+    #[test]
+    fn the_project_pack_key_is_dropped_and_a_nested_pack_refused() {
+        let f = |s: &str| s.as_bytes().to_vec();
+        let pack = BTreeMap::from([("project.yaml".into(), f("coordinator: lead\n"))]);
+        let project = BTreeMap::from([(
+            "project.yaml".into(),
+            f("pack:\n  name: demo\n  source: s\n  version: '1'\n"),
+        )]);
+        let out = overlay(&pack, &project).unwrap();
+        let text = std::str::from_utf8(&out[Path::new("project.yaml")].1).unwrap();
+        assert_eq!(y(text), json!({"coordinator": "lead"}));
+        // no pack side: the project's file alone, still without `pack`
+        let out = overlay(&BTreeMap::new(), &project).unwrap();
+        assert_eq!(
+            out[Path::new("project.yaml")],
+            (Layer::Merged, b"{}\n".to_vec())
+        );
+
+        let nested = BTreeMap::from([("project.yaml".into(), f("pack:\n  name: x\n"))]);
+        assert_eq!(overlay(&nested, &project), Err(OverlayError::NestedPack));
+    }
+
+    #[test]
+    fn pack_only_manifest_is_kept_and_bad_yaml_is_named() {
+        let pack = BTreeMap::from([("project.yaml".into(), b"coordinator: lead\n".to_vec())]);
+        let out = overlay(&pack, &BTreeMap::new()).unwrap();
+        assert_eq!(out[Path::new("project.yaml")].0, Layer::Pack);
+        let bad = BTreeMap::from([("project.yaml".into(), b"a: [\n".to_vec())]);
+        assert!(matches!(
+            overlay(&pack, &bad),
+            Err(OverlayError::InvalidYaml {
+                layer: Layer::Project,
+                ..
+            })
+        ));
+    }
+}
