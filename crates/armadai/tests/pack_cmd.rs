@@ -681,3 +681,22 @@ fn the_signal_survives_an_unrelated_failing_source() {
         run.err
     );
 }
+
+#[test]
+fn an_unreadable_versions_file_of_a_copy_is_reported_once_too() {
+    let env = Env::new();
+    let url = format!("file://{}/absent", env.dir.path().display());
+    put(&env.root(), ".armadai/project.yaml", "schema_version: 1\n");
+    put(
+        &env.root(),
+        ".armadai/link-manifest.yaml",
+        &format!("version: 1\npacks:\n  demo:\n    source: '{url}'\n    version: 1.0.0\n"),
+    );
+    env.registries(&[&url]);
+    let versions = env.versions_path(&url);
+    put(versions.parent().unwrap(), "versions.yaml", "format: [\n");
+    let run = env.run(&["pack", "sync"], &[]);
+    let prefix = format!("  warn: {} is not readable: ", versions.display());
+    let n = run.err.lines().filter(|l| l.starts_with(&prefix)).count();
+    assert_eq!(n, 1, "{}", run.err);
+}
