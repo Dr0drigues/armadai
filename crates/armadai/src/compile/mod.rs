@@ -335,7 +335,7 @@ pub fn find_project(cwd: &Path) -> anyhow::Result<PathBuf> {
 
 pub trait Compiler {
     /// `root`: the project root, where files are written and the user's files read
-    /// (`CLAUDE.md`, `opencode.json`). `sources`: the directory holding the
+    /// (the root `CLAUDE.md`; `opencode.json` is read by `patch.rs`, not here). `sources`: the directory holding the
     /// `.armadai/` to compile — `root` itself, or the effective view of task 9.
     fn compile(&self, project: &Project, root: &Path, sources: &Path) -> anyhow::Result<Plan>;
 }

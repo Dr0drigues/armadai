@@ -16,6 +16,7 @@ use crate::compile::json_keys::JsonKeys;
 use crate::compile::patch::{self, PatchKind, PatchedFile};
 use crate::compile::{self, Artifact, ArtifactKind, Report, Status};
 use crate::linker::manifest::{self, DigestCheck, FileOutcome, Lookup, Outcome, ProducedBy};
+use crate::pack::effective::{self, Effective, Vars};
 
 type Settings = (PathBuf, Vec<HookEntry>, BTreeMap<String, serde_json::Value>);
 
@@ -56,11 +57,16 @@ impl Prepared {
     }
 }
 
-/// The project at or above the current directory, validated; diagnostics go to stderr.
-pub fn load_project() -> anyhow::Result<(PathBuf, Project)> {
+/// The project at or above the current directory, as its effective view (pack
+/// overlay, variables resolved from the environment and the vars files), validated;
+/// diagnostics go to stderr. The view owns the scratch copy: keep it until the writes
+/// are done.
+pub fn load_project() -> anyhow::Result<(PathBuf, Effective, Project)> {
     let root = compile::find_project(&std::env::current_dir()?)?;
-    match armadai_model::load_checked(&root) {
-        Ok((p, _)) => Ok((root, p)),
+    let env = |n: &str| std::env::var(n).ok();
+    let view = effective::open(&root, Vars::Resolve(&env))?;
+    match view.load_checked() {
+        Ok((p, _)) => Ok((root, view, p)),
         Err(ds) => {
             for d in &ds {
                 eprintln!("{}", d.render());
@@ -650,6 +656,43 @@ fn write(
     Ok(())
 }
 
+/// The report lines of the effective view: the locked pack, and each variable no layer sets.
+fn report_view(view: &Effective, p: &mut Prepared) {
+    if let Some(l) = &view.pack {
+        let r = &l.lock.resolved;
+        let id = r.id();
+        let id = id.strip_prefix("sha256-").unwrap_or(&id);
+        let reason = format!(
+            "{} ({}), from the cache",
+            r.version,
+            &id[..id.len().min(12)]
+        );
+        p.report.push(
+            &p.target,
+            format!("pack {}", l.name),
+            Status::Compiled,
+            Some(&reason),
+        );
+    }
+    for name in &view.missing_vars {
+        p.report.push(
+            &p.target,
+            format!("var {name}"),
+            Status::Approximated,
+            Some(&format!(
+                "set by none of {}, .armadai/vars.local.yaml, .armadai/vars.yaml: \
+                 replaced by an empty value",
+                armadai_model::pack_vars::env_name(name)
+            )),
+        );
+    }
+}
+
+/// The M4 note when a newer version of the locked pack is in the cache; task 14 fills it.
+fn newer_pack_note(_view: &Effective) -> Option<String> {
+    None
+}
+
 pub fn execute(
     targets: Vec<crate::linker::LinkTarget>,
     dry_run: bool,
@@ -659,7 +702,7 @@ pub fn execute(
     json: bool,
     adopt_hooks: bool,
 ) -> anyhow::Result<()> {
-    let (root, project) = load_project()?;
+    let (root, view, project) = load_project()?;
     let targets = targets_of(&targets, &project);
     if output.is_some() && targets.len() > 1 {
         bail!("--output names one directory: link one target at a time with it");
@@ -671,13 +714,19 @@ pub fn execute(
             prepare(
                 &project,
                 &root,
-                &root,
+                &view.sources,
                 t,
                 output.as_deref(),
                 agents.as_deref(),
             )
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
+    for p in &mut prepared {
+        report_view(&view, p);
+    }
+    if let Some(note) = newer_pack_note(&view) {
+        eprintln!("{note}");
+    }
 
     let mut lines = Vec::new();
     if dry_run {

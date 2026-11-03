@@ -189,18 +189,32 @@ pub fn decide(raw: &str) -> Option<String> {
         }
         return None;
     };
-    let project = match armadai_model::load_checked(&root) {
+    // the project as `link` compiled it: a pack reference reads its locked snapshot,
+    // variables stay as written. Any failure of the view is "no opinion", like an
+    // invalid project.
+    let invalid = |why: String| {
+        eprintln!(
+            "armadai policy gate: {} is invalid, the delegation gate is inactive{why}",
+            root.join(".armadai").display()
+        );
+    };
+    let view = match crate::pack::effective::open(&root, crate::pack::effective::Vars::Literal) {
+        Ok(v) => v,
+        Err(e) => {
+            invalid(format!(": {e}"));
+            return None;
+        }
+    };
+    let project = match view.load_checked() {
         Ok((p, _)) => p,
         Err(ds) => {
             let first = ds
                 .iter()
                 .find(|d| d.severity == armadai_model::Severity::Error);
-            eprintln!(
-                "armadai policy gate: {} is invalid, the delegation gate is inactive{}",
-                root.join(".armadai").display(),
+            invalid(
                 first
                     .map(|d| format!(": {}", d.render()))
-                    .unwrap_or_default()
+                    .unwrap_or_default(),
             );
             return None;
         }
