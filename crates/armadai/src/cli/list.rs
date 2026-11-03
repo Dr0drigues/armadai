@@ -6,14 +6,9 @@
 
 use armadai_model::{Project, Tier};
 
-/// The project at or above the current directory, as far as it loads; every
-/// diagnostic goes to stderr.
-pub fn load_for_reading() -> anyhow::Result<Project> {
-    Ok(load_with_origins()?.0)
-}
-
-/// [`load_for_reading`] with where each file really is, and the project root; the view
-/// is kept for the pack name.
+/// The project at or above the current directory, as far as it loads, with where each
+/// file really is, and the project root; every diagnostic goes to stderr. The view is
+/// kept for the pack name.
 pub fn load_with_origins() -> anyhow::Result<(
     Project,
     armadai_model::Origins,
@@ -60,7 +55,7 @@ pub fn tier_str(t: Option<Tier>) -> &'static str {
 }
 
 pub fn execute(tags: Option<Vec<String>>) -> anyhow::Result<()> {
-    let project = load_for_reading()?;
+    let (project, _, _, root) = load_with_origins()?;
     let agents: Vec<_> = (project.agents.iter())
         .filter(|(_, a)| {
             tags.as_ref()
@@ -126,6 +121,9 @@ pub fn execute(tags: Option<Vec<String>>) -> anyhow::Result<()> {
         for slot in slots {
             anstream::println!("  {}", slot_line(&project, slot));
         }
+    }
+    if let Some(note) = crate::cli::link::newer_pack_note(&root) {
+        eprintln!("{note}");
     }
     Ok(())
 }

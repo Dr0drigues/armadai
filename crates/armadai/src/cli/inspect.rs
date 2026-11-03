@@ -84,5 +84,8 @@ pub fn execute(id: String) -> anyhow::Result<()> {
     for line in agent.body.lines() {
         println!("  {line}");
     }
+    if let Some(note) = crate::cli::link::newer_pack_note(&root) {
+        eprintln!("{note}");
+    }
     Ok(())
 }

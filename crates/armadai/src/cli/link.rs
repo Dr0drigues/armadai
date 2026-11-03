@@ -688,9 +688,11 @@ fn report_view(view: &Effective, p: &mut Prepared) {
     }
 }
 
-/// The M4 note when a newer version of the locked pack is in the cache; task 14 fills it.
-fn newer_pack_note(_view: &Effective) -> Option<String> {
-    None
+/// The M4 note when the cache holds a newer version of the project's pack (no network);
+/// `link`, `list` and `inspect` write it on stderr.
+pub fn newer_pack_note(root: &std::path::Path) -> Option<String> {
+    let registry = armadai_core::config::registry_cache_dir();
+    crate::pack::status::newer(root, &registry).map(|n| crate::pack::status::note(&n))
 }
 
 pub fn execute(
@@ -724,7 +726,7 @@ pub fn execute(
     for p in &mut prepared {
         report_view(&view, p);
     }
-    if let Some(note) = newer_pack_note(&view) {
+    if let Some(note) = newer_pack_note(&root) {
         eprintln!("{note}");
     }
 
