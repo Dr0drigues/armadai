@@ -10,6 +10,11 @@
 //! absent project simply returns without output. A gate that refuses because it
 //! did not understand is a gate that gets uninstalled the same day.
 //!
+//! One exception, decided on purpose: a project that references a pack whose view
+//! does not open (lock missing or inconsistent, snapshot absent from the cache) gets
+//! a denial naming the error, because a gate that goes quiet after a successful
+//! `link` would let the delegation policy lapse unseen.
+//!
 //! Nothing may be written to stdout except the decision JSON (tracing and the
 //! invalid-project warning go to stderr).
 
