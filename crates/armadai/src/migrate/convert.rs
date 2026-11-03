@@ -88,6 +88,7 @@ pub fn convert(old: &OldProject) -> (Project, Vec<SkillCopy>, Report) {
     let mut manifest = Manifest {
         schema_version: armadai_model::SCHEMA_VERSION,
         name: None,
+        pack: None,
         targets: Vec::new(),
         outputs: BTreeMap::new(),
         coordinator: None,

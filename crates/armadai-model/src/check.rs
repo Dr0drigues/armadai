@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 
 use crate::TARGETS;
 use crate::diag::{
-    Diagnostic, Severity, key_end, key_start, locate, locate_from, locate_key, locate_pair,
+    Diagnostic, Severity, key_end, key_start, line_col, locate, locate_from, locate_key,
+    locate_pair,
 };
 use crate::load::{Kind, Origins, Project, load_project};
 
@@ -541,6 +542,53 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
     }
     for t in m.outputs.keys().filter(|t| !TARGETS.contains(&t.as_str())) {
         o.unknown_target(man, t);
+    }
+    if let Some(p) = &m.pack {
+        // positioned inside the `pack:` block, so a top-level `name:` is not matched
+        let at = |o: &Out, key: &str| {
+            o.text(man).map_or((None, None), |t| {
+                key_end(t, "pack").map_or((None, None), |from| {
+                    key_start(t, from, key).map_or((None, None), |i| line_col(t, i))
+                })
+            })
+        };
+        if !is_valid_id(&p.name) {
+            let pos = at(&o, "name");
+            o.emit_pos(
+                man,
+                Severity::Error,
+                "bad-id",
+                pos,
+                format!("`{}` is not a valid id", p.name),
+                Some("ids match [a-z0-9][a-z0-9-]{0,63}".into()),
+            );
+        }
+        for (key, value, code, hint) in [
+            (
+                "source",
+                &p.source,
+                "pack-empty-source",
+                "the URL of the pack's source, as in registries.yaml",
+            ),
+            (
+                "version",
+                &p.version,
+                "pack-empty-version",
+                "latest, a version such as 1.2.3, or a range such as ^1.3",
+            ),
+        ] {
+            if value.trim().is_empty() {
+                let pos = at(&o, key);
+                o.emit_pos(
+                    man,
+                    Severity::Error,
+                    code,
+                    pos,
+                    format!("`pack.{key}` is empty"),
+                    Some(hint.into()),
+                );
+            }
+        }
     }
     o.native_keys(man, m.native.keys());
     for a in m

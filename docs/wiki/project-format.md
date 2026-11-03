@@ -29,6 +29,10 @@ only identity of an agent, template, skill, flow, automation or command. The sup
 ```yaml
 schema_version: 1            # integer; the only accepted value is 1
 name: my-project             # optional, informative
+pack:                        # optional: build on a pack (see starter-packs.md)
+  name: demo                 #   pack id
+  source: https://example.com/packs.git   # URL of the git repository or archive
+  version: ^1.3              #   latest, an exact version, or a semver range
 targets: [claude, opencode]  # default link targets
 outputs: { claude: .claude } # optional: output directory per target
 coordinator: lead            # optional: agent id whose prompt becomes the root file
@@ -324,7 +328,7 @@ warning on stderr.
 | `ignored-file` | warning | A `.yml` file in `flows/` or `automations/` is not loaded | Rename it to `.yaml` |
 | `sequence-and-steps` | error | A flow has both `sequence` and `steps`/`links` | Keep one form |
 | `duplicate-step` | error | A `sequence` defines the same step id twice | Use `{ id: …, agent: … }` for the repeat |
-| `bad-id` | error | A file, folder or step id, a `vars` name or a slot name of an agent's `slots`, does not match `[a-z0-9][a-z0-9-]{0,63}` | Rename it in kebab-case |
+| `bad-id` | error | A file, folder or step id, a `vars` name, a slot name of an agent's `slots` or `pack.name`, does not match `[a-z0-9][a-z0-9-]{0,63}` | Rename it in kebab-case |
 | `unknown-target` | error | A target in `targets`, `outputs` or a `native` key is not supported | Use `claude`, `codex`, `copilot` or `opencode` |
 | `bad-output` | error | An `outputs` value is absolute, climbs with `..`, is the project root, or points into `.armadai/` or `.git/` | Use a folder inside the project such as `.claude` (`link --output` can point elsewhere for one run) |
 | `unknown-agent` | error | A step or `coordinator` names no agent of the project | Use an existing agent id (the hint suggests a close one) |
@@ -363,6 +367,8 @@ warning on stderr.
 | `command-shell-expansion` | error | The body holds `` !` `` or a line starting with ```` ```! ````: a shell run when the command is typed | Remove it: ArmadAI never compiles shell execution at command time |
 | `command-target-variable` | error | The body holds a `${CLAUDE_…}` substitution, replaced by Claude Code only | Only `$ARGUMENTS` is portable: remove it, or put it in a native file |
 | `command-shadows-skill` | error | A command has the id of a skill | Rename one of them (Claude Code would run the skill and ignore the command) |
+| `pack-empty-source` | error | `pack.source` is empty | Give the URL of the pack's source, as in `registries.yaml` |
+| `pack-empty-version` | error | `pack.version` is empty | Write `latest`, a version such as `1.2.3`, or a range such as `^1.3` |
 | `command-shadows-builtin` | warning | A command has the name of a built-in command of Claude Code or OpenCode | Pick another name: one of them hides the other |
 
 ## Migrating a legacy project

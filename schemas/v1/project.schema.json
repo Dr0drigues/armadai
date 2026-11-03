@@ -7,6 +7,29 @@
       ],
       "type": "string"
     },
+    "PackRef": {
+      "additionalProperties": false,
+      "description": "A pack this project is built on (reference mode): its files come from the cache,\nthe project's own files overlay them.",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "source": {
+          "description": "URL of the source (git repository or archive) holding the pack.",
+          "type": "string"
+        },
+        "version": {
+          "description": "`latest`, an exact version (`1.2.3`) or a semver range (`^1.3`, `~1.2`, `1`).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "source",
+        "version"
+      ],
+      "type": "object"
+    },
     "Policy": {
       "additionalProperties": false,
       "properties": {
@@ -47,6 +70,16 @@
         "type": "string"
       },
       "type": "object"
+    },
+    "pack": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PackRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "policy": {
       "$ref": "#/$defs/Policy"

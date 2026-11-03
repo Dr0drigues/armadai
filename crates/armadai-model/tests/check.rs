@@ -1322,3 +1322,70 @@ fn an_unknown_free_agent_points_at_its_list_entry() {
         "nor a built-in agent of a declared target (claude: Explore, Plan, general-purpose, claude, statusline-setup, claude-code-guide; opencode: general, explore)"
     );
 }
+
+// ---- pack reference ----
+
+fn manifest_diags(yaml: &str) -> Vec<Diagnostic> {
+    diags(&[(".armadai/project.yaml", yaml)])
+}
+
+#[test]
+fn pack_ref_roundtrips() {
+    let text = "schema_version: 1\npack:\n  name: demo\n  source: https://example.com/packs.git\n  version: ^1.3\n";
+    let m: Manifest = serde_saphyr_roundtrip(text);
+    assert_eq!(render_manifest(&m), text);
+}
+
+fn serde_saphyr_roundtrip(text: &str) -> Manifest {
+    let dir = project(&[(".armadai/project.yaml", text)]);
+    let l = load_project(dir.path());
+    assert!(!has_errors(&l.diagnostics), "{:?}", l.diagnostics);
+    l.project.unwrap().manifest
+}
+
+#[test]
+fn manifest_without_pack_writes_as_before() {
+    let m = serde_saphyr_roundtrip("schema_version: 1\n");
+    assert_eq!(render_manifest(&m), "schema_version: 1\n");
+}
+
+#[test]
+fn pack_ref_refuses_an_unknown_key() {
+    let ds = manifest_diags(
+        "schema_version: 1\npack: { name: demo, source: s, version: \"1\", branch: x }\n",
+    );
+    let d = only(&ds, "invalid-yaml");
+    assert!(d.message.contains("branch"), "{d:?}");
+}
+
+#[test]
+fn pack_ref_diagnostics() {
+    let top = "schema_version: 1\nname: other\npack:\n";
+    let cases = [
+        (
+            format!("{top}  name: Bad Name\n  source: s\n  version: '1'\n"),
+            ".armadai/project.yaml:4:3: error[bad-id]: `Bad Name` is not a valid id\n  hint: ids match [a-z0-9][a-z0-9-]{0,63}",
+        ),
+        (
+            format!("{top}  name: demo\n  source: ''\n  version: '1'\n"),
+            ".armadai/project.yaml:5:3: error[pack-empty-source]: `pack.source` is empty\n  hint: the URL of the pack's source, as in registries.yaml",
+        ),
+        (
+            format!("{top}  name: demo\n  source: s\n  version: ' '\n"),
+            ".armadai/project.yaml:6:3: error[pack-empty-version]: `pack.version` is empty\n  hint: latest, a version such as 1.2.3, or a range such as ^1.3",
+        ),
+    ];
+    for (yaml, want) in cases {
+        let ds = manifest_diags(&yaml);
+        let got: Vec<String> = ds
+            .iter()
+            .map(|d| {
+                d.render().replace(
+                    &format!("{}/", d.file.parent().unwrap().parent().unwrap().display()),
+                    "",
+                )
+            })
+            .collect();
+        assert_eq!(got, [want], "{yaml}");
+    }
+}
