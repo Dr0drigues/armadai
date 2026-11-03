@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use anyhow::Context;
+
 use crate::linker::{LinkTarget, supported_target_names};
 use armadai_core::config;
 use armadai_core::registries::redact_url;
@@ -326,6 +328,54 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Remember where a copied pack came from and what the install wrote, for `pack update`:
+/// the URL of its source (as `.armadai/` may show it), `embedded`, or the folder.
+fn record_origin(
+    root: &Path,
+    asked: &str,
+    dir: &Path,
+    name: &str,
+    written: std::collections::BTreeMap<std::path::PathBuf, String>,
+) -> anyhow::Result<()> {
+    use armadai_core::registries::cache_key;
+    let cache = armadai_core::starter::starters_cache_dir();
+    let url = crate::starters_registry::effective_starter_sources()
+        .into_iter()
+        .find(|s| dir.starts_with(cache.join(cache_key(&s.url))))
+        .map(|s| s.url);
+    let (source, version) = match url {
+        Some(url) => {
+            let version = crate::pack::cache::read_index(&cache.join(cache_key(&url)))
+                .and_then(|i| i.packs.into_iter().find(|p| p.name == name))
+                .and_then(|p| p.version);
+            (crate::pack::source::recorded(&url), version)
+        }
+        None if !is_path(asked)
+            && dir.parent() == Some(armadai_core::starter::builtin_starters_dir().as_path()) =>
+        {
+            ("embedded".to_string(), None)
+        }
+        None => (std::path::absolute(dir)?.display().to_string(), None),
+    };
+    // a file kept by an earlier install of the same pack stays recorded as it was
+    let mut files = crate::linker::manifest::installed_packs(root)
+        .remove(name)
+        .map(|p| p.files)
+        .unwrap_or_default();
+    files.extend(written);
+    crate::linker::manifest::write_installed_pack(
+        root,
+        name,
+        crate::linker::manifest::InstalledPack {
+            source,
+            version,
+            id: Some(crate::pack::cache::tree_digest(dir)?),
+            files,
+        },
+    )
+    .context("cannot record the origin of the pack in .armadai/link-manifest.yaml")
+}
+
 /// A canonical project from a starter pack. A native pack (`format: 1`) is
 /// copied (`native_pack`); a legacy one is materialised as a legacy project in a
 /// scratch directory and converted by `migrate`, then its `.armadai/` is copied
@@ -356,7 +406,10 @@ fn init_project_from_pack(root: &Path, pack_name: &str, force: bool) -> anyhow::
     let pack = StarterPack::load(&pack_dir)?;
     no_link_at(&root.join(".armadai"))?;
     match pack.format {
-        Some(1) => return super::native_pack::install(root, &pack_dir, &pack.name),
+        Some(1) => {
+            let written = super::native_pack::install(root, &pack_dir, &pack.name)?;
+            return record_origin(root, pack_name, &pack_dir, &pack.name, written);
+        }
         Some(n) => anyhow::bail!(
             "pack '{}' uses format {n}; this armadai reads format 1: update armadai",
             pack.name

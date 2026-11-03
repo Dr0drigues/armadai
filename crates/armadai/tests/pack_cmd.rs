@@ -41,6 +41,10 @@ impl Run {
     fn err_has(&self, line: &str) -> bool {
         self.err.lines().any(|l| l == line)
     }
+
+    fn out_has(&self, line: &str) -> bool {
+        self.out.lines().any(|l| l == line)
+    }
 }
 
 struct Env {
@@ -1419,26 +1423,6 @@ fn update_of_a_project_without_a_pack_says_how_to_get_one() {
 }
 
 #[test]
-fn update_of_a_copied_pack_says_it_is_not_available_yet() {
-    let env = Env::new();
-    put(&env.root(), ".armadai/project.yaml", "schema_version: 1\n");
-    put(
-        &env.root(),
-        ".armadai/link-manifest.yaml",
-        &format!("version: 1\npacks:\n  demo:\n    source: '{URL}'\n    version: 1.0.0\n"),
-    );
-    let r = env.run(&["pack", "update"], &[]);
-    assert_ne!(r.code, Some(0));
-    assert!(
-        r.err_has(
-            "Error: pack update of a pack installed by `armadai init --pack` is not available yet"
-        ),
-        "{}",
-        r.err
-    );
-}
-
-#[test]
 fn update_lists_a_missing_and_a_departed_referent() {
     let (env, second) = two_projects();
     let third = env.other_project("project3");
@@ -1563,4 +1547,460 @@ fn an_ssh_source_has_no_secret_and_is_written_as_it_is() {
         status.out
     );
     ok(&env.run(&["link"], &envs));
+}
+
+// --- copy mode: `init --pack` records its origin, `pack update` replaces what is unchanged ---
+
+const NATIVE: &str = "name: demo\ndescription: d\nformat: 1\n";
+
+impl Env {
+    /// `demo` at `version` as a native pack of the origin (`format: 1`).
+    fn native(&self, version: &str, extra: &[(&str, &str)], gone: &[&str]) -> String {
+        let mut all = vec![("pack.yaml", NATIVE)];
+        all.extend_from_slice(extra);
+        self.release(version, &all, gone)
+    }
+
+    /// A project that installed `demo` 1.0.0 by copy, from the origin.
+    fn copied(&self, extra: &[(&str, &str)]) {
+        self.native("1.0.0", extra, &[]);
+        self.registries(&[&self.url()]);
+        ok(&self.run(&["init", "--pack", "demo", "--no-link"], &[]));
+    }
+}
+
+fn agent(body: &str) -> String {
+    format!("---\ndescription: d\n---\n{body}\n")
+}
+
+fn sha(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    let hex: String = sha2::Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    format!("sha256:{hex}")
+}
+
+fn record(env: &Env) -> serde_json::Value {
+    armadai_model::yaml::from_str_manifest(&env.text(".armadai/link-manifest.yaml")).unwrap()
+}
+
+#[test]
+fn update_replaces_unchanged_and_keeps_edited() {
+    let env = Env::new();
+    env.copied(&[]);
+    let mine = agent("MINE");
+    put(&env.root(), ".armadai/agents/a.md", &mine);
+    let c2 = env.native(
+        "1.1.0",
+        &[
+            ("agents/a.md", &agent("A2")),
+            ("agents/b.md", &agent("B")),
+            (
+                "skills/s/SKILL.md",
+                "---\nname: s\ndescription: d\n---\nS2\n",
+            ),
+        ],
+        &[],
+    );
+    let r = env.run(&["pack", "update"], &[]);
+    ok(&r);
+    assert!(
+        r.out_has("  updated .armadai/skills/s/SKILL.md"),
+        "{}",
+        r.out
+    );
+    assert!(r.out_has("  added .armadai/agents/b.md"), "{}", r.out);
+    assert!(
+        r.err_has("  warn: .armadai/agents/a.md was edited since the pack installed it: kept, the pack's new version is not applied"),
+        "{}",
+        r.err
+    );
+    assert_eq!(env.text(".armadai/agents/a.md"), mine);
+    assert_eq!(env.text(".armadai/agents/b.md"), agent("B"));
+    assert_eq!(
+        env.text(".armadai/skills/s/SKILL.md"),
+        "---\nname: s\ndescription: d\n---\nS2\n"
+    );
+    let summary: Vec<&str> = r
+        .out
+        .lines()
+        .filter(|l| l.starts_with("Pack demo"))
+        .collect();
+    assert_eq!(
+        summary,
+        [format!("Pack demo: 1.0.0 -> 1.1.0 ({})", id12(&c2))]
+    );
+    // the edited file stays "edited" for the next update, the others are the pack's now
+    let rec = record(&env);
+    let files = &rec["packs"]["demo"]["files"];
+    assert_eq!(files["agents/b.md"], sha(agent("B").as_bytes()));
+    assert_ne!(files["agents/a.md"], sha(mine.as_bytes()));
+    assert_ne!(files["agents/a.md"], sha(agent("A2").as_bytes()));
+    assert_eq!(rec["packs"]["demo"]["version"], "1.1.0");
+}
+
+#[test]
+fn update_merges_project_yaml() {
+    let env = Env::new();
+    env.copied(&[(
+        "project.yaml",
+        "schema_version: 1\ntargets: [claude]\npolicy:\n  free_agents: [Explore]\n",
+    )]);
+    put(
+        &env.root(),
+        ".armadai/project.yaml",
+        "schema_version: 1\ntargets: [claude]\npolicy:\n  free_agents: [Explore, Plan]\n",
+    );
+    env.native(
+        "1.1.0",
+        &[(
+            "project.yaml",
+            "schema_version: 1\ntargets: [claude]\npolicy:\n  free_agents: [Explore, general-purpose]\n",
+        )],
+        &[],
+    );
+    let r = env.run(&["pack", "update"], &[]);
+    ok(&r);
+    assert!(
+        r.out_has("  merged .armadai/project.yaml (your keys kept, the pack's added)"),
+        "{}",
+        r.out
+    );
+    let merged =
+        armadai_model::yaml::from_str_manifest(&env.text(".armadai/project.yaml")).unwrap();
+    assert_eq!(
+        merged["policy"]["free_agents"],
+        serde_json::json!(["Explore", "general-purpose", "Plan"])
+    );
+}
+
+#[test]
+fn update_replaces_an_unchanged_project_yaml() {
+    let env = Env::new();
+    env.copied(&[]);
+    let theirs = "schema_version: 1\ntargets: [claude, opencode]\n";
+    env.native("1.1.0", &[("project.yaml", theirs)], &[]);
+    let r = env.run(&["pack", "update"], &[]);
+    ok(&r);
+    assert!(r.out_has("  updated .armadai/project.yaml"), "{}", r.out);
+    assert_eq!(env.text(".armadai/project.yaml"), theirs);
+}
+
+#[test]
+fn update_after_a_fresh_clone_refuses() {
+    let env = Env::new();
+    env.copied(&[]);
+    env.native("1.1.0", &[("agents/b.md", &agent("B"))], &[]);
+    std::fs::remove_file(env.root().join(".armadai/link-manifest.yaml")).unwrap();
+    let before = tree(&env.root());
+    let r = env.run(&["pack", "update"], &[]);
+    assert_ne!(r.code, Some(0), "{}{}", r.out, r.err);
+    assert!(
+        r.err_has("Error: the origin of this project's pack is unknown here (.armadai/link-manifest.yaml has no packs: section, as after a fresh clone): pack update guesses nothing, nothing was changed"),
+        "{}",
+        r.err
+    );
+    assert_eq!(tree(&env.root()), before);
+}
+
+#[test]
+fn update_removes_a_dropped_file_and_its_output() {
+    let env = Env::new();
+    env.native(
+        "1.0.0",
+        &[
+            ("agents/old.md", &agent("OLD")),
+            (
+                "skills/gone/SKILL.md",
+                "---\nname: gone\ndescription: d\n---\nG\n",
+            ),
+        ],
+        &[],
+    );
+    env.registries(&[&env.url()]);
+    ok(&env.run(&["init", "--pack", "demo", "--link"], &[]));
+    assert!(env.root().join(".claude/agents/old.md").is_file());
+    env.native("1.1.0", &[], &["agents/old.md", "skills/gone/SKILL.md"]);
+    let r = env.run(&["pack", "update"], &[]);
+    ok(&r);
+    assert!(
+        !env.root().join(".armadai/skills/gone").exists(),
+        "an emptied folder is removed"
+    );
+    assert!(
+        r.out_has("  removed .armadai/agents/old.md (no longer in the pack)"),
+        "{}",
+        r.out
+    );
+    assert!(!env.root().join(".armadai/agents/old.md").exists());
+    assert!(
+        !env.root().join(".claude/agents/old.md").exists(),
+        "{}",
+        r.out
+    );
+}
+
+#[test]
+fn update_says_what_it_keeps() {
+    let env = Env::new();
+    env.copied(&[("agents/old.md", &agent("OLD"))]);
+    std::fs::remove_file(env.root().join(".armadai/agents/a.md")).unwrap();
+    put(&env.root(), ".armadai/agents/old.md", &agent("MINE"));
+    env.native(
+        "1.1.0",
+        &[("agents/a.md", &agent("A2"))],
+        &["agents/old.md"],
+    );
+    let r = env.run(&["pack", "update"], &[]);
+    ok(&r);
+    assert!(
+        r.err_has("  warn: .armadai/agents/a.md was removed by hand: not added back"),
+        "{}",
+        r.err
+    );
+    assert!(
+        r.err_has("  warn: .armadai/agents/old.md is no longer in the pack but was edited: kept"),
+        "{}",
+        r.err
+    );
+    assert!(!env.root().join(".armadai/agents/a.md").exists());
+    assert_eq!(env.text(".armadai/agents/old.md"), agent("MINE"));
+}
+
+#[test]
+fn update_twice_is_up_to_date() {
+    let env = Env::new();
+    env.copied(&[]);
+    let c2 = env.native("1.1.0", &[], &[]);
+    ok(&env.run(&["pack", "update"], &[]));
+    let r = env.run(&["pack", "update"], &[]);
+    ok(&r);
+    assert!(
+        r.out_has(&format!("Pack demo is up to date: 1.1.0 ({})", id12(&c2))),
+        "{}",
+        r.out
+    );
+}
+
+#[test]
+fn a_copy_update_that_would_break_changes_nothing() {
+    let env = Env::new();
+    env.copied(&[]);
+    put(
+        &env.root(),
+        ".armadai/agents/mine.md",
+        "---\ndescription: mine\nskills: [s]\n---\nM\n",
+    );
+    env.native(
+        "1.1.0",
+        &[("agents/b.md", &agent("B"))],
+        &["skills/s/SKILL.md"],
+    );
+    let before = tree(&env.root());
+    let r = env.run(&["pack", "update"], &[]);
+    assert_ne!(r.code, Some(0), "{}{}", r.out, r.err);
+    assert!(
+        r.err_has("Error: pack demo 1.1.0 would make the project invalid; nothing was changed"),
+        "{}",
+        r.err
+    );
+    assert!(r.err.contains("error["), "{}", r.err);
+    assert_eq!(tree(&env.root()), before);
+}
+
+#[test]
+fn a_copy_update_on_an_invalid_project_blames_nobody() {
+    let env = Env::new();
+    env.copied(&[]);
+    put(
+        &env.root(),
+        ".armadai/agents/mine.md",
+        "---\ndescription: mine\nskills: [nope]\n---\nM\n",
+    );
+    env.native("1.1.0", &[("agents/b.md", &agent("B"))], &[]);
+    let before = tree(&env.root());
+    let r = env.run(&["pack", "update"], &[]);
+    assert_ne!(r.code, Some(0), "{}{}", r.out, r.err);
+    assert!(
+        r.err_has("Error: the project is already invalid: nothing was changed; fix the errors above, then run `armadai pack update` again"),
+        "{}",
+        r.err
+    );
+    assert_eq!(tree(&env.root()), before);
+}
+
+#[test]
+fn a_copy_update_never_touches_state() {
+    let env = Env::new();
+    env.copied(&[]);
+    put(&env.root(), ".armadai/state/flow.json", "{\"a\":1}");
+    put(&env.root(), ".armadai/state/sub/x", "x");
+    env.native("1.1.0", &[("agents/b.md", &agent("B"))], &[]);
+    let before = tree(&env.root().join(".armadai/state"));
+    ok(&env.run(&["pack", "update"], &[]));
+    assert_eq!(tree(&env.root().join(".armadai/state")), before);
+}
+
+#[test]
+fn init_pack_records_its_origin() {
+    let env = Env::new();
+    env.copied(&[]);
+    let rec = record(&env);
+    let demo = &rec["packs"]["demo"];
+    assert_eq!(demo["source"], env.url());
+    assert_eq!(demo["version"], "1.0.0");
+    assert!(
+        demo["id"].as_str().unwrap().starts_with("sha256:"),
+        "{demo}"
+    );
+    assert_eq!(
+        demo["files"]["agents/a.md"],
+        sha(b"---\ndescription: from the pack\n---\nA\n")
+    );
+    assert_eq!(
+        demo["files"]["project.yaml"],
+        sha(b"schema_version: 1\ntargets: [claude]\n")
+    );
+    let n = demo["files"].as_object().unwrap().len();
+    assert_eq!(n, 3, "{demo}"); // project.yaml, agents/a.md, skills/s/SKILL.md
+}
+
+#[test]
+fn init_pack_from_a_folder_records_the_folder_and_not_a_kept_file() {
+    let env = Env::new();
+    let dir = env.dir.path().join("mypack");
+    put(&dir, "pack.yaml", NATIVE);
+    put(&dir, "agents/a.md", &agent("PACK-A"));
+    put(&dir, "agents/b.md", &agent("PACK-B"));
+    put(
+        &env.root(),
+        ".armadai/project.yaml",
+        "schema_version: 1\ntargets: [claude]\n",
+    );
+    put(&env.root(), ".armadai/agents/a.md", &agent("MINE"));
+    let r = env.run(
+        &[
+            "init",
+            "--pack",
+            dir.to_str().unwrap(),
+            "--force",
+            "--no-link",
+        ],
+        &[],
+    );
+    ok(&r);
+    let rec = record(&env);
+    let demo = &rec["packs"]["demo"];
+    assert_eq!(demo["source"], dir.to_str().unwrap());
+    assert!(demo.get("version").is_none(), "{demo}");
+    let files = demo["files"].as_object().unwrap();
+    assert_eq!(
+        files.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["agents/b.md"]
+    );
+    assert_eq!(files["agents/b.md"], sha(agent("PACK-B").as_bytes()));
+}
+
+#[test]
+fn a_pack_installed_from_a_folder_updates_from_the_folder() {
+    let env = Env::new();
+    let dir = env.dir.path().join("mypack");
+    put(&dir, "pack.yaml", NATIVE);
+    put(&dir, "agents/a.md", &agent("A1"));
+    ok(&env.run(&["init", "--pack", dir.to_str().unwrap(), "--no-link"], &[]));
+    put(&dir, "agents/a.md", &agent("A2"));
+    let r = env.run(&["pack", "update"], &[]);
+    ok(&r);
+    assert!(r.out_has("  updated .armadai/agents/a.md"), "{}", r.out);
+    assert_eq!(env.text(".armadai/agents/a.md"), agent("A2"));
+    assert!(
+        r.out
+            .lines()
+            .any(|l| l.starts_with("Pack demo: (no version) -> (no version) (")),
+        "{}",
+        r.out
+    );
+    // nothing new: up to date, by content
+    let again = env.run(&["pack", "update"], &[]);
+    ok(&again);
+    assert!(
+        again
+            .out
+            .lines()
+            .any(|l| l.starts_with("Pack demo is up to date: (no version) (")),
+        "{}",
+        again.out
+    );
+}
+
+#[test]
+fn the_origin_of_a_copy_survives_link_and_unlink() {
+    let env = Env::new();
+    env.native("1.0.0", &[], &[]);
+    env.registries(&[&env.url()]);
+    ok(&env.run(&["init", "--pack", "demo", "--link"], &[]));
+    let rec = record(&env);
+    assert!(rec["targets"]["claude"].is_object(), "{rec}");
+    assert!(rec["packs"]["demo"].is_object(), "{rec}");
+    ok(&env.run(&["unlink"], &[]));
+    let after = record(&env);
+    assert_eq!(after["packs"], rec["packs"]);
+    assert!(
+        after
+            .get("targets")
+            .is_none_or(|t| t.as_object().is_some_and(|o| o.is_empty())),
+        "{after}"
+    );
+    let c2 = env.native("1.1.0", &[("agents/b.md", &agent("B"))], &[]);
+    let r = env.run(&["pack", "update"], &[]);
+    ok(&r);
+    assert!(
+        r.out
+            .lines()
+            .any(|l| l == format!("Pack demo: 1.0.0 -> 1.1.0 ({})", id12(&c2))),
+        "{}",
+        r.out
+    );
+}
+
+#[test]
+fn a_merge_with_nothing_to_add_leaves_the_file_as_written() {
+    let env = Env::new();
+    env.copied(&[]);
+    let mine = "# my team\nschema_version: 1\ntargets: [claude]\n";
+    put(&env.root(), ".armadai/project.yaml", mine);
+    env.native("1.1.0", &[("agents/b.md", &agent("B"))], &[]);
+    let r = env.run(&["pack", "update"], &[]);
+    ok(&r);
+    assert_eq!(env.text(".armadai/project.yaml"), mine);
+    assert!(!r.out.contains("merged"), "{}", r.out);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_copy_update_never_writes_through_a_symbolic_link() {
+    let env = Env::new();
+    env.copied(&[]);
+    let target = env.dir.path().join("elsewhere.md");
+    std::fs::write(&target, agent("OUTSIDE")).unwrap();
+    let link = env.root().join(".armadai/agents/a.md");
+    std::fs::remove_file(&link).unwrap();
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    env.native("1.1.0", &[("agents/a.md", &agent("A2"))], &[]);
+    let r = env.run(&["pack", "update"], &[]);
+    assert_ne!(r.code, Some(0), "{}{}", r.out, r.err);
+    assert!(
+        r.err_has(&format!(
+            "Error: {} is a symbolic link; it is not written through",
+            std::fs::canonicalize(env.root())
+                .unwrap()
+                .join(".armadai/agents/a.md")
+                .display()
+        )),
+        "{}",
+        r.err
+    );
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), agent("OUTSIDE"));
 }

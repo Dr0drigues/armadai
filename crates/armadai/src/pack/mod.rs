@@ -3,6 +3,7 @@
 #![allow(dead_code)]
 
 pub mod cache;
+pub mod copy;
 pub mod effective;
 pub mod lock;
 pub mod referents;
@@ -36,6 +37,10 @@ pub struct Undo {
     pack: String,
     version: String,
     files: Vec<(std::path::PathBuf, Option<Vec<u8>>)>,
+    /// Copy mode: the folders the update created, and the project with the pack's record
+    /// as it was in the link manifest.
+    dirs: Vec<std::path::PathBuf>,
+    record: Option<(std::path::PathBuf, crate::linker::manifest::InstalledPack)>,
 }
 
 impl Undo {
@@ -53,6 +58,8 @@ impl Undo {
             pack: pack.to_string(),
             version: version.to_string(),
             files,
+            dirs: Vec::new(),
+            record: None,
         })
     }
 
@@ -60,7 +67,11 @@ impl Undo {
     pub fn restore(&self) {
         for (p, bytes) in &self.files {
             let done = match bytes {
-                Some(b) => std::fs::write(p, b),
+                // a folder emptied by the update was removed with its last file
+                Some(b) => p
+                    .parent()
+                    .map_or(Ok(()), std::fs::create_dir_all)
+                    .and_then(|()| std::fs::write(p, b)),
                 None => std::fs::remove_file(p),
             };
             if let Err(e) = done
@@ -69,9 +80,28 @@ impl Undo {
                 eprintln!("  warn: could not put {} back: {e}", p.display());
             }
         }
+        for d in self.dirs.iter().rev() {
+            let _ = std::fs::remove_dir(d);
+        }
+        if let Some((root, old)) = &self.record
+            && let Err(e) =
+                crate::linker::manifest::write_installed_pack(root, &self.pack, old.clone())
+        {
+            eprintln!(
+                "  warn: could not put the record of pack {} back: {e}",
+                self.pack
+            );
+        }
     }
 
     pub fn message(&self) -> String {
+        if self.record.is_some() {
+            return format!(
+                "pack {} {} was not applied: link failed, so the files of .armadai/ and the \
+                 record of the pack are back as they were",
+                self.pack, self.version
+            );
+        }
         format!(
             "pack {} {} was not applied: link failed, so .armadai/pack.lock and the referent \
              record are back as they were",
@@ -157,21 +187,10 @@ fn errors_now(root: &Path, registry: &Path, env: Env) -> Vec<armadai_model::Diag
     view.load_checked().err().unwrap_or_default()
 }
 
-/// The project as it would be with `lock`. An already invalid project is refused with its
-/// own diagnostics, and so is one the lock would invalidate (M13): nothing is changed, the
-/// lock does not move toward a `link` that would fail on diagnostics. (A `link` that fails
-/// for another reason, a write, is undone by the caller through [`Undo`].) `retry` is the
-/// command to run again. Nor does the `Undo` cover the process being interrupted (Ctrl-C)
-/// between the writes and the end of the link.
-fn check(
-    root: &Path,
-    lock: &PackLock,
-    registry: &Path,
-    env: Env,
-    version: &str,
-    retry: &str,
-) -> anyhow::Result<()> {
-    // a directory with no project yet (`pack add` makes one) has nothing to be invalid
+/// Refuse a project that is invalid already (its diagnostics printed): nothing is changed,
+/// and the update is not blamed for errors it did not bring. A directory with no project
+/// yet (`pack add` makes one) has nothing to be invalid.
+fn refuse_invalid(root: &Path, registry: &Path, env: Env, retry: &str) -> anyhow::Result<()> {
     let now = if root.join(".armadai/project.yaml").is_file() {
         errors_now(root, registry, env)
     } else {
@@ -186,6 +205,24 @@ fn check(
              `{retry}` again"
         );
     }
+    Ok(())
+}
+
+/// The project as it would be with `lock`. An already invalid project is refused with its
+/// own diagnostics, and so is one the lock would invalidate (M13): nothing is changed, the
+/// lock does not move toward a `link` that would fail on diagnostics. (A `link` that fails
+/// for another reason, a write, is undone by the caller through [`Undo`].) `retry` is the
+/// command to run again. Nor does the `Undo` cover the process being interrupted (Ctrl-C)
+/// between the writes and the end of the link.
+fn check(
+    root: &Path,
+    lock: &PackLock,
+    registry: &Path,
+    env: Env,
+    version: &str,
+    retry: &str,
+) -> anyhow::Result<()> {
+    refuse_invalid(root, registry, env, retry)?;
     let view = effective::open_with_lock_in(root, lock, effective::Vars::Resolve(env), registry)?;
     if let Err(ds) = view.load_checked() {
         for d in &ds {
@@ -233,7 +270,8 @@ fn others_lines(config: &Path, root: &Path, lock: &PackLock) -> anyhow::Result<V
     Ok(lines)
 }
 
-/// `pack update` of a project that references a pack (copy mode: a later task).
+/// `pack update`: a project that references a pack is moved on its lock, one that
+/// installed a pack by copy goes through [`copy::update_in`].
 pub fn update_in(
     root: &Path,
     config: &Path,
@@ -243,13 +281,7 @@ pub fn update_in(
     env: Env,
 ) -> anyhow::Result<Done> {
     let Some(d) = status::declared(root) else {
-        if !crate::linker::manifest::installed_packs(root).is_empty() {
-            bail!("pack update of a pack installed by `armadai init --pack` is not available yet");
-        }
-        bail!(
-            "this project references no pack and records no installed pack: use \
-             `armadai pack add <name>` or `armadai init --pack <name>`"
-        );
+        return copy::update_in(root, registry, known, version, env);
     };
     let source = source_of(known, &source::real_url_in(&d.source, known)?);
     sync_or_stop(registry, &source)?;

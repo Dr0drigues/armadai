@@ -259,8 +259,13 @@ fn project_diagnostics(root: &Path) -> anyhow::Result<Vec<armadai_model::Diagnos
 }
 
 /// Install the native pack at `pack_dir` into `root/.armadai/`. Existing files are
-/// kept (one warning each); an existing `project.yaml` wins over the pack's.
-pub fn install(root: &Path, pack_dir: &Path, name: &str) -> anyhow::Result<()> {
+/// kept (one warning each); an existing `project.yaml` wins over the pack's. Returns what
+/// it wrote (path relative to `.armadai/` -> digest of its bytes), for `pack update`.
+pub fn install(
+    root: &Path,
+    pack_dir: &Path,
+    name: &str,
+) -> anyhow::Result<std::collections::BTreeMap<PathBuf, String>> {
     let pack = files(pack_dir)?;
     let files = &pack.files;
     let w = crate::cli::style::warn();
@@ -411,7 +416,10 @@ pub fn install(root: &Path, pack_dir: &Path, name: &str) -> anyhow::Result<()> {
     if kept > 0 {
         anstream::println!("{m}  {kept} existing file(s) kept{m:#}");
     }
-    Ok(())
+    Ok((files.iter())
+        .filter(|(r, ..)| installed.contains(&r.as_path()))
+        .map(|(r, bytes, _)| (r.clone(), crate::linker::manifest::digest_of(bytes)))
+        .collect())
 }
 
 #[cfg(test)]

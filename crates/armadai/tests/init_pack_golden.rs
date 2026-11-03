@@ -81,6 +81,11 @@ fn snapshot(pack: &str) -> String {
         installed.remove(Path::new(".gitignore")).is_some(),
         "{pack}"
     );
+    // the install records where the pack came from, for `pack update`
+    assert!(
+        installed.remove(Path::new("link-manifest.yaml")).is_some(),
+        "{pack}"
+    );
     let mut expected = files(&source);
     expected.remove(Path::new("pack.yaml"));
     assert_eq!(

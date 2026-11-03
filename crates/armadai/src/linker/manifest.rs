@@ -771,13 +771,11 @@ pub fn write_target(
 }
 
 /// The packs installed by copy, empty when there is no usable manifest.
-#[allow(dead_code)] // read by `pack update` (a later task of the lot)
 pub fn installed_packs(root: &Path) -> BTreeMap<String, InstalledPack> {
     read(root).map(|m| m.packs).unwrap_or_default()
 }
 
 /// Record (replace) one installed pack; creates the manifest when absent.
-#[allow(dead_code)] // written by `init --pack` (a later task of the lot)
 pub fn write_installed_pack(root: &Path, name: &str, pack: InstalledPack) -> std::io::Result<()> {
     let mut manifest = read(root).unwrap_or_else(|| Manifest {
         version: MANIFEST_VERSION,
