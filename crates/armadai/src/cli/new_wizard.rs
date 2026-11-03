@@ -189,7 +189,9 @@ pub fn run(kind: Option<WizardKind>) -> anyhow::Result<()> {
         }
     };
     let root = crate::compile::find_project(&std::env::current_dir()?)?;
-    let project = armadai_model::load_project(&root).project;
+    let project = crate::pack::effective::open(&root, crate::pack::effective::Vars::Literal)?
+        .load_project()
+        .project;
     match kind {
         WizardKind::Agent => {
             let templates = project.as_ref().map(|p| &p.templates);

@@ -298,19 +298,32 @@ impl Effective {
         )
     }
 
+    fn remap_origins(&self, o: &mut Origins) {
+        for (file, _) in o.files.values_mut() {
+            if let Some((_, real)) = self.real(file) {
+                *file = real;
+            }
+        }
+    }
+
     /// `armadai_model::load_checked` of the view; diagnostics and origins on the real files.
     pub fn load_checked(&self) -> Result<(Project, Origins), Vec<Diagnostic>> {
         match armadai_model::load_checked(&self.sources) {
             Ok((p, mut o)) => {
-                for (file, _) in o.files.values_mut() {
-                    if let Some((_, real)) = self.real(file) {
-                        *file = real;
-                    }
-                }
+                self.remap_origins(&mut o);
                 Ok((p, o))
             }
             Err(ds) => Err(self.remap(ds)),
         }
+    }
+
+    /// `armadai_model::load_project` of the view, as far as it loads; diagnostics and
+    /// origins on the real files.
+    pub fn load_project(&self) -> armadai_model::Loaded {
+        let mut l = armadai_model::load_project(&self.sources);
+        l.diagnostics = self.remap(std::mem::take(&mut l.diagnostics));
+        self.remap_origins(&mut l.origins);
+        l
     }
 
     pub fn validate(&self) -> Vec<Diagnostic> {

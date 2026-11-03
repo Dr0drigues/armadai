@@ -65,7 +65,8 @@ pub fn execute(cmd: FlowCommand) -> anyhow::Result<()> {
         crate::compile::find_project(&cwd)?;
         bail!("no ArmadAI project found (.armadai/project.yaml)");
     };
-    let project = match armadai_model::load_checked(&root) {
+    let view = crate::pack::effective::open(&root, crate::pack::effective::Vars::Literal)?;
+    let project = match view.load_checked() {
         Ok((p, _)) => p,
         Err(ds) => {
             for d in &ds {

@@ -10,10 +10,11 @@ use armadai_model::{Project, Tier};
 /// diagnostic goes to stderr.
 pub fn load_for_reading() -> anyhow::Result<Project> {
     let root = crate::compile::find_project(&std::env::current_dir()?)?;
-    let loaded = armadai_model::load_project(&root);
+    let view = crate::pack::effective::open(&root, crate::pack::effective::Vars::Literal)?;
+    let loaded = view.load_project();
     let mut ds = loaded.diagnostics;
     if let Some(p) = &loaded.project {
-        ds.extend(armadai_model::check(p, &loaded.origins));
+        ds.extend(view.remap(armadai_model::check(p, &loaded.origins)));
     }
     for d in &ds {
         let s = crate::cli::style::warn();
