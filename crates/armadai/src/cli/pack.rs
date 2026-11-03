@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use armadai_core::registries::{RegistrySource, cache_key};
 use clap::Subcommand;
 
-use crate::cli::new_wizard::{PACK_FOLDERS, PackAnswers, ask_pack, pack_answers, plan_pack};
+use crate::cli::new_wizard::{PackAnswers, ask_pack, pack_answers, plan_pack};
 use crate::pack::cache::{self, Available};
 use crate::pack::lock::{self, TagState};
 use crate::pack::{source, status};
@@ -307,7 +307,7 @@ fn new_minimal(parent: &Path, a: &PackAnswers) -> anyhow::Result<String> {
         .into_iter()
         .map(|(r, b)| (r, b, false))
         .collect();
-    let dir = write_pack(parent, &a.name, files, &PACK_FOLDERS)?;
+    let dir = write_pack(parent, &a.name, files)?;
     Ok(format!(
         "Created pack {} in {}: pack.yaml, project.yaml, agents/, skills/, flows/, automations/",
         a.name,
@@ -350,7 +350,7 @@ fn new_from_project(
         count("templates"),
         count("commands"),
     );
-    let dir = write_pack(parent, name, files, &[])?;
+    let dir = write_pack(parent, name, files)?;
     Ok(format!(
         "Created pack {name} in {} from .armadai/: {a} agent(s), {s} skill(s), {f} flow(s), \
          {u} automation(s), {t} template(s), {c} command(s) \
@@ -365,7 +365,6 @@ fn write_pack(
     parent: &Path,
     name: &str,
     files: Vec<(PathBuf, Vec<u8>, bool)>,
-    folders: &[&str],
 ) -> anyhow::Result<PathBuf> {
     use anyhow::Context;
     let dir = parent.join(name);
@@ -378,9 +377,6 @@ fn write_pack(
     std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     std::fs::create_dir(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let built = (|| -> anyhow::Result<()> {
-        for f in folders {
-            std::fs::create_dir(dir.join(f))?;
-        }
         for (rel, bytes, exec) in &files {
             let at = dir.join(rel);
             std::fs::create_dir_all(at.parent().context("a file has a parent")?)?;

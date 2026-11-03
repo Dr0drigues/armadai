@@ -169,17 +169,13 @@ pub fn pack_answers(name: &str, description: Option<&str>) -> PackAnswers {
     }
 }
 
-/// The empty folders of a minimal native pack.
-pub const PACK_FOLDERS: [&str; 4] = ["agents", "skills", "flows", "automations"];
-
 /// The files of a minimal native pack, relative to its folder: `pack.yaml`
-/// (`format: 1`, `name`, `description`) and `project.yaml`. The folders of `PACK_FOLDERS`
-/// are created empty: a `.gitkeep` in each would be reported by `validate` as an ignored
-/// pack file.
+/// (`format: 1`, `name`, `description`), `project.yaml` and the four folders kept by
+/// `.gitkeep` (which the pack readers ignore).
 pub fn plan_pack(a: &PackAnswers) -> Vec<(std::path::PathBuf, Vec<u8>)> {
     // a JSON string is a YAML double-quoted scalar
     let description = serde_json::to_string(&a.description).unwrap_or_default();
-    vec![
+    let mut files = vec![
         (
             "pack.yaml".into(),
             format!("format: 1\nname: {}\ndescription: {description}\n", a.name).into_bytes(),
@@ -188,7 +184,11 @@ pub fn plan_pack(a: &PackAnswers) -> Vec<(std::path::PathBuf, Vec<u8>)> {
             "project.yaml".into(),
             crate::cli::native_pack::DEFAULT_PROJECT.as_bytes().to_vec(),
         ),
-    ]
+    ];
+    for d in ["agents", "skills", "flows", "automations"] {
+        files.push((std::path::Path::new(d).join(".gitkeep"), Vec::new()));
+    }
+    files
 }
 
 /// The guide of `pack new`: the name (the argument is the default) and the description.
@@ -526,7 +526,7 @@ mod tests {
             text("project.yaml"),
             crate::cli::native_pack::DEFAULT_PROJECT
         );
-        assert_eq!(files.len(), 2);
+        assert_eq!(files.len(), 6);
     }
 
     #[test]

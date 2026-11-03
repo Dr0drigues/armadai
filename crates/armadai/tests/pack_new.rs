@@ -100,6 +100,18 @@ fn pack_new_empty_validates() {
     let v = env.run(&["validate", dir.to_str().unwrap()]);
     assert_eq!(v.code, Some(0), "{}{}", v.out, v.err);
     assert_eq!(v.out.trim(), "0 error(s), 0 warning(s)");
+    for d in ["agents", "skills", "flows", "automations"] {
+        assert!(dir.join(d).join(".gitkeep").is_file(), "{d}");
+    }
+    // installing it: no ignored-pack-file, no .gitkeep copied into the project
+    let i = env.run(&["init", "--pack", dir.to_str().unwrap()]);
+    assert_eq!(i.code, Some(0), "{}{}", i.out, i.err);
+    assert!(!i.out.contains("ignored-pack-file") && !i.err.contains("ignored-pack-file"));
+    assert!(
+        tree(&env.root().join(".armadai"))
+            .iter()
+            .all(|f| !f.ends_with(".gitkeep"))
+    );
 }
 
 #[test]
