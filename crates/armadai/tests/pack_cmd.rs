@@ -2222,3 +2222,27 @@ fn an_update_never_reads_a_worktree_under_claude() {
         id12(&env.head())
     )));
 }
+
+#[test]
+fn a_failing_link_brings_back_the_output_it_removed() {
+    let env = Env::new();
+    env.native("1.0.0", &[("agents/old.md", &agent("OLD"))], &[]);
+    env.registries(&[&env.url()]);
+    ok(&env.run(&["init", "--pack", "demo", "--link"], &[]));
+    let old = env.root().join(".claude/agents/old.md");
+    let compiled = std::fs::read(&old).unwrap();
+    // 1.1.0 drops old.md (its output goes stale and link removes it) and changes a.md,
+    // whose output cannot be written
+    env.native(
+        "1.1.0",
+        &[("agents/a.md", &agent("NEW"))],
+        &["agents/old.md"],
+    );
+    let a = env.root().join(".claude/agents/a.md");
+    std::fs::remove_file(&a).unwrap();
+    std::fs::create_dir(&a).unwrap();
+    let r = env.run(&["pack", "update"], &[]);
+    assert_ne!(r.code, Some(0), "{}{}", r.out, r.err);
+    assert!(r.err_has(NOT_APPLIED_COPY), "{}", r.err);
+    assert_eq!(std::fs::read(&old).unwrap(), compiled);
+}
