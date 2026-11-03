@@ -7,6 +7,7 @@ pub mod effective;
 pub mod lock;
 pub mod referents;
 pub mod resolve;
+pub mod source;
 pub mod status;
 pub mod vars;
 
@@ -25,6 +26,58 @@ use crate::starters_registry::sync_warning;
 pub struct Done {
     pub relink: bool,
     pub lines: Vec<String>,
+    /// What to put back if the link fails (the lock was moved).
+    pub undo: Option<Undo>,
+}
+
+/// The files a command is about to write, as they are now: put back when the link that
+/// follows fails, so that a failed `pack add` or `pack update` changes nothing.
+pub struct Undo {
+    pack: String,
+    version: String,
+    files: Vec<(std::path::PathBuf, Option<Vec<u8>>)>,
+}
+
+impl Undo {
+    fn new(pack: &str, version: &str, paths: &[std::path::PathBuf]) -> anyhow::Result<Undo> {
+        let mut files = Vec::new();
+        for p in paths {
+            let bytes = match std::fs::read(p) {
+                Ok(b) => Some(b),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => bail!("{}: {e}", p.display()),
+            };
+            files.push((p.clone(), bytes));
+        }
+        Ok(Undo {
+            pack: pack.to_string(),
+            version: version.to_string(),
+            files,
+        })
+    }
+
+    /// Best effort: a file that cannot be put back is said, not hidden.
+    pub fn restore(&self) {
+        for (p, bytes) in &self.files {
+            let done = match bytes {
+                Some(b) => std::fs::write(p, b),
+                None => std::fs::remove_file(p),
+            };
+            if let Err(e) = done
+                && !(bytes.is_none() && e.kind() == std::io::ErrorKind::NotFound)
+            {
+                eprintln!("  warn: could not put {} back: {e}", p.display());
+            }
+        }
+    }
+
+    pub fn message(&self) -> String {
+        format!(
+            "pack {} {} was not applied: link failed, so .armadai/pack.lock and the referent \
+             record are back as they were",
+            self.pack, self.version
+        )
+    }
 }
 
 type Env<'a> = &'a dyn Fn(&str) -> Option<String>;
@@ -106,7 +159,9 @@ fn errors_now(root: &Path, registry: &Path, env: Env) -> Vec<armadai_model::Diag
 
 /// The project as it would be with `lock`. An already invalid project is refused with its
 /// own diagnostics, and so is one the lock would invalidate (M13): nothing is changed, the
-/// lock never moves toward a `link` that fails. `retry` is the command to run again.
+/// lock does not move toward a `link` that would fail on diagnostics. (A `link` that fails
+/// for another reason, a write, is undone by the caller through [`Undo`].) `retry` is the
+/// command to run again.
 fn check(
     root: &Path,
     lock: &PackLock,
@@ -195,7 +250,7 @@ pub fn update_in(
              `armadai pack add <name>` or `armadai init --pack <name>`"
         );
     };
-    let source = source_of(known, &d.source);
+    let source = source_of(known, &source::real_url_in(&d.source, known)?);
     sync_or_stop(registry, &source)?;
     let (best, path) = resolve_in(
         registry,
@@ -229,6 +284,7 @@ pub fn update_in(
                 "Pack {} is up to date: {} ({id12})",
                 d.name, best.version
             )],
+            undo: None,
         });
     }
     check(
@@ -238,6 +294,11 @@ pub fn update_in(
         env,
         &best.version,
         "armadai pack update",
+    )?;
+    let undo = Undo::new(
+        &d.name,
+        &best.version,
+        &[root.join(lock::LOCK), referents::path_in(config)],
     )?;
     lock::write(root, &new)?;
     record(config, root, &new)?;
@@ -250,6 +311,7 @@ pub fn update_in(
     Ok(Done {
         relink: true,
         lines,
+        undo: Some(undo),
     })
 }
 
@@ -316,15 +378,17 @@ pub fn add_in(
     if let Some(t) = &text {
         let v = armadai_model::yaml::from_str_manifest(t)
             .map_err(|e| anyhow::anyhow!("{}: {e}", file.display()))?;
-        ensure!(
-            v.get("pack").is_none(),
-            ".armadai/project.yaml already references pack {name}: use `armadai pack update`"
-        );
+        if let Some(p) = v.get("pack") {
+            let there = p.get("name").and_then(|n| n.as_str()).unwrap_or(name);
+            bail!(
+                ".armadai/project.yaml already references pack {there}: use `armadai pack update`"
+            );
+        }
     }
 
     let source = match only {
         Some(url) => {
-            let s = source_of(known, url);
+            let s = source_of(known, &source::real_url_in(url, known)?);
             sync_or_stop(registry, &s)?;
             s
         }
@@ -361,7 +425,9 @@ pub fn add_in(
     let (best, path) = resolve_in(registry, &source, name, given.unwrap_or("latest"), false)?;
     let range = given.map_or_else(|| format!("^{}", best.version), str::to_string);
     cache::ensure_snapshot_in(registry, &source, name, &path, &best)?;
-    let new = lock_of(name, &source.url, &best);
+    // what `.armadai/` and the referent record keep: the source without its secrets
+    let shown = redact_url(&source.url);
+    let new = lock_of(name, &shown, &best);
     check(
         root,
         &new,
@@ -370,11 +436,19 @@ pub fn add_in(
         &best.version,
         &format!("armadai pack add {name}"),
     )?;
+    let undo = Undo::new(
+        name,
+        &best.version,
+        &[
+            root.join(lock::LOCK),
+            file.clone(),
+            referents::path_in(config),
+        ],
+    )?;
     // the lock first: a lock without the key is ignored, the key without a lock is not
     lock::write(root, &new)?;
-    write_project_yaml(root, &with_pack(text.as_deref(), name, &source.url, &range))?;
+    write_project_yaml(root, &with_pack(text.as_deref(), name, &shown, &range))?;
     record(config, root, &new)?;
-    crate::linker::manifest::ensure_gitignore(root)?;
     Ok(Done {
         relink: true,
         lines: vec![format!(
@@ -382,5 +456,6 @@ pub fn add_in(
             best.version,
             status::id12(&best.id())
         )],
+        undo: Some(undo),
     })
 }

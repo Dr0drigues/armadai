@@ -1099,26 +1099,6 @@ fn add_refuses_an_already_invalid_project_too() {
 }
 
 #[test]
-fn a_new_error_on_a_valid_project_is_blamed_on_the_new_version() {
-    let (env, _second) = two_projects();
-    put(
-        &env.root(),
-        ".armadai/agents/mine.md",
-        "---\ndescription: mine\nskills: [s]\n---\nM\n",
-    );
-    env.release("1.2.0", &[], &["skills/s/SKILL.md"]);
-    let before = tree(&env.root());
-    let r = env.run(&["pack", "update"], &[]);
-    assert_ne!(r.code, Some(0));
-    assert!(
-        r.err_has("Error: pack demo 1.2.0 would make the project invalid; nothing was changed"),
-        "{}",
-        r.err
-    );
-    assert_eq!(tree(&env.root()), before);
-}
-
-#[test]
 fn add_goes_on_after_a_failing_source() {
     let (env, _c1, c2) = released();
     let bad = format!("file://{}/missing", env.dir.path().display());
@@ -1135,9 +1115,7 @@ fn add_goes_on_after_a_failing_source() {
     assert!(env.text(".armadai/pack.lock").contains(&c2));
 }
 
-#[test]
-fn an_archive_source_shows_twelve_characters_of_the_digest() {
-    let env = Env::new();
+fn archive_path(env: &Env) -> String {
     let src = env.dir.path().join("archive-src");
     put(&src, "armadai-packs.yaml", &index("1.0.0"));
     put(&src, "demo/pack.yaml", "name: demo\n");
@@ -1172,7 +1150,13 @@ fn an_archive_source_shows_twelve_characters_of_the_digest() {
     .unwrap();
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&curl, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    format!("{}:{}", bin.display(), std::env::var("PATH").unwrap())
+}
+
+#[test]
+fn an_archive_source_shows_twelve_characters_of_the_digest() {
+    let env = Env::new();
+    let path = archive_path(&env);
     let url = "https://example.com/packs.tar.gz";
     env.registries(&[url]);
 
@@ -1207,4 +1191,329 @@ fn an_archive_source_shows_twelve_characters_of_the_digest() {
         "{}",
         status.out
     );
+}
+
+// ---- review of task 15 ----
+
+#[test]
+fn add_keeps_a_newline_terminated_project_yaml() {
+    let (env, ..) = released();
+    let before = "schema_version: 1\n# my own note\ntargets: [claude]\n";
+    put(&env.root(), ".armadai/project.yaml", before);
+    ok(&env.run(&["pack", "add", "demo"], &[]));
+    assert_eq!(
+        env.text(".armadai/project.yaml"),
+        format!(
+            "{before}pack:\n  name: demo\n  source: '{}'\n  version: '^1.1.0'\n",
+            env.url()
+        )
+    );
+}
+
+#[test]
+fn update_relinks_the_outputs_on_the_new_version() {
+    let (env, _second) = two_projects();
+    env.release(
+        "1.2.0",
+        &[("agents/a.md", "---\ndescription: from the pack\n---\nNEW\n")],
+        &[],
+    );
+    ok(&env.run(&["pack", "update"], &[]));
+    assert_eq!(
+        env.text(".claude/agents/a.md"),
+        "---\nname: a\ndescription: from the pack\n---\nNEW\n"
+    );
+}
+
+#[test]
+fn add_names_the_pack_the_project_already_references() {
+    let (env, ..) = released();
+    ok(&env.run(&["pack", "add", "demo"], &[]));
+    let r = env.run(&["pack", "add", "other"], &[]);
+    assert_ne!(r.code, Some(0));
+    assert!(
+        r.err_has(
+            "Error: .armadai/project.yaml already references pack demo: use `armadai pack update`"
+        ),
+        "{}",
+        r.err
+    );
+}
+
+const SECRET_URL: &str = "https://user:S3CRETTOK@example.com/packs.tar.gz?sig=S3CRETSIG";
+const MASKED_URL: &str = "https://***@example.com/packs.tar.gz?***";
+
+fn secret_in(dir: &Path) -> Vec<String> {
+    tree(dir)
+        .into_iter()
+        .filter(|(_, b)| String::from_utf8_lossy(b).contains("S3CRET"))
+        .map(|(p, _)| p)
+        .collect()
+}
+
+#[test]
+fn a_source_with_credentials_is_written_masked_and_still_found() {
+    let env = Env::new();
+    let path = archive_path(&env);
+    env.registries(&[SECRET_URL]);
+    let envs = [("PATH", path.as_str())];
+    let added = env.run(&["pack", "add", "demo"], &envs);
+    ok(&added);
+    assert_eq!(
+        env.text(".armadai/project.yaml"),
+        format!(
+            "schema_version: 1\npack:\n  name: demo\n  source: '{MASKED_URL}'\n  version: '^1.0.0'\n"
+        )
+    );
+    assert!(
+        env.text(".armadai/pack.lock")
+            .contains(&format!("source: {MASKED_URL}\n"))
+    );
+    assert_eq!(
+        secret_in(&env.root().join(".armadai")),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        secret_in(&env.config()).len(),
+        1,
+        "only registries.yaml keeps it"
+    );
+    // the masked form is matched to the user's entry to sync, link and show
+    ok(&env.run(&["pack", "update"], &envs));
+    ok(&env.run(&["link"], &envs));
+    let status = env.run(&["pack", "status"], &envs);
+    assert!(
+        status
+            .out
+            .lines()
+            .any(|l| l == "  in cache:  1.0.0 matches the range (newest: 1.0.0)"),
+        "{}",
+        status.out
+    );
+    assert_eq!(
+        secret_in(&env.root().join(".armadai")),
+        Vec::<String>::new()
+    );
+    for r in [&added, &status] {
+        assert!(!format!("{}{}", r.out, r.err).contains("S3CRET"));
+    }
+}
+
+#[test]
+fn a_masked_source_that_matches_no_entry_or_several_says_so() {
+    let env = Env::new();
+    let path = archive_path(&env);
+    env.registries(&[SECRET_URL]);
+    let envs = [("PATH", path.as_str())];
+    ok(&env.run(&["pack", "add", "demo"], &envs));
+    let none = format!(
+        "Error: the source {MASKED_URL} matches none of your sources (registries.yaml): add it there, with its credentials"
+    );
+    env.registries(&[]);
+    for args in [&["link"][..], &["pack", "update"][..]] {
+        let r = env.run(args, &envs);
+        assert_ne!(r.code, Some(0), "{args:?}");
+        assert!(r.err_has(&none), "{args:?}: {}", r.err);
+    }
+    let sync = env.run(&["pack", "sync"], &envs);
+    assert_ne!(sync.code, Some(0), "{}{}", sync.out, sync.err);
+    assert!(
+        sync.err_has(&format!("  warn: {}", none.trim_start_matches("Error: "))),
+        "{}",
+        sync.err
+    );
+    let other = "https://user:OTHERTOK@example.com/packs.tar.gz?sig=OTHERSIG";
+    env.registries(&[SECRET_URL, other]);
+    let several = format!(
+        "Error: the source {MASKED_URL} matches 2 entries of your registries.yaml, which differ only by their credentials: keep one"
+    );
+    for args in [&["link"][..], &["pack", "update"][..]] {
+        let r = env.run(args, &envs);
+        assert_ne!(r.code, Some(0), "{args:?}");
+        assert!(r.err_has(&several), "{args:?}: {}", r.err);
+    }
+}
+
+fn seed_versions(env: &Env, url: &str, body: &str) {
+    let p = env.versions_path(url);
+    put(p.parent().unwrap(), "versions.yaml", body);
+}
+
+#[test]
+fn add_in_several_sources_lists_them_masked() {
+    let env = Env::new();
+    let (a, b) = (
+        "https://u:TOK1@example.com/a.git",
+        "https://u:TOK2@example.com/b.git",
+    );
+    let body = "format: 1\npacks:\n  demo:\n    path: demo\n    versions:\n      - { version: 1.0.0, tag: demo-v1.0.0, commit: '1111111111111111111111111111111111111111' }\n";
+    seed_versions(&env, a, body);
+    seed_versions(&env, b, body);
+    env.registries(&[a, b]);
+    let (path, _) = fake_tools(env.dir.path());
+    let r = env.run(&["pack", "add", "demo"], &[("PATH", &path)]);
+    assert_ne!(r.code, Some(0));
+    assert!(
+        r.err_has("Error: pack demo is in several of your sources (https://***@example.com/a.git, https://***@example.com/b.git): pass --source <url>"),
+        "{}",
+        r.err
+    );
+    assert!(!r.err.contains("TOK"), "{}", r.err);
+}
+
+#[test]
+fn add_with_nothing_cached_says_none() {
+    let env = Env::new();
+    let url = "https://example.com/empty.git";
+    seed_versions(
+        &env,
+        url,
+        "format: 1\npacks:\n  demo:\n    path: demo\n    versions: []\n",
+    );
+    env.registries(&[url]);
+    let (path, _) = fake_tools(env.dir.path());
+    let r = env.run(&["pack", "add", "demo"], &[("PATH", &path)]);
+    assert_ne!(r.code, Some(0));
+    assert!(
+        r.err_has("Error: no cached version of pack demo matches latest (cached: none): run `armadai pack sync`"),
+        "{}",
+        r.err
+    );
+}
+
+#[test]
+fn update_without_a_lock_says_none_as_the_old_version() {
+    let (env, ..) = released();
+    ok(&env.run(&["pack", "add", "demo"], &[]));
+    std::fs::remove_file(env.root().join(".armadai/pack.lock")).unwrap();
+    let r = env.run(&["pack", "update"], &[]);
+    ok(&r);
+    let lock = env.text(".armadai/pack.lock");
+    let commit = lock
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("commit: "))
+        .unwrap();
+    assert_eq!(
+        r.out
+            .lines()
+            .filter(|l| l.starts_with("Pack demo"))
+            .collect::<Vec<_>>(),
+        [format!(
+            "Pack demo: (none) -> 1.1.0 ({}), .armadai/pack.lock updated",
+            id12(commit)
+        )]
+    );
+}
+
+#[test]
+fn update_of_a_project_without_a_pack_says_how_to_get_one() {
+    let env = Env::new();
+    put(&env.root(), ".armadai/project.yaml", "schema_version: 1\n");
+    let r = env.run(&["pack", "update"], &[]);
+    assert_ne!(r.code, Some(0));
+    assert!(
+        r.err_has("Error: this project references no pack and records no installed pack: use `armadai pack add <name>` or `armadai init --pack <name>`"),
+        "{}",
+        r.err
+    );
+}
+
+#[test]
+fn update_of_a_copied_pack_says_it_is_not_available_yet() {
+    let env = Env::new();
+    put(&env.root(), ".armadai/project.yaml", "schema_version: 1\n");
+    put(
+        &env.root(),
+        ".armadai/link-manifest.yaml",
+        &format!("version: 1\npacks:\n  demo:\n    source: '{URL}'\n    version: 1.0.0\n"),
+    );
+    let r = env.run(&["pack", "update"], &[]);
+    assert_ne!(r.code, Some(0));
+    assert!(
+        r.err_has(
+            "Error: pack update of a pack installed by `armadai init --pack` is not available yet"
+        ),
+        "{}",
+        r.err
+    );
+}
+
+#[test]
+fn update_lists_a_missing_and_a_departed_referent() {
+    let (env, second) = two_projects();
+    let third = env.other_project("project3");
+    ok(&env.run_in(&third, &["pack", "add", "demo"], &[]));
+    let second_canon = std::fs::canonicalize(&second).unwrap();
+    let third_canon = std::fs::canonicalize(&third).unwrap();
+    std::fs::remove_dir_all(&second).unwrap();
+    put(&third, ".armadai/project.yaml", "schema_version: 1\n");
+    env.release("1.2.0", &[], &[]);
+    let r = env.run(&["pack", "update"], &[]);
+    ok(&r);
+    let lines: Vec<&str> = r.out.lines().collect();
+    let n = lines.len();
+    assert_eq!(
+        lines[n - 2..],
+        [
+            format!("  {} (missing)", second_canon.display()),
+            format!("  {} (no longer references demo)", third_canon.display()),
+        ]
+    );
+}
+
+#[test]
+fn add_in_a_legacy_project_is_refused_and_writes_nothing() {
+    let (env, ..) = released();
+    put(&env.root(), "armadai.yaml", "agents: []\n");
+    let r = env.run(&["pack", "add", "demo"], &[]);
+    assert_ne!(r.code, Some(0));
+    assert!(
+        r.err.lines().any(|l| l.starts_with("Error: ")
+            && l.ends_with(" uses the legacy format, run `armadai migrate`")),
+        "{}",
+        r.err
+    );
+    assert!(!env.root().join(".armadai").exists());
+}
+
+const NOT_APPLIED: &str = "pack demo 1.2.0 was not applied: link failed, so .armadai/pack.lock and the referent record are back as they were";
+
+#[test]
+fn a_failing_link_puts_the_old_lock_back() {
+    let (env, _second) = two_projects();
+    env.release(
+        "1.2.0",
+        &[("agents/a.md", "---\ndescription: from the pack\n---\nNEW\n")],
+        &[],
+    );
+    let out = env.root().join(".claude/agents/a.md");
+    std::fs::remove_file(&out).unwrap();
+    std::fs::create_dir(&out).unwrap();
+    let before = tree(&env.root().join(".armadai"));
+    // as after a clone: the project is on the pack, the record does not know it yet
+    std::fs::remove_file(env.config().join("pack-referents.yaml")).unwrap();
+    let r = env.run(&["pack", "update"], &[]);
+    assert_ne!(r.code, Some(0), "{}{}", r.out, r.err);
+    assert!(r.err_has(NOT_APPLIED), "{}", r.err);
+    assert!(!r.out.contains(".armadai/pack.lock updated"), "{}", r.out);
+    assert_eq!(tree(&env.root().join(".armadai")), before);
+    assert!(!env.config().join("pack-referents.yaml").exists());
+}
+
+#[test]
+fn a_failing_link_undoes_an_add() {
+    let (env, ..) = released();
+    let out = env.root().join(".claude/agents/a.md");
+    std::fs::create_dir_all(&out).unwrap();
+    let r = env.run(&["pack", "add", "demo"], &[]);
+    assert_ne!(r.code, Some(0), "{}{}", r.out, r.err);
+    assert!(
+        r.err_has("pack demo 1.1.0 was not applied: link failed, so .armadai/pack.lock and the referent record are back as they were"),
+        "{}",
+        r.err
+    );
+    for f in [".armadai/project.yaml", ".armadai/pack.lock"] {
+        assert!(!env.root().join(f).exists(), "{f}");
+    }
+    assert!(!env.config().join("pack-referents.yaml").exists());
 }

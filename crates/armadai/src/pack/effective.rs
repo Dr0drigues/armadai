@@ -130,7 +130,8 @@ fn snapshot(root: &Path, lock: &PackLock, registry: &Path) -> anyhow::Result<Pat
             );
         }
     }
-    let dir = super::cache::snapshot_dir_in(registry, &lock.source, &lock.pack, &id);
+    let source = super::source::real_url(&lock.source)?;
+    let dir = super::cache::snapshot_dir_in(registry, &source, &lock.pack, &id);
     if !dir.is_dir() {
         bail!(
             "pack {} {} ({}) is not in the local cache: run `armadai pack sync`",

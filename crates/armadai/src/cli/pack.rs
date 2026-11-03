@@ -8,7 +8,7 @@ use clap::Subcommand;
 
 use crate::pack::cache::{self, Available};
 use crate::pack::lock::{self, TagState};
-use crate::pack::status;
+use crate::pack::{source, status};
 use crate::starters_registry::{effective_starter_sources, sync_warning};
 
 #[derive(Subcommand)]
@@ -82,8 +82,14 @@ pub fn execute(what: PackCommand) -> anyhow::Result<()> {
 
 /// Link the project on its new lock, then say what changed.
 fn finish(done: crate::pack::Done) -> anyhow::Result<()> {
-    if done.relink {
-        crate::cli::link::execute(vec![], false, false, None, None, false, false)?;
+    if done.relink
+        && let Err(e) = crate::cli::link::execute(vec![], false, false, None, None, false, false)
+    {
+        if let Some(undo) = &done.undo {
+            undo.restore();
+            eprintln!("{}", undo.message());
+        }
+        return Err(e);
     }
     for l in done.lines {
         println!("{l}");
@@ -93,15 +99,27 @@ fn finish(done: crate::pack::Done) -> anyhow::Result<()> {
 
 fn sync(root: Option<&Path>, registry: &Path, only: Option<String>) -> anyhow::Result<()> {
     let declared = root.and_then(status::declared);
+    // the project records its source masked: the entry of the user's it stands for
+    let mut failed = 0;
+    let declared_real = declared
+        .as_ref()
+        .and_then(|d| match source::real_url(&d.source) {
+            Ok(u) => Some(u),
+            Err(e) => {
+                eprintln!("  warn: {e}");
+                failed += 1;
+                None
+            }
+        });
     let mut sources = effective_starter_sources();
     // The project's own source is synced too, registered or not.
     let mut unregistered = None;
-    if let Some(d) = &declared
-        && !sources.iter().any(|s| s.url == d.source)
+    if let (Some(d), Some(real)) = (&declared, &declared_real)
+        && !sources.iter().any(|s| &s.url == real)
     {
         unregistered = Some(d);
         sources.push(RegistrySource {
-            url: d.source.clone(),
+            url: real.clone(),
             kind: None,
         });
     }
@@ -114,8 +132,8 @@ fn sync(root: Option<&Path>, registry: &Path, only: Option<String>) -> anyhow::R
             });
         }
     }
-    if let Some(d) = unregistered
-        && sources.iter().any(|s| s.url == d.source)
+    if let (Some(d), Some(real)) = (unregistered, &declared_real)
+        && sources.iter().any(|s| &s.url == real)
     {
         eprintln!(
             "note: {} comes from .armadai/project.yaml (pack {}), not from your registries.yaml",
@@ -124,7 +142,6 @@ fn sync(root: Option<&Path>, registry: &Path, only: Option<String>) -> anyhow::R
         );
     }
 
-    let mut failed = 0;
     let mut synced = BTreeSet::new();
     let mut unsynced = BTreeSet::new();
     for s in &sources {
@@ -147,7 +164,7 @@ fn sync(root: Option<&Path>, registry: &Path, only: Option<String>) -> anyhow::R
     }
 
     if let Some(root) = root
-        && declared.is_some()
+        && declared_real.is_some()
     {
         failed += check_lock(root, registry, &sources, &synced);
     }
@@ -156,7 +173,7 @@ fn sync(root: Option<&Path>, registry: &Path, only: Option<String>) -> anyhow::R
     if let Some(root) = root
         && !declared
             .as_ref()
-            .is_some_and(|d| unsynced.contains(&d.source))
+            .is_some_and(|_| declared_real.as_ref().is_some_and(|r| unsynced.contains(r)))
         && !crate::linker::manifest::installed_packs(root)
             .values()
             .any(|p| unsynced.contains(&p.source))
@@ -186,7 +203,10 @@ fn check_lock(
             return 1;
         }
     };
-    let Some(source) = sources.iter().find(|s| s.url == lock.source) else {
+    let Ok(real) = source::real_url(&lock.source) else {
+        return 0;
+    };
+    let Some(source) = sources.iter().find(|s| s.url == real) else {
         return 0;
     };
     if !synced.contains(&source.url) {

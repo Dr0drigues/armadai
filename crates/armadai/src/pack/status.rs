@@ -8,7 +8,7 @@ use armadai_core::registries::redact_url;
 
 use super::cache::{self, Available};
 use super::resolve::{self, Range};
-use super::{lock, referents};
+use super::{lock, referents, source};
 use crate::linker::manifest;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,7 +60,7 @@ pub fn newer(root: &Path, registry: &Path) -> Option<Newer> {
     if let Some(d) = declared(root) {
         let lock = lock::read(root).ok()??;
         let range = resolve::parse_range(&d.version).ok()?;
-        let all = cached(registry, &d.source, &d.name);
+        let all = cached(registry, &source::real_url(&d.source).ok()?, &d.name);
         let best = resolve::best(&range, &all)?;
         return (best.version != lock.resolved.version).then(|| Newer {
             pack: d.name,
@@ -112,7 +112,7 @@ pub fn report(root: &Path, registry: &Path, config: &Path) -> anyhow::Result<Str
         let Some(lock) = lock::read(root)? else {
             return Err(anyhow!(super::effective::lock_missing(&d.name)));
         };
-        let all = cached(registry, &d.source, &d.name);
+        let all = cached(registry, &source::real_url(&d.source)?, &d.name);
         let newest = resolve::best(&Range::Latest, &all);
         let best = resolve::parse_range(&d.version)
             .ok()
