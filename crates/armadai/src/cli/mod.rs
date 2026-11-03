@@ -586,6 +586,7 @@ mod tests {
             "link",
             "unlink",
             "init",
+            "pack",
             "update",
             "completion",
         ] {
@@ -598,6 +599,17 @@ mod tests {
             assert!(
                 !about.trim().is_empty(),
                 "`{cmd}` has no short description (doc comment) in --help:\n{help}"
+            );
+        }
+        let pack = root.find_subcommand("pack").expect("pack");
+        for cmd in ["sync", "status", "add", "update", "new"] {
+            let sub = pack
+                .find_subcommand(cmd)
+                .unwrap_or_else(|| panic!("`pack {cmd}` missing from `pack --help`"));
+            let about = sub.get_about().map(|a| a.to_string()).unwrap_or_default();
+            assert!(
+                !about.trim().is_empty(),
+                "`pack {cmd}` has no short description (doc comment) in --help"
             );
         }
     }

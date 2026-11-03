@@ -15,6 +15,9 @@ with "legacy format, run `armadai migrate`" (see [Migrating](#migrating-a-legacy
   automations/<id>.yaml
   commands/<id>.md        # commands the user types (`/<id>`)
   native/<target>/<path>  # files copied as is by link
+  pack.lock               # with `pack:`: the pack version link uses (written by `armadai pack`)
+  vars.yaml               # values of the {{var.name}} variables (versioned)
+  vars.local.yaml         # the same, on this machine only (not versioned)
 ```
 
 Every file is strict YAML: an unknown key, a duplicate key or a value outside its domain is an
@@ -30,9 +33,9 @@ only identity of an agent, template, skill, flow, automation or command. The sup
 schema_version: 1            # integer; the only accepted value is 1
 name: my-project             # optional, informative
 pack:                        # optional: build on a pack (see starter-packs.md)
-  name: demo                 #   pack id
+  name: demo                 # pack id
   source: https://example.com/packs.git   # URL of the git repository or archive
-  version: ^1.3              #   latest, an exact version, or a semver range
+  version: ^1.3              # latest, an exact version, or a semver range
 targets: [claude, opencode]  # default link targets
 outputs: { claude: .claude } # optional: output directory per target
 coordinator: lead            # optional: agent id whose prompt becomes the root file
@@ -41,6 +44,19 @@ policy:                      # optional
   free_agents: [explorer, Explore]    # reachable from anywhere: project agent ids, or agents the target provides (Claude Code's Explore)
 native: { claude: {} }       # optional, opaque
 ```
+
+With `pack:`, the project is built on a pack by reference: its files are the pack's, plus yours at
+the same paths, and `project.yaml` is merged key by key. `.armadai/pack.lock` records the version
+`link` uses. `pack.source` and `pack.version` may not be empty (`pack-empty-source`,
+`pack-empty-version`). A source that carries a secret is written masked. The commands, the ranges
+and the merge rules are in [Starter packs](starter-packs.md#building-on-a-pack-by-reference).
+
+`{{var.name}}` in the body of an agent, template, command or `SKILL.md`, or in a text value under
+`native` of `project.yaml`, is replaced by `link` with the value of `name` (an id), read from
+`ARMADAI_VAR_<NAME>`, then `.armadai/vars.local.yaml`, then `.armadai/vars.yaml`: the first one
+that sets it wins. Each file is a flat map of `name: value`. A name no layer sets becomes an empty
+value and an `approximated` line `var <name>` in the report. The files of `.armadai/` are never
+rewritten. See [Starter packs](starter-packs.md#variables).
 
 ## `agents/<id>.md`
 
@@ -367,9 +383,9 @@ warning on stderr.
 | `command-shell-expansion` | error | The body holds `` !` `` or a line starting with ```` ```! ````: a shell run when the command is typed | Remove it: ArmadAI never compiles shell execution at command time |
 | `command-target-variable` | error | The body holds a `${CLAUDE_…}` substitution, replaced by Claude Code only | Only `$ARGUMENTS` is portable: remove it, or put it in a native file |
 | `command-shadows-skill` | error | A command has the id of a skill | Rename one of them (Claude Code would run the skill and ignore the command) |
+| `command-shadows-builtin` | warning | A command has the name of a built-in command of Claude Code or OpenCode | Pick another name: one of them hides the other |
 | `pack-empty-source` | error | `pack.source` is empty | Give the URL of the pack's source, as in `registries.yaml` |
 | `pack-empty-version` | error | `pack.version` is empty | Write `latest`, a version such as `1.2.3`, or a range such as `^1.3` |
-| `command-shadows-builtin` | warning | A command has the name of a built-in command of Claude Code or OpenCode | Pick another name: one of them hides the other |
 
 ## Migrating a legacy project
 

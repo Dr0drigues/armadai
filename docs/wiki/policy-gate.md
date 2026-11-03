@@ -80,6 +80,21 @@ appearing when you expect them, check that the command still resolves.
 not validate ("… is invalid, the delegation gate is inactive") or a legacy one ("legacy format,
 run armadai migrate; gate inactive") yields no verdict; stdout stays empty.
 
+**A project whose pack cannot be read is refused, not waved through.** With `pack:`, the gate
+reads the project as `link` compiled it: the locked snapshot of the pack, overlaid by your files
+(variables stay as written). If that view cannot be opened (the cache was removed, the lock was
+advanced by a `git pull`, the pack is missing), the delegation is refused with
+
+```
+the project's pack cannot be read, so the delegation policy cannot be checked: <reason>
+```
+
+and stderr says `armadai policy gate: <dir> could not be opened, delegation refused: <reason>`.
+The reason names the cure (`armadai pack sync`, or `armadai pack update`). The policy itself lives
+in that view, so the gate cannot tell whether it was `strict`: a project that was linked under
+`strict` and then lost its snapshot would otherwise silently lose its gate. A view that opens but
+whose merge is invalid is still "no opinion" (the invalid-project case above).
+
 The gate finds the project from the session's directory upwards (without crossing a `.git`
 boundary), and from a git worktree falls back to the main checkout when the worktree has no
 `.armadai/` of its own.
@@ -95,6 +110,8 @@ It is specific to Claude Code. OpenCode gets the same rule as native permissions
 (`permission.task`, see [Link](link.md#opencode)); Codex and Copilot receive no equivalent (their
 report says `not-compiled`).
 
-Every uncertainty resolves to *no opinion*: unreadable payload or project, a tool other than
-`Agent`/`Task`, `policy.delegation: off`. A gate that refuses because it failed to understand is a
-gate you uninstall the same day.
+Uncertainty resolves to *no opinion*: an unreadable payload, an absent, legacy or invalid project, a
+tool other than `Agent`/`Task`, `policy.delegation: off`. The one exception is a pack the gate
+cannot read (above), which is refused, with the cure in the message. A gate that refuses because it
+failed to understand is a gate you uninstall the same day, so the refusal is kept to the case where
+the gate knows what is missing.
