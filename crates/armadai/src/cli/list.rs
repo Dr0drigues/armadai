@@ -9,6 +9,17 @@ use armadai_model::{Project, Tier};
 /// The project at or above the current directory, as far as it loads; every
 /// diagnostic goes to stderr.
 pub fn load_for_reading() -> anyhow::Result<Project> {
+    Ok(load_with_origins()?.0)
+}
+
+/// [`load_for_reading`] with where each file really is, and the project root; the view
+/// is kept for the pack name.
+pub fn load_with_origins() -> anyhow::Result<(
+    Project,
+    armadai_model::Origins,
+    crate::pack::effective::Effective,
+    std::path::PathBuf,
+)> {
     let root = crate::compile::find_project(&std::env::current_dir()?)?;
     let view = crate::pack::effective::open(&root, crate::pack::effective::Vars::Literal)?;
     let loaded = view.load_project();
@@ -20,9 +31,10 @@ pub fn load_for_reading() -> anyhow::Result<Project> {
         let s = crate::cli::style::warn();
         anstream::eprintln!("{s}{}{s:#}", d.render());
     }
-    loaded
+    let project = loaded
         .project
-        .ok_or_else(|| anyhow::anyhow!("the project manifest could not be read"))
+        .ok_or_else(|| anyhow::anyhow!("the project manifest could not be read"))?;
+    Ok((project, loaded.origins, view, root))
 }
 
 /// `<slot>: <the skills filling it>`, or `(none)`.

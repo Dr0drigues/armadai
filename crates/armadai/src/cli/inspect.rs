@@ -2,7 +2,17 @@
 //! rendered from its template), and the flows it takes part in.
 
 pub fn execute(id: String) -> anyhow::Result<()> {
-    let project = crate::cli::list::load_for_reading()?;
+    let (project, origins, view, root) = crate::cli::list::load_with_origins()?;
+    // where a file is read from: the project's own `.armadai/…`, or its pack's
+    let place = |kind: armadai_model::Kind, dir: &str, name: &str| -> String {
+        let own = format!(".armadai/{dir}/{name}.md");
+        match (origins.files.get(&(kind, name.to_string())), &view.pack) {
+            (Some((file, _)), Some(p)) if !file.starts_with(&root) => {
+                format!("pack {}, {dir}/{name}.md", p.name)
+            }
+            _ => own,
+        }
+    };
     let Some(agent) = project.agents.get(&id) else {
         let known: Vec<&str> = project.agents.keys().map(String::as_str).collect();
         anyhow::bail!(
@@ -21,10 +31,15 @@ pub fn execute(id: String) -> anyhow::Result<()> {
     anstream::println!("{h}Agent:{h:#} {a}{id}{a:#}");
     match &agent.instance {
         Some(i) => anstream::println!(
-            "{m}Source: .armadai/agents/{id}.md, from: {t} (.armadai/templates/{t}.md){m:#}\n",
+            "{m}Source: {}, from: {t} ({}){m:#}\n",
+            place(armadai_model::Kind::Agent, "agents", &id),
+            place(armadai_model::Kind::Template, "templates", &i.from),
             t = i.from
         ),
-        None => anstream::println!("{m}Source: .armadai/agents/{id}.md{m:#}\n"),
+        None => anstream::println!(
+            "{m}Source: {}{m:#}\n",
+            place(armadai_model::Kind::Agent, "agents", &id)
+        ),
     }
     let field = |name: &str, value: String| {
         anstream::println!("{m}  {name:<13}{m:#} {value}");

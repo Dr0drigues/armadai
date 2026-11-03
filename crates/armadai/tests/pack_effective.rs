@@ -192,3 +192,34 @@ fn flow_status_knows_the_pack_flows() {
     assert_eq!(code, Some(1), "{out}");
     assert!(err.contains("flows: ship"), "{err}");
 }
+
+#[test]
+fn skills_lists_the_pack_skills_without_a_scratch_path() {
+    let env = Env::reference();
+    let (code, out, err) = env.run(&["skills", "list"]);
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert!(
+        out.lines()
+            .any(|l| l.contains(" s ") || l.trim_start().starts_with("s ")),
+        "{out}"
+    );
+    assert!(
+        !out.contains("/tmp") && !out.contains("/var/folders"),
+        "{out}"
+    );
+}
+
+#[test]
+fn inspect_names_the_layer_of_the_agent() {
+    let env = Env::reference();
+    let (_, out, _) = env.run(&["inspect", "a"]);
+    assert!(
+        out.lines().any(|l| l == "Source: pack demo, agents/a.md"),
+        "{out}"
+    );
+    let (_, out, _) = env.run(&["inspect", "b"]);
+    assert!(
+        out.lines().any(|l| l == "Source: .armadai/agents/b.md"),
+        "{out}"
+    );
+}

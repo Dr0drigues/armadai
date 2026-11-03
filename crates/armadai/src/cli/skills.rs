@@ -477,12 +477,18 @@ fn collect_skills() -> Vec<Skill> {
     let mut skills = Vec::new();
 
     // Project skills: `.armadai/skills/` of the canonical project, else a local skills/
-    let local_dir = match std::env::current_dir()
+    // read through the effective view (a pack's skills too); the view owns its scratch
+    // copy, so it lives as long as the listing. Writes stay in `.armadai/skills/`.
+    let root = std::env::current_dir()
         .ok()
-        .and_then(|cwd| crate::compile::find_project(&cwd).ok())
-    {
-        Some(root) => root.join(".armadai/skills"),
-        None => std::path::PathBuf::from("skills"),
+        .and_then(|cwd| crate::compile::find_project(&cwd).ok());
+    let view = root
+        .as_ref()
+        .and_then(|r| crate::pack::effective::open(r, crate::pack::effective::Vars::Literal).ok());
+    let local_dir = match (&root, &view) {
+        (_, Some(v)) => v.sources.join(".armadai/skills"),
+        (Some(r), None) => r.join(".armadai/skills"),
+        (None, _) => std::path::PathBuf::from("skills"),
     };
     if local_dir.is_dir() {
         skills.extend(load_all_skills(&local_dir));
