@@ -36,6 +36,8 @@ struct Prepared {
     report: Report,
     /// Agent id -> the template it is an instance of: a report line names the source.
     templates: std::collections::BTreeMap<String, String>,
+    /// The directory holding the `.armadai/` that was compiled (skills are read there).
+    sources: PathBuf,
 }
 
 impl Prepared {
@@ -95,13 +97,14 @@ fn folded(p: &Path) -> String {
 fn prepare(
     project: &Project,
     root: &Path,
+    sources: &Path,
     target: &str,
     output: Option<&Path>,
     agents: Option<&[String]>,
 ) -> anyhow::Result<Prepared> {
     compile::check_output(root, &output_of(target, output, project), output.is_some())?;
     let output_dir = output_of(target, output, project);
-    let plan = compile::compiler_for(target, &output_dir)?.compile(project, root)?;
+    let plan = compile::compiler_for(target, &output_dir)?.compile(project, root, sources)?;
     let mut p = Prepared {
         target: target.to_string(),
         output_dir,
@@ -115,6 +118,7 @@ fn prepare(
         },
         report: plan.report,
         all_produced: BTreeSet::new(),
+        sources: sources.to_path_buf(),
         templates: (project.agents.iter())
             .filter_map(|(id, a)| Some((id.clone(), a.instance.as_ref()?.from.clone())))
             .collect(),
@@ -346,7 +350,7 @@ fn copy_executable_bits(root: &Path, p: &Prepared) {
                 .path
                 .strip_prefix("skills")
                 .ok()
-                .map(|rest| root.join(".armadai/skills").join(rest)),
+                .map(|rest| p.sources.join(".armadai/skills").join(rest)),
             ArtifactKind::Native => {
                 Some(root.join(".armadai/native").join(&p.target).join(&a.path))
             }
@@ -663,7 +667,16 @@ pub fn execute(
 
     // every target is planned and checked before the first write
     let mut prepared = (targets.iter())
-        .map(|t| prepare(&project, &root, t, output.as_deref(), agents.as_deref()))
+        .map(|t| {
+            prepare(
+                &project,
+                &root,
+                &root,
+                t,
+                output.as_deref(),
+                agents.as_deref(),
+            )
+        })
         .collect::<anyhow::Result<Vec<_>>>()?;
 
     let mut lines = Vec::new();
@@ -776,4 +789,49 @@ pub fn execute(
         print!("{}", report.render_text());
     }
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn the_executable_bit_of_a_skill_is_read_under_sources() {
+        let root = tempfile::tempdir().unwrap();
+        let sources = tempfile::tempdir().unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o111;
+        let src = sources.path().join(".armadai/skills/s/run.sh");
+        std::fs::create_dir_all(src.parent().unwrap()).unwrap();
+        std::fs::write(&src, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let dest = root.path().join(".claude/skills/s/run.sh");
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        std::fs::write(&dest, "#!/bin/sh\n").unwrap();
+        // a decoy under root with the opposite bit must not decide
+        let decoy = root.path().join(".armadai/skills/s/run.sh");
+        std::fs::create_dir_all(decoy.parent().unwrap()).unwrap();
+        std::fs::write(&decoy, "x").unwrap();
+        let p = Prepared {
+            target: "claude".into(),
+            output_dir: PathBuf::from(".claude"),
+            artifacts: vec![Artifact {
+                path: PathBuf::from("skills/s/run.sh"),
+                content: Vec::new(),
+                kind: ArtifactKind::Skill,
+                produced_by: ProducedBy::skill("s"),
+            }],
+            blocks: Vec::new(),
+            settings: None,
+            json: None,
+            previous: None,
+            all_produced: BTreeSet::new(),
+            report: Report::default(),
+            templates: BTreeMap::new(),
+            sources: sources.path().to_path_buf(),
+        };
+        assert_eq!(mode(&dest), 0);
+        copy_executable_bits(root.path(), &p);
+        assert_ne!(mode(&dest), 0);
+    }
 }

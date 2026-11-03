@@ -32,7 +32,7 @@ const NO_PRELOAD: &str =
 pub struct ClaudeCompiler;
 
 impl Compiler for ClaudeCompiler {
-    fn compile(&self, project: &Project, root: &Path) -> anyhow::Result<Plan> {
+    fn compile(&self, project: &Project, root: &Path, sources: &Path) -> anyhow::Result<Plan> {
         let mut plan = Plan::default();
         let coordinator = project.manifest.coordinator.as_deref();
         let strict = project.manifest.policy.delegation == Delegation::Strict;
@@ -54,8 +54,8 @@ impl Compiler for ClaudeCompiler {
         }
 
         for id in project.skills.keys() {
-            let dir = root.join(".armadai/skills").join(id);
-            let (files, backups) = super::read_tree_skipping(&dir, &root.join(".armadai"))?;
+            let dir = sources.join(".armadai/skills").join(id);
+            let (files, backups) = super::read_tree_skipping(&dir, &sources.join(".armadai"))?;
             for rel in backups {
                 plan.report.push(
                     T,
@@ -510,7 +510,7 @@ mod tests {
 
     fn compile(files: &[(&str, &[u8])]) -> anyhow::Result<Plan> {
         let (dir, p) = project(files);
-        ClaudeCompiler.compile(&p, dir.path())
+        ClaudeCompiler.compile(&p, dir.path(), dir.path())
     }
 
     const M: (&str, &[u8]) = (".armadai/project.yaml", b"schema_version: 1\n");
@@ -873,7 +873,9 @@ mod tests {
             dir.path().join(".armadai/skills/lint/leak"),
         )
         .unwrap();
-        let err = ClaudeCompiler.compile(&p, dir.path()).unwrap_err();
+        let err = ClaudeCompiler
+            .compile(&p, dir.path(), dir.path())
+            .unwrap_err();
         assert!(err.to_string().contains("leak"), "{err}");
     }
 
@@ -1175,7 +1177,7 @@ mod tests {
                 assert!(status.success());
             }
             let err = ClaudeCompiler
-                .compile(&p, dir.path())
+                .compile(&p, dir.path(), dir.path())
                 .unwrap_err()
                 .to_string();
             assert!(
