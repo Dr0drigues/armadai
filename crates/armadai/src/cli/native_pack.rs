@@ -78,8 +78,12 @@ pub fn files(pack_dir: &Path) -> anyhow::Result<PackFiles> {
 /// The white-listed files of a project's `.armadai/` (`base`), as `files` reads a pack's,
 /// descending only into the folders the list names (`state/`, `.migrated/` and the
 /// like are never visited). A symbolic link on a listed path, or standing for a folder
-/// inside one of those folders, is refused; any other link is left alone.
-pub(crate) fn read_listed(base: &Path) -> anyhow::Result<Vec<(PathBuf, Vec<u8>, bool)>> {
+/// inside one of those folders, is refused when `strict` (else a link to a file
+/// is read through and the others skipped); any other link is left alone.
+pub(crate) fn read_listed(
+    base: &Path,
+    strict: bool,
+) -> anyhow::Result<Vec<(PathBuf, Vec<u8>, bool)>> {
     const DIRS: [&str; 6] = [
         "agents",
         "templates",
@@ -103,8 +107,16 @@ pub(crate) fn read_listed(base: &Path) -> anyhow::Result<Vec<(PathBuf, Vec<u8>, 
         let rel = path.strip_prefix(base)?.to_path_buf();
         if meta.file_type().is_symlink() {
             let to_dir = std::fs::metadata(&path).is_ok_and(|m| m.is_dir());
-            if listed(&rel) || to_dir {
+            if strict && (listed(&rel) || to_dir) {
                 bail!("{} is a symbolic link, refused", path.display());
+            }
+            // not strict: a link to a file is read through, to look at it only
+            if !strict
+                && listed(&rel)
+                && !to_dir
+                && let Ok(bytes) = std::fs::read(&path)
+            {
+                out.push((rel, bytes, false));
             }
         } else if meta.is_dir() {
             for e in

@@ -31,11 +31,12 @@ pub struct Resolved {
 }
 
 impl Resolved {
-    /// The commit, else the digest: what `link` reads (the tag is never trusted alone).
+    /// The commit, else `sha256-<hex>` of the digest: what `link` reads (the tag is never
+    /// trusted alone) and the snapshot folder's name.
     pub fn id(&self) -> String {
         self.commit
             .clone()
-            .or_else(|| self.digest.clone())
+            .or_else(|| self.digest.as_ref().map(|d| d.replace(':', "-")))
             .unwrap_or_default()
     }
 }
@@ -188,7 +189,7 @@ mod tests {
             commit: None,
             digest: Some("sha256:ab".into()),
         };
-        assert_eq!(archive.id(), "sha256:ab");
+        assert_eq!(archive.id(), "sha256-ab");
     }
 
     fn git(dir: &Path, args: &[&str]) -> String {
