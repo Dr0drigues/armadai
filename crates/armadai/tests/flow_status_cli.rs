@@ -385,7 +385,10 @@ fn link_reports_the_gitignore_it_patched() {
     let (code, out, _) = env.run(&env.root(), &["link", "--target", "claude"]);
     assert_eq!(code, Some(0));
     assert_eq!(out.matches(&line).count(), 1, "{out}");
-    assert_eq!(std::fs::read_to_string(&ignore).unwrap(), "mine\nstate/\n");
+    assert_eq!(
+        std::fs::read_to_string(&ignore).unwrap(),
+        "mine\nstate/\nvars.local.yaml\n"
+    );
     let (_, out, _) = env.run(&env.root(), &["link", "--target", "claude"]);
     assert!(!out.contains(&line), "{out}");
 }
