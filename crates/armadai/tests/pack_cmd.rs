@@ -753,6 +753,10 @@ impl Env {
         p
     }
 
+    fn head(&self) -> String {
+        git(&self.origin(), &["rev-parse", "HEAD"])
+    }
+
     fn text(&self, rel: &str) -> String {
         std::fs::read_to_string(self.root().join(rel)).unwrap()
     }
@@ -1510,8 +1514,11 @@ fn a_failing_link_undoes_an_add() {
     let (env, ..) = released();
     let out = env.root().join(".claude/agents/a.md");
     std::fs::create_dir_all(&out).unwrap();
+    std::fs::write(env.root().join(".claude/mine.md"), "mine").unwrap();
+    let claude = tree(&env.root().join(".claude"));
     let r = env.run(&["pack", "add", "demo"], &[]);
     assert_ne!(r.code, Some(0), "{}{}", r.out, r.err);
+    assert_eq!(tree(&env.root().join(".claude")), claude);
     assert!(
         r.err_has("pack demo 1.1.0 was not applied: link failed, so .armadai/pack.lock, the referent record and the files link had written are back as they were"),
         "{}",
@@ -2186,4 +2193,32 @@ fn a_file_the_pack_never_installed_is_not_called_edited() {
     );
     assert!(!r.err.contains("edited since"), "{}", r.err);
     assert_eq!(env.text(".armadai/agents/a.md"), agent("MINE"));
+}
+
+/// A heavy folder of someone else's (Claude Code worktrees hold whole `target/` trees) is
+/// never read by an update, whether it changes anything or not.
+#[cfg(unix)]
+#[test]
+fn an_update_never_reads_a_worktree_under_claude() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = Env::new();
+    env.native("1.0.0", &[], &[]);
+    env.registries(&[&env.url()]);
+    ok(&env.run(&["init", "--pack", "demo", "--link"], &[]));
+    let wt = env.root().join(".claude/worktrees/w");
+    put(&wt, "target/debug/big.rlib", "x");
+    std::fs::set_permissions(&wt, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read_dir(&wt).is_ok() {
+        return; // root reads everything: the measure means nothing
+    }
+    env.native("1.1.0", &[("agents/b.md", &agent("B"))], &[]);
+    let changed = env.run(&["pack", "update"], &[]);
+    let same = env.run(&["pack", "update"], &[]);
+    std::fs::set_permissions(&wt, std::fs::Permissions::from_mode(0o755)).unwrap();
+    ok(&changed);
+    ok(&same);
+    assert!(same.out_has(&format!(
+        "Pack demo is up to date: 1.1.0 ({})",
+        id12(&env.head())
+    )));
 }

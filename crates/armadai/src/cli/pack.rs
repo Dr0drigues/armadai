@@ -133,21 +133,27 @@ pub fn execute(what: PackCommand) -> anyhow::Result<()> {
 /// Link the project on its new lock, then say what changed.
 fn finish(root: &Path, done: crate::pack::Done) -> anyhow::Result<()> {
     if done.relink {
-        // what link may rewrite is copied first: a failed link puts it back with the rest
-        let outputs = match Outputs::take(root) {
-            Ok(o) => o,
-            Err(e) => {
-                if let Some(undo) = &done.undo {
+        // only a command that changed something has anything to put back; what link may
+        // write is copied first (its own list of paths, never a folder)
+        let outputs = match &done.undo {
+            None => None,
+            Some(undo) => match crate::cli::link::touched_paths()
+                .and_then(|paths| Ok(Outputs::take(root, &paths)?))
+            {
+                Ok(o) => Some(o),
+                Err(e) => {
                     undo.restore();
                     eprintln!("{}", undo.message());
+                    return Err(e);
                 }
-                return Err(e.into());
-            }
+            },
         };
         if let Err(e) = crate::cli::link::execute(vec![], false, false, None, None, false, false) {
             if let Some(undo) = &done.undo {
                 // the files first: the record of the pack is read from the link manifest
-                outputs.restore();
+                if let Some(o) = &outputs {
+                    o.restore();
+                }
                 undo.restore();
                 eprintln!("{}", undo.message());
             }

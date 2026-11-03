@@ -76,6 +76,34 @@ pub fn load_project() -> anyhow::Result<(PathBuf, Effective, Project)> {
     }
 }
 
+/// Every path a plain `link` may write, patch or remove, relative to the project root:
+/// what it compiles for each target, the files it patches, what the last link recorded, the
+/// link manifest and `.armadai/.gitignore`. Nothing is written.
+pub fn touched_paths() -> anyhow::Result<Vec<PathBuf>> {
+    let (root, view, project) = load_project()?;
+    let mut out: BTreeSet<PathBuf> = BTreeSet::new();
+    for t in targets_of(&[], &project) {
+        let p = prepare(&project, &root, &view.sources, &t, None, None)?;
+        out.extend(p.artifacts.iter().map(|a| p.rel(a)));
+        out.extend(p.all_produced.iter().cloned());
+        out.extend(p.blocks.iter().map(|(rel, _)| rel.clone()));
+        out.extend(p.settings.iter().map(|(rel, ..)| rel.clone()));
+        out.extend(p.json.iter().map(|(rel, _)| rel.clone()));
+        if let Some(m) = &p.previous {
+            out.extend(m.entries.iter().map(|e| e.path.clone()));
+            out.extend(m.patched.iter().map(|f| f.path.clone()));
+        }
+    }
+    out.insert(PathBuf::from(".armadai/link-manifest.yaml"));
+    out.insert(PathBuf::from(".armadai/.gitignore"));
+    // a path outside the project is none of ours to copy back
+    out.retain(|p| {
+        p.components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)))
+    });
+    Ok(out.into_iter().collect())
+}
+
 /// `--target`, else `targets` of project.yaml, else claude.
 pub fn targets_of(flag: &[crate::linker::LinkTarget], project: &Project) -> Vec<String> {
     if !flag.is_empty() {
