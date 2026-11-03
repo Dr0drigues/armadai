@@ -192,7 +192,7 @@ pub fn plan_pack(a: &PackAnswers) -> Vec<(std::path::PathBuf, Vec<u8>)> {
 }
 
 /// The guide of `pack new`: the name (the argument is the default) and the description.
-pub fn ask_pack(name: &str) -> anyhow::Result<PackAnswers> {
+pub fn ask_pack(name: &str, description: Option<&str>) -> anyhow::Result<PackAnswers> {
     require_terminal("pass --empty or --from-project instead (armadai pack new --help)")?;
     let name: String = dialoguer::Input::<String>::new()
         .with_prompt("Pack name")
@@ -201,7 +201,12 @@ pub fn ask_pack(name: &str) -> anyhow::Result<PackAnswers> {
             crate::cli::new_target::check_id(s).map_err(|e| e.to_string())
         })
         .interact_text()?;
-    let description = ask_text("Description (empty: A starter pack)")?;
+    // `--description` is the proposal, not ignored
+    let description = dialoguer::Input::<String>::new()
+        .with_prompt("Description (empty: A starter pack)")
+        .with_initial_text(description.unwrap_or_default())
+        .allow_empty(true)
+        .interact_text()?;
     Ok(pack_answers(&name, Some(&description)))
 }
 

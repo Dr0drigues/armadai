@@ -256,3 +256,47 @@ fn pack_new_dir_is_the_parent_folder() {
     assert_eq!(r.code, Some(0), "{}{}", r.out, r.err);
     assert!(env.root().join("out/packs/demo/pack.yaml").is_file());
 }
+
+#[test]
+fn an_invalid_pack_writes_nothing_and_blames_the_project_file() {
+    let env = Env::new();
+    env.put(
+        ".armadai/project.yaml",
+        "schema_version: 1\ntargets: [claude]\n",
+    );
+    env.put(
+        ".armadai/agents/bad.md",
+        "---\ndescription: [unclosed\n---\nBody.\n",
+    );
+    let r = env.run(&["pack", "new", "cap", "--from-project", "--dir", "out/x"]);
+    assert_eq!(r.code, Some(1), "{}{}", r.out, r.err);
+    assert!(
+        r.err
+            .lines()
+            .any(|l| l == "Error: pack 'cap' is invalid; nothing was written"),
+        "{}",
+        r.err
+    );
+    let source = env.root().join(".armadai/agents/bad.md");
+    let blame = format!("{}:", source.display());
+    assert!(r.err.lines().any(|l| l.starts_with(&blame)), "{}", r.err);
+    assert!(!env.root().join("out").exists(), "no folder left behind");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_link_in_the_project_is_refused() {
+    let env = Env::new();
+    env.put(".armadai/project.yaml", "schema_version: 1\n");
+    env.put("elsewhere.md", AGENT);
+    std::fs::create_dir_all(env.root().join(".armadai/agents")).unwrap();
+    std::os::unix::fs::symlink(
+        env.root().join("elsewhere.md"),
+        env.root().join(".armadai/agents/a.md"),
+    )
+    .unwrap();
+    let r = env.run(&["pack", "new", "cap", "--from-project"]);
+    assert_eq!(r.code, Some(1), "{}{}", r.out, r.err);
+    assert!(r.err.contains("is a symbolic link, refused"), "{}", r.err);
+    assert!(!env.root().join("cap").exists());
+}

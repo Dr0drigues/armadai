@@ -78,7 +78,7 @@ pub fn execute(what: PackCommand) -> anyhow::Result<()> {
             let answers = if empty {
                 pack_answers(&name, description.as_deref())
             } else {
-                ask_pack(&name)?
+                ask_pack(&name, description.as_deref())?
             };
             new_minimal(&parent, &answers)?
         };
@@ -322,7 +322,7 @@ fn new_minimal(parent: &Path, a: &PackAnswers) -> anyhow::Result<String> {
         .into_iter()
         .map(|(r, b)| (r, b, false))
         .collect();
-    let dir = write_pack(parent, &a.name, files)?;
+    let dir = write_pack(parent, &parent.join(&a.name), &a.name, files)?;
     Ok(format!(
         "Created pack {} in {}: pack.yaml, project.yaml, agents/, skills/, flows/, automations/",
         a.name,
@@ -365,7 +365,7 @@ fn new_from_project(
         count("templates"),
         count("commands"),
     );
-    let dir = write_pack(parent, name, files)?;
+    let dir = write_pack(parent, &root.join(".armadai"), name, files)?;
     Ok(format!(
         "Created pack {name} in {} from .armadai/: {a} agent(s), {s} skill(s), {f} flow(s), \
          {u} automation(s), {t} template(s), {c} command(s) \
@@ -374,14 +374,16 @@ fn new_from_project(
     ))
 }
 
-/// Write the files in a new folder `parent/name` and validate the result; any failure
-/// removes the folder (it did not exist before, so nothing else is touched).
+/// Validate the files as a pack (diagnostics placed on `source`, where they come from),
+/// then write them in a new folder `parent/name`. Nothing is written when the pack is
+/// invalid; a failed write removes what this call created (the folder and the parents it
+/// had to make).
 fn write_pack(
     parent: &Path,
+    source: &Path,
     name: &str,
     files: Vec<(PathBuf, Vec<u8>, bool)>,
 ) -> anyhow::Result<PathBuf> {
-    use anyhow::Context;
     let dir = parent.join(name);
     if std::fs::symlink_metadata(&dir).is_ok() {
         anyhow::bail!(
@@ -389,10 +391,35 @@ fn write_pack(
             dir.display()
         );
     }
-    std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-    std::fs::create_dir(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    let pack = crate::cli::native_pack::PackFiles {
+        files,
+        ignored: Vec::new(),
+    };
+    let (_tmp, ds) = crate::cli::native_pack::stage(source, &pack)?;
+    if armadai_model::has_errors(&ds) {
+        for d in &ds {
+            eprintln!("{}", d.render());
+        }
+        anyhow::bail!("pack '{name}' is invalid; nothing was written");
+    }
+    write_all(&dir, &pack.files)?;
+    Ok(dir)
+}
+
+/// Write `files` under `dir`; on failure remove what this call created: `dir` and the
+/// parents it had to make, never a folder that was there before.
+fn write_all(dir: &Path, files: &[(PathBuf, Vec<u8>, bool)]) -> anyhow::Result<()> {
+    use anyhow::Context;
+    // the outermost folder this call creates
+    let top = dir
+        .ancestors()
+        .take_while(|a| std::fs::symlink_metadata(a).is_err())
+        .last()
+        .unwrap_or(dir)
+        .to_path_buf();
     let built = (|| -> anyhow::Result<()> {
-        for (rel, bytes, exec) in &files {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        for (rel, bytes, exec) in files {
             let at = dir.join(rel);
             std::fs::create_dir_all(at.parent().context("a file has a parent")?)?;
             std::fs::write(&at, bytes).with_context(|| format!("writing {}", at.display()))?;
@@ -405,19 +432,32 @@ fn write_pack(
             #[cfg(not(unix))]
             let _ = exec;
         }
-        let pack = crate::cli::native_pack::files(&dir)?;
-        let (_tmp, ds) = crate::cli::native_pack::stage(&dir, &pack)?;
-        if armadai_model::has_errors(&ds) {
-            for d in &ds {
-                eprintln!("{}", d.render());
-            }
-            anyhow::bail!("pack '{name}' is invalid; nothing was written");
-        }
         Ok(())
     })();
     if let Err(e) = built {
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&top);
         return Err(e);
     }
-    Ok(dir)
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_write_removes_the_folders_it_created_and_only_those() {
+        let t = tempfile::tempdir().unwrap();
+        let kept = t.path().join("kept");
+        std::fs::create_dir(&kept).unwrap();
+        let dir = kept.join("out/x/pack");
+        // `a` is a file, so writing `a/b` fails after the folders and `a` exist
+        let files = vec![
+            (PathBuf::from("a"), b"1".to_vec(), false),
+            (PathBuf::from("a/b"), b"2".to_vec(), false),
+        ];
+        assert!(write_all(&dir, &files).is_err());
+        assert!(kept.is_dir(), "a folder that was there stays");
+        assert_eq!(std::fs::read_dir(&kept).unwrap().count(), 0);
+    }
 }
