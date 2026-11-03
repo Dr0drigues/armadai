@@ -23,8 +23,6 @@ pub struct Newer {
     pub current: String,
     pub available: String,
     pub mode: Mode,
-    /// URL of the source whose `versions.yaml` was read.
-    pub source: String,
 }
 
 /// The `pack:` key of the project's `project.yaml`.
@@ -69,7 +67,6 @@ pub fn newer(root: &Path, registry: &Path) -> Option<Newer> {
             current: lock.resolved.version,
             available: best.version.clone(),
             mode: Mode::Reference,
-            source: d.source,
         });
     }
     manifest::installed_packs(root)
@@ -83,7 +80,6 @@ pub fn newer(root: &Path, registry: &Path) -> Option<Newer> {
                 current,
                 available: newest.version.clone(),
                 mode: Mode::Copy,
-                source: installed.source.clone(),
             })
         })
 }

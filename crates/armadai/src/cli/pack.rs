@@ -102,8 +102,10 @@ fn sync(root: Option<&Path>, registry: &Path, only: Option<String>) -> anyhow::R
         && !declared
             .as_ref()
             .is_some_and(|d| unsynced.contains(&d.source))
+        && !crate::linker::manifest::installed_packs(root)
+            .values()
+            .any(|p| unsynced.contains(&p.source))
         && let Some(n) = status::newer(root, registry)
-        && !unsynced.contains(&n.source)
     {
         eprintln!("{}", status::note(&n));
     }
