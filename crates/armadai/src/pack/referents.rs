@@ -347,4 +347,24 @@ mod tests {
         record_in(t.path(), r("demo", Path::new("no/such/dir"))).unwrap();
         assert!(load_in(t.path()).unwrap()[0].project.is_absolute());
     }
+
+    #[test]
+    fn a_symbolic_link_as_lock_is_refused_and_its_target_not_created() {
+        let t = tempfile::tempdir().unwrap();
+        let cfg = t.path().join("cfg");
+        std::fs::create_dir_all(&cfg).unwrap();
+        let target = t.path().join("target");
+        let lock = path_in(&cfg).with_extension("yaml.lock");
+        std::os::unix::fs::symlink(&target, &lock).unwrap();
+        let err = record_in(&cfg, r("demo", t.path())).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "{} is a symbolic link; it is not written through",
+                lock.display()
+            )
+        );
+        assert!(!target.exists());
+        assert!(!path_in(&cfg).exists());
+    }
 }
