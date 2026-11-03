@@ -77,11 +77,29 @@ impl StarterFetcher for GitFetcher {
 }
 
 fn run_git(args: &[&str]) -> anyhow::Result<()> {
+    git_output(args).map(|_| ())
+}
+
+/// Stdout of a `git` run (trimmed); failures are masked by [`git_failure`].
+pub(crate) fn git_output(args: &[&str]) -> anyhow::Result<String> {
     let out = std::process::Command::new("git").args(args).output()?;
     if !out.status.success() {
         anyhow::bail!(git_failure(args, &String::from_utf8_lossy(&out.stderr)));
     }
-    Ok(())
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Give a clone its whole history and every tag: `pack sync` extracts any version
+/// from it. The `--depth 1` clone of `init --pack` is completed in place.
+pub(crate) fn complete_clone(dest: &Path) -> anyhow::Result<()> {
+    let dir = dest.to_str().unwrap_or(".");
+    let shallow = dest.join(".git").join("shallow").exists();
+    let mut args = vec!["-C", dir, "fetch"];
+    if shallow {
+        args.push("--unshallow");
+    }
+    args.extend(["--tags", "--force", "-q"]);
+    run_git(&args)
 }
 
 /// The error for a failed `git` run, with any URL credential in argv or stderr masked.
