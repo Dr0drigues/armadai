@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::linker::manifest::digest_of;
 use crate::starters_registry::{
     ArchiveFetcher, EXTRACT_LIMITS, GitFetcher, StarterFetcher, complete_clone, extract_archive,
-    git_output, private_tempdir, reject_escaping_links,
+    git_output, path_arg, private_tempdir, reject_escaping_links,
 };
 
 const INDEX_FILE: &str = "armadai-packs.yaml";
@@ -217,11 +217,11 @@ pub fn sync_source_with(
     let clone = registry.join("starters").join(cache_key(url));
     let previous = versions_in(registry, url);
     fetcher.fetch(url, &clone)?;
-    let packs = listed_packs(&clone);
+    let (packs, indexed) = listed_packs(&clone);
     let versions = match source.resolved_kind() {
         SourceKind::Git => {
-            complete_clone(&clone)?;
-            git_versions(&clone, packs)?
+            complete_clone(&clone, url)?;
+            git_versions(&clone, packs, indexed)?
         }
         SourceKind::Archive => archive_versions(&clone, packs, previous)?,
     };
@@ -248,8 +248,9 @@ pub fn sync_source_with(
     Ok(versions)
 }
 
-/// The packs of a fetched source: the index, else what `discover_packs` finds (no version).
-fn listed_packs(dir: &Path) -> Vec<IndexPack> {
+/// The packs of a fetched source: the index (`true`), else what `discover_packs` finds
+/// (`false`, no version). An index entry needs its `pack.yaml`, as in `discover_packs`.
+fn listed_packs(dir: &Path) -> (Vec<IndexPack>, bool) {
     if let Some(index) = read_index(dir) {
         let safe = |p: &str| {
             !Path::new(p).components().any(|c| {
@@ -260,10 +261,15 @@ fn listed_packs(dir: &Path) -> Vec<IndexPack> {
             })
         };
         if !index.packs.is_empty() {
-            return index.packs.into_iter().filter(|p| safe(&p.path)).collect();
+            let packs = index
+                .packs
+                .into_iter()
+                .filter(|p| safe(&p.path) && dir.join(&p.path).join("pack.yaml").is_file())
+                .collect();
+            return (packs, true);
         }
     }
-    discover_packs(dir)
+    let found = discover_packs(dir)
         .into_iter()
         .filter_map(|d| {
             let path = d.strip_prefix(dir).ok()?.to_string_lossy().into_owned();
@@ -273,17 +279,18 @@ fn listed_packs(dir: &Path) -> Vec<IndexPack> {
                 version: None,
             })
         })
-        .collect()
+        .collect();
+    (found, false)
 }
 
 /// Tags `<pack>-vX.Y.Z` of the clone, plus the index version at HEAD when no tag carries it.
-fn git_versions(clone: &Path, packs: Vec<IndexPack>) -> anyhow::Result<Versions> {
-    let dir = clone.to_str().unwrap_or(".");
+fn git_versions(clone: &Path, packs: Vec<IndexPack>, indexed: bool) -> anyhow::Result<Versions> {
+    let dir = path_arg(clone)?;
     let mut out = BTreeMap::new();
     for pack in packs {
         let mut found: Vec<(semver::Version, Available)> = Vec::new();
-        // An index-less pack has no version: its tags are not read.
-        if pack.version.is_some() {
+        // A pack of a source without index has no version: its tags are not read.
+        if indexed {
             let prefix = format!("{}-v", pack.name);
             let tags = git_output(&["-C", dir, "tag", "-l", &format!("{prefix}*")])?;
             for tag in tags.lines() {
@@ -621,7 +628,14 @@ mod tests {
     /// Two tagged versions of `demo`, `a.md` holding `A1` then `A2`.
     fn two_versions(tmp: &Path) -> (RegistrySource, PathBuf, Versions) {
         let repo = origin(tmp);
-        commit(&repo, &[("demo/a.md", "A1"), (INDEX_FILE, &index("1.0.0"))]);
+        commit(
+            &repo,
+            &[
+                ("demo/pack.yaml", "name: demo\n"),
+                ("demo/a.md", "A1"),
+                (INDEX_FILE, &index("1.0.0")),
+            ],
+        );
         git(&repo, &["tag", "demo-v1.0.0"]);
         commit(&repo, &[("demo/a.md", "A2"), (INDEX_FILE, &index("1.1.0"))]);
         git(&repo, &["tag", "demo-v1.1.0"]);
@@ -723,6 +737,66 @@ mod tests {
         let err = ensure_snapshot_in(&registry, &source, "demo", "demo", &wrong).unwrap_err();
         assert!(err.to_string().contains("no longer holds"), "{err}");
         assert!(!snapshot_dir_in(&registry, &source.url, "demo", &wrong.id()).exists());
+    }
+
+    fn demo_versions(v: &Versions) -> Vec<&str> {
+        v.packs["demo"]
+            .versions
+            .iter()
+            .map(|a| a.version.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn an_index_pack_without_version_still_has_its_tags() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = origin(tmp.path());
+        commit(
+            &repo,
+            &[
+                ("demo/pack.yaml", "name: demo\n"),
+                (
+                    INDEX_FILE,
+                    "format: 1\npacks:\n  - name: demo\n    path: demo\n",
+                ),
+            ],
+        );
+        git(&repo, &["tag", "demo-v1.0.0"]);
+        let v = sync_source_in(&tmp.path().join("registry"), &file_url(&repo)).unwrap();
+        assert_eq!(demo_versions(&v), ["1.0.0"]);
+    }
+
+    #[test]
+    fn a_pack_of_a_source_without_index_has_no_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = origin(tmp.path());
+        commit(&repo, &[("demo/pack.yaml", "name: demo\n")]);
+        git(&repo, &["tag", "demo-v1.0.0"]);
+        let v = sync_source_in(&tmp.path().join("registry"), &file_url(&repo)).unwrap();
+        assert_eq!(demo_versions(&v), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn an_index_entry_must_stay_inside_the_source_and_hold_a_pack() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = origin(tmp.path());
+        // `../outside` resolves, from the clone, to a real pack next to it.
+        let registry = tmp.path().join("registry");
+        fs::create_dir_all(registry.join("starters/outside")).unwrap();
+        fs::write(
+            registry.join("starters/outside/pack.yaml"),
+            "name: outside\n",
+        )
+        .unwrap();
+        let index = "format: 1\npacks:\n  - { name: demo, path: demo, version: 1.0.0 }\n  \
+                     - { name: outside, path: ../outside, version: 1.0.0 }\n  \
+                     - { name: ghost, path: ghost, version: 1.0.0 }\n";
+        commit(
+            &repo,
+            &[("demo/pack.yaml", "name: demo\n"), (INDEX_FILE, index)],
+        );
+        let v = sync_source_in(&registry, &file_url(&repo)).unwrap();
+        assert_eq!(v.packs.keys().collect::<Vec<_>>(), ["demo"]);
     }
 
     #[test]

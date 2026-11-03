@@ -52,13 +52,8 @@ pub struct GitFetcher;
 impl StarterFetcher for GitFetcher {
     fn fetch(&self, url: &str, dest: &Path) -> anyhow::Result<()> {
         if dest.join(".git").is_dir() {
-            run_git(&[
-                "-C",
-                dest.to_str().unwrap_or("."),
-                "pull",
-                "--ff-only",
-                "-q",
-            ])?;
+            run_git(&["-C", path_arg(dest)?, "pull", "--ff-only", "-q"])
+                .map_err(|e| masked(e, url))?;
         } else {
             if let Some(parent) = dest.parent() {
                 std::fs::create_dir_all(parent)?;
@@ -91,15 +86,27 @@ pub(crate) fn git_output(args: &[&str]) -> anyhow::Result<String> {
 
 /// Give a clone its whole history and every tag: `pack sync` extracts any version
 /// from it. The `--depth 1` clone of `init --pack` is completed in place.
-pub(crate) fn complete_clone(dest: &Path) -> anyhow::Result<()> {
-    let dir = dest.to_str().unwrap_or(".");
+pub(crate) fn complete_clone(dest: &Path, url: &str) -> anyhow::Result<()> {
+    let dir = path_arg(dest)?;
     let shallow = dest.join(".git").join("shallow").exists();
     let mut args = vec!["-C", dir, "fetch"];
     if shallow {
         args.push("--unshallow");
     }
     args.extend(["--tags", "--force", "-q"]);
-    run_git(&args)
+    run_git(&args).map_err(|e| masked(e, url))
+}
+
+/// A path as a `git` argument; a path that is not UTF-8 is an error, never `.`.
+pub(crate) fn path_arg(path: &Path) -> anyhow::Result<&str> {
+    path.to_str()
+        .ok_or_else(|| anyhow::anyhow!("path {} is not valid UTF-8", path.display()))
+}
+
+/// `err` with the credentials of `url` masked: git names the remote in its messages
+/// but the argv of a `-C <dir>` run does not, so [`git_failure`] cannot see it.
+fn masked(err: anyhow::Error, url: &str) -> anyhow::Error {
+    anyhow::anyhow!(mask_url_secrets(&err.to_string(), url))
 }
 
 /// The error for a failed `git` run, with any URL credential in argv or stderr masked.
@@ -948,6 +955,46 @@ pub(crate) mod archive_tests {
             "fatal: unable to access 'https://127.0.0.1:9/e.git?token=s3cretQ/'",
         );
         assert!(!msg.contains("s3cretQ"), "{msg}");
+    }
+
+    const SECRET_URL: &str = "file:///nonexistent/armadai-probe.git?access_token=QUERYSECRET123";
+
+    /// A clone whose `origin` is [`SECRET_URL`]: any fetch from it fails, locally.
+    fn clone_with_failing_origin(dir: &Path) {
+        let git = |args: &[&str]| {
+            let mut full = vec!["-C", dir.to_str().unwrap()];
+            full.extend(args);
+            assert!(
+                std::process::Command::new("git")
+                    .args(&full)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+        };
+        fs::create_dir_all(dir).unwrap();
+        git(&["init", "-q"]);
+        git(&["remote", "add", "origin", SECRET_URL]);
+        git(&["config", "branch.master.remote", "origin"]);
+        git(&["config", "branch.master.merge", "refs/heads/master"]);
+        git(&["symbolic-ref", "HEAD", "refs/heads/master"]);
+    }
+
+    #[test]
+    fn a_failed_pull_masks_the_url_query() {
+        let tmp = tempfile::tempdir().unwrap();
+        clone_with_failing_origin(tmp.path());
+        let err = GitFetcher.fetch(SECRET_URL, tmp.path()).unwrap_err();
+        assert!(!err.to_string().contains("QUERYSECRET123"), "{err}");
+    }
+
+    #[test]
+    fn a_failed_history_fetch_masks_the_url_query() {
+        let tmp = tempfile::tempdir().unwrap();
+        clone_with_failing_origin(tmp.path());
+        let err = complete_clone(tmp.path(), SECRET_URL).unwrap_err();
+        assert!(!err.to_string().contains("QUERYSECRET123"), "{err}");
     }
 
     #[test]
