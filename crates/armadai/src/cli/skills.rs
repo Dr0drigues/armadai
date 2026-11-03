@@ -497,17 +497,29 @@ fn collect_skills() -> Vec<Skill> {
     };
     if local_dir.is_dir() {
         for mut s in load_all_skills(&local_dir) {
-            // `source` is shown by `skills show`: never the view's scratch copy
+            // what `skills show` prints is never the view's scratch copy: the real file
+            // of its layer (the project's own, else the snapshot of the pack)
             if let (Some(r), Some(v)) = (&root, &view)
                 && let Some(d) = s.source.file_name().map(|d| d.to_os_string())
             {
+                let scratch = std::mem::take(&mut s.source);
                 let own = r.join(".armadai/skills").join(&d);
-                s.source = match &v.pack {
-                    Some(p) if !own.is_dir() => {
-                        format!("pack {}, skills/{}", p.name, d.to_string_lossy()).into()
-                    }
-                    _ => own,
+                let (real, label) = match &v.pack {
+                    Some(p) if !own.is_dir() => (
+                        p.snapshot.join("skills").join(&d),
+                        // shortcut: the label rides in `source` (a path), only ever displayed
+                        Some(format!("pack {}, skills/{}", p.name, d.to_string_lossy())),
+                    ),
+                    _ => (own, None),
                 };
+                for list in [&mut s.scripts, &mut s.references, &mut s.assets] {
+                    for f in list.iter_mut() {
+                        if let Ok(rel) = f.strip_prefix(&scratch) {
+                            *f = real.join(rel);
+                        }
+                    }
+                }
+                s.source = label.map_or(real, Into::into);
             }
             skills.push(s);
         }

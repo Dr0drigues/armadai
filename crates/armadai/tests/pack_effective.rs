@@ -354,10 +354,18 @@ fn skills_show_names_the_real_layer() {
         ".armadai/skills/own/SKILL.md",
         "---\nname: own\ndescription: mine\n---\nO\n",
     );
+    put(&env.root(), ".armadai/skills/own/scripts/x.sh", "echo x\n");
+    let snap = env.snapshot_dir().join("demo").join(COMMIT);
+    put(&snap, "skills/s/scripts/run.sh", "echo run\n");
     let root = env.root().canonicalize().unwrap();
     let (code, out, err) = env.run(&["skills", "show", "own"]);
     assert_eq!(code, Some(0), "{out}{err}");
     let want = format!("Source: {}", root.join(".armadai/skills/own").display());
+    assert!(out.lines().any(|l| l == want), "want `{want}` in:\n{out}");
+    let want = format!(
+        "  - {}",
+        root.join(".armadai/skills/own/scripts/x.sh").display()
+    );
     assert!(out.lines().any(|l| l == want), "want `{want}` in:\n{out}");
     let (code, out, err) = env.run(&["skills", "show", "s"]);
     assert_eq!(code, Some(0), "{out}{err}");
@@ -365,6 +373,8 @@ fn skills_show_names_the_real_layer() {
         out.lines().any(|l| l == "Source: pack demo, skills/s"),
         "{out}"
     );
+    let want = format!("  - {}", snap.join("skills/s/scripts/run.sh").display());
+    assert!(out.lines().any(|l| l == want), "want `{want}` in:\n{out}");
 }
 
 #[test]
@@ -410,7 +420,10 @@ fn init_pack_refuses_what_the_pack_it_references_collides_with() {
     assert_eq!(code, Some(1), "{out}{err}");
     assert!(
         err.lines()
-            .any(|l| l.starts_with("(rolled back) ") && l.contains("template-agent-collision")),
+            .any(|l| l == format!(
+                "(rolled back) {}: error[template-agent-collision]: template `a` has the same id as agent `a`",
+                env.root().canonicalize().unwrap().join(".armadai/templates/a.md").display()
+            )),
         "{err}"
     );
     assert_eq!(env.tree(), before);
