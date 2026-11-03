@@ -345,3 +345,73 @@ fn inspect_names_the_layer_of_the_template_of_an_instance() {
         "{out}"
     );
 }
+
+#[test]
+fn skills_show_names_the_real_layer() {
+    let env = Env::reference();
+    put(
+        &env.root(),
+        ".armadai/skills/own/SKILL.md",
+        "---\nname: own\ndescription: mine\n---\nO\n",
+    );
+    let root = env.root().canonicalize().unwrap();
+    let (code, out, err) = env.run(&["skills", "show", "own"]);
+    assert_eq!(code, Some(0), "{out}{err}");
+    let want = format!("Source: {}", root.join(".armadai/skills/own").display());
+    assert!(out.lines().any(|l| l == want), "want `{want}` in:\n{out}");
+    let (code, out, err) = env.run(&["skills", "show", "s"]);
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert!(
+        out.lines().any(|l| l == "Source: pack demo, skills/s"),
+        "{out}"
+    );
+}
+
+#[test]
+fn skills_warns_when_the_pack_cannot_be_read() {
+    let env = Env::reference();
+    put(
+        &env.root(),
+        ".armadai/skills/own/SKILL.md",
+        "---\nname: own\ndescription: mine\n---\nO\n",
+    );
+    std::fs::remove_dir_all(env.snapshot_dir()).unwrap();
+    let (code, out, err) = env.run(&["skills", "list"]);
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert_eq!(
+        err,
+        "warning: pack demo 1.0.0 (111111111111) is not in the local cache: run `armadai pack sync`\n"
+    );
+    assert!(
+        out.lines().any(|l| l.trim_start().starts_with("own ")),
+        "{out}"
+    );
+}
+
+#[test]
+fn init_pack_refuses_what_the_pack_it_references_collides_with() {
+    let env = Env::reference();
+    let pack = env.dir.path().join("packs/p");
+    put(
+        &pack,
+        "pack.yaml",
+        "name: p\nformat: 1\ndescription: d\nversion: 1.0.0\n",
+    );
+    put(&pack, "project.yaml", "schema_version: 1\n");
+    put(&pack, "templates/a.md", "---\ndescription: tpl\n---\nT\n");
+    let before = env.tree();
+    let (code, out, err) = env.run(&[
+        "init",
+        "--pack",
+        pack.to_str().unwrap(),
+        "--force",
+        "--no-link",
+    ]);
+    assert_eq!(code, Some(1), "{out}{err}");
+    assert!(
+        err.lines()
+            .any(|l| l.starts_with("(rolled back) ") && l.contains("template-agent-collision")),
+        "{err}"
+    );
+    assert_eq!(env.tree(), before);
+}

@@ -482,16 +482,35 @@ fn collect_skills() -> Vec<Skill> {
     let root = std::env::current_dir()
         .ok()
         .and_then(|cwd| crate::compile::find_project(&cwd).ok());
-    let view = root
-        .as_ref()
-        .and_then(|r| crate::pack::effective::open(r, crate::pack::effective::Vars::Literal).ok());
+    let view = root.as_ref().and_then(|r| {
+        crate::pack::effective::open(r, crate::pack::effective::Vars::Literal)
+            .inspect_err(|e| {
+                let w = crate::cli::style::warn();
+                anstream::eprintln!("{w}warning: {e:#}{w:#}");
+            })
+            .ok()
+    });
     let local_dir = match (&root, &view) {
         (_, Some(v)) => v.sources.join(".armadai/skills"),
         (Some(r), None) => r.join(".armadai/skills"),
         (None, _) => std::path::PathBuf::from("skills"),
     };
     if local_dir.is_dir() {
-        skills.extend(load_all_skills(&local_dir));
+        for mut s in load_all_skills(&local_dir) {
+            // `source` is shown by `skills show`: never the view's scratch copy
+            if let (Some(r), Some(v)) = (&root, &view)
+                && let Some(d) = s.source.file_name().map(|d| d.to_os_string())
+            {
+                let own = r.join(".armadai/skills").join(&d);
+                s.source = match &v.pack {
+                    Some(p) if !own.is_dir() => {
+                        format!("pack {}, skills/{}", p.name, d.to_string_lossy()).into()
+                    }
+                    _ => own,
+                };
+            }
+            skills.push(s);
+        }
     }
 
     // Always include user-global skills
