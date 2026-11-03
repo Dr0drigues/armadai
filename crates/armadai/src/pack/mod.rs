@@ -7,4 +7,5 @@ pub mod effective;
 pub mod lock;
 pub mod referents;
 pub mod resolve;
+pub mod status;
 pub mod vars;

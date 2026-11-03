@@ -225,8 +225,15 @@ fn make_read_only(dir: &Path) -> anyhow::Result<()> {
 
 /// `versions.yaml` of a source: no network, no git.
 pub fn versions_in(registry: &Path, url: &str) -> Option<Versions> {
-    let text = std::fs::read_to_string(store_dir_in(registry, url).join(VERSIONS_FILE)).ok()?;
-    armadai_model::yaml::from_str(&text).ok()
+    let path = store_dir_in(registry, url).join(VERSIONS_FILE);
+    let text = std::fs::read_to_string(&path).ok()?;
+    match armadai_model::yaml::from_str(&text) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            eprintln!("  warn: {} is not readable: {e}", path.display());
+            None
+        }
+    }
 }
 
 /// Refresh one source now, whatever its cache holds: git (clone if absent, else

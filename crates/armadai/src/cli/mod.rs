@@ -11,6 +11,7 @@ pub(crate) mod native_pack;
 pub(crate) mod new;
 mod new_target;
 mod new_wizard;
+mod pack;
 pub(crate) mod setup;
 mod skills;
 pub(crate) mod style;
@@ -313,6 +314,11 @@ pub enum Command {
             armadai skills info webapp-testing"
     )]
     Skills(skills::SkillsAction),
+    /// Install, refresh, update and create starter packs
+    Pack {
+        #[command(subcommand)]
+        what: pack::PackCommand,
+    },
     /// Self-update to the latest release
     #[command(long_about = "Self-update to the latest release.\n\n\
             Downloads the latest binary from GitHub Releases and replaces the current one.")]
@@ -443,6 +449,7 @@ pub fn handle(cli: Cli) -> anyhow::Result<()> {
             link,
             no_link,
         } => init::execute(force, project, pack, link, no_link),
+        Command::Pack { what } => pack::execute(what),
         Command::Update => update::execute(),
         Command::Completion { shell } => {
             let mut buf = Vec::new();

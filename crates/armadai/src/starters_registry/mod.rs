@@ -93,7 +93,9 @@ pub(crate) fn complete_clone(dest: &Path, url: &str) -> anyhow::Result<()> {
     if shallow {
         args.push("--unshallow");
     }
-    args.extend(["--tags", "--force", "-q"]);
+    // A tag deleted in the origin is deleted here too (`pack sync` reports it as gone);
+    // `--tags` would turn pruning off, `--prune-tags` fetches the tags by itself.
+    args.extend(["--force", "--prune", "--prune-tags", "-q"]);
     run_git(&args).map_err(|e| masked(e, url))
 }
 
@@ -574,7 +576,7 @@ pub fn fetch_starter_source(source: &RegistrySource) -> anyhow::Result<PathBuf> 
 
 /// The warning for a source that failed to sync, with its credentials masked
 /// in the URL and in the error (git echoes its argv and URL).
-fn sync_warning(url: &str, err: &anyhow::Error) -> String {
+pub(crate) fn sync_warning(url: &str, err: &anyhow::Error) -> String {
     let line = format!("  warn: failed to sync starter source {url}: {err}");
     mask_url_secrets(&line, url)
 }
