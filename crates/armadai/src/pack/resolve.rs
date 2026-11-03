@@ -82,6 +82,10 @@ mod tests {
     fn no_match_is_none() {
         let vs = avail(&["1.2.0", "2.0.0"]);
         assert_eq!(pick("^3", &vs), None);
-        assert!(parse_range("not a range").is_err());
+        let semver_err = semver::VersionReq::parse("not a range").unwrap_err();
+        assert_eq!(
+            parse_range("not a range").unwrap_err(),
+            format!("`not a range` is not `latest`, a version or a version range: {semver_err}")
+        );
     }
 }

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::starters_registry::git_output;
+use crate::starters_registry::path_arg;
 
 pub const LOCK: &str = ".armadai/pack.lock";
 
@@ -87,23 +87,59 @@ pub enum TagState {
     Gone,
 }
 
+/// A tag of the lock is always `<pack>-v<semver>`: nothing else becomes a `git` argument.
+fn valid_tag(pack: &str, tag: &str) -> bool {
+    let plain = !pack.starts_with('-')
+        && pack
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    plain
+        && tag
+            .strip_prefix(pack)
+            .and_then(|t| t.strip_prefix("-v"))
+            .is_some_and(|v| semver::Version::parse(v).is_ok())
+}
+
 /// `None` when the tag still points to the lock's commit, or the lock has no tag or
 /// commit (an archive). `pack sync` only.
-pub fn tag_moved(clone: &Path, resolved: &Resolved) -> anyhow::Result<Option<TagState>> {
+pub fn tag_moved(
+    clone: &Path,
+    pack: &str,
+    resolved: &Resolved,
+) -> anyhow::Result<Option<TagState>> {
     let (Some(tag), Some(commit)) = (&resolved.tag, &resolved.commit) else {
         return Ok(None);
     };
-    let dir = clone.to_str().unwrap_or(".");
-    if git_output(&["-C", dir, "tag", "-l", tag])?.is_empty() {
-        return Ok(Some(TagState::Gone));
+    anyhow::ensure!(
+        valid_tag(pack, tag),
+        "pack {pack} has an invalid name or version id: {tag}"
+    );
+    let dir = path_arg(clone)?;
+    let out = std::process::Command::new("git")
+        .args([
+            "-C",
+            dir,
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "--end-of-options",
+        ])
+        .arg(format!("refs/tags/{tag}^{{commit}}"))
+        .output()?;
+    match out.status.code() {
+        Some(0) => {
+            let now = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            Ok((now != *commit).then_some(TagState::Moved(now)))
+        }
+        Some(1) => Ok(Some(TagState::Gone)),
+        _ => anyhow::bail!("git rev-parse failed for tag {tag}"),
     }
-    let now = git_output(&["-C", dir, "rev-parse", &format!("{tag}^{{commit}}")])?;
-    Ok((now != *commit).then_some(TagState::Moved(now)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::starters_registry::git_output;
 
     fn sample() -> PackLock {
         PackLock {
@@ -126,8 +162,19 @@ mod tests {
         write(tmp.path(), &sample()).unwrap();
         assert_eq!(read(tmp.path()).unwrap(), Some(sample()));
         let text = std::fs::read_to_string(tmp.path().join(LOCK)).unwrap();
-        std::fs::write(tmp.path().join(LOCK), format!("{text}branch: main\n")).unwrap();
-        assert!(read(tmp.path()).is_err());
+        // an unknown key at the root, then one under `resolved:`
+        for bad in [
+            format!("{text}branch: main\n"),
+            format!("{text}  branch: main\n"),
+        ] {
+            std::fs::write(tmp.path().join(LOCK), &bad).unwrap();
+            let yaml = armadai_model::yaml::from_str::<PackLock>(&bad).unwrap_err();
+            assert_eq!(
+                read(tmp.path()).unwrap_err().to_string(),
+                format!(".armadai/pack.lock: {yaml}")
+            );
+            assert!(yaml.to_string().contains("branch"), "{yaml}");
+        }
     }
 
     #[test]
@@ -176,17 +223,51 @@ mod tests {
             commit: Some(first),
             digest: None,
         };
-        assert_eq!(tag_moved(repo, &resolved).unwrap(), None);
+        assert_eq!(tag_moved(repo, "demo", &resolved).unwrap(), None);
         std::fs::write(repo.join("a"), "2").unwrap();
         git(repo, &["commit", "-qam", "two"]);
         git(repo, &["tag", "-f", "demo-v1.0.0"]);
         let second = git(repo, &["rev-parse", "HEAD"]);
         assert_eq!(
-            tag_moved(repo, &resolved).unwrap(),
+            tag_moved(repo, "demo", &resolved).unwrap(),
             Some(TagState::Moved(second))
         );
         git(repo, &["tag", "-d", "demo-v1.0.0"]);
-        assert_eq!(tag_moved(repo, &resolved).unwrap(), Some(TagState::Gone));
+        assert_eq!(
+            tag_moved(repo, "demo", &resolved).unwrap(),
+            Some(TagState::Gone)
+        );
+    }
+
+    #[test]
+    fn a_tag_that_is_an_option_is_an_error_never_moved() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        git(repo, &["init", "-q"]);
+        std::fs::write(repo.join("a"), "1").unwrap();
+        git(repo, &["add", "-A"]);
+        git(repo, &["commit", "-qm", "one"]);
+        for tag in [
+            "--contains=HEAD",
+            "--points-at=HEAD",
+            "-n",
+            "--sort=refname",
+            "*",
+            "other-v1.0.0",
+            "demo-v1.0.0\u{2e}\u{2e}x",
+        ] {
+            let resolved = Resolved {
+                version: "1.0.0".into(),
+                tag: Some(tag.into()),
+                commit: Some("0".repeat(40)),
+                digest: None,
+            };
+            let got = tag_moved(repo, "demo", &resolved);
+            assert_eq!(
+                got.unwrap_err().to_string(),
+                format!("pack demo has an invalid name or version id: {tag}"),
+            );
+        }
     }
 
     #[cfg(unix)]
@@ -197,7 +278,34 @@ mod tests {
         std::fs::write(&target, "keep").unwrap();
         std::fs::create_dir_all(tmp.path().join(".armadai")).unwrap();
         std::os::unix::fs::symlink(&target, tmp.path().join(LOCK)).unwrap();
-        assert!(write(tmp.path(), &sample()).is_err());
+        let err = write(tmp.path(), &sample()).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "{} is a symbolic link; it is not written through",
+                tmp.path().join(LOCK).display()
+            )
+        );
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_refuses_a_link_at_the_temporary_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("target");
+        std::fs::write(&target, "keep").unwrap();
+        std::fs::create_dir_all(tmp.path().join(".armadai")).unwrap();
+        let tmp_name = tmp.path().join(".armadai/pack.lock.tmp");
+        std::os::unix::fs::symlink(&target, &tmp_name).unwrap();
+        let err = write(tmp.path(), &sample()).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "{} is a symbolic link; it is not written through",
+                tmp_name.display()
+            )
+        );
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
     }
 }
