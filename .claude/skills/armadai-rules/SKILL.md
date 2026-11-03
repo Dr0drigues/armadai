@@ -21,6 +21,7 @@ Sources abrégées : `CLAUDE.md` (racine du dépôt), `.claude/CLAUDE.md` (règl
 
 - `crates/armadai` est un crate binaire seul : `cargo test --lib` y rend « 0 passed » sans erreur ; utiliser `--bin armadai` ou `--test <nom>`, toujours `--no-fail-fast` ; `--exact` exige le chemin complet du test. Source : `CLAUDE.md`, Non-obvious facts ; `.claude/CLAUDE.md`, Pièges de mesure.
 - `armadai_core::test_support::env_lock()` n'est pas réentrant : deux gardes sur un thread bloquent sans message. Source : `CLAUDE.md`, Non-obvious facts ; `.claude/CLAUDE.md`, Pièges de mesure.
+- Aucun test n'ouvre d'accès réseau réel : une source distante (git ou archive) se simule par un faux registre local (dépôt git local ou archive locale) injecté par l'interface `StarterFetcher`. Raison : un test qui dépend du réseau est instable et peut écrire hors du projet. Source : Dimitri, 2026-11-03 (« Les deux (Recommandé) »).
 - Pour chaque test ajouté ou changé : casser le code qu'il protège, constater le rouge, restaurer, reporter la mutation avec la sortie vue. Raison : des tests incapables d'échouer ont été trouvés à répétition, un test vert sans mutation ne prouve rien. Source : `.claude/CLAUDE.md`, Mesure, ne raisonne pas ; `mémoire:feedback_tests_qui_ne_peuvent_pas_echouer.md`.
 - Pour chaque test, nommer la mutation qu'il attraperait ; si aucune ne vient, c'est un défaut. Raison : huit revues distinctes ont trouvé un test incapable d'échouer. Source : `mémoire:feedback_tests_qui_ne_peuvent_pas_echouer.md`.
 - Un `contains` sur un fragment est suspect : quelle autre sortie contiendrait cette chaîne ? Si elle existe, comparer des lignes entières. Une boucle de test sur des sites est suspecte : vérifier qu'elle couvre chaque site. Une capacité ajoutée se teste par le cas où le signal doit apparaître, pas seulement par son absence (`== None`). Source : `mémoire:feedback_tests_qui_ne_peuvent_pas_echouer.md`.
@@ -59,6 +60,7 @@ Sources abrégées : `CLAUDE.md` (racine du dépôt), `.claude/CLAUDE.md` (règl
 - Jamais `git stash`. Raison : le stash est partagé avec le dépôt principal. Source : plan dogfood (la règle) ; brief coordinateur (la raison).
 - Pour tout essai du binaire `armadai`, isoler `HOME` et `ARMADAI_CONFIG_DIR` dans un dossier temporaire, pour qu'il n'écrive ni dans `~/.config/armadai` ni dans `~/.claude` (la mémoire du coordinateur vit sous `~/.claude/projects` et n'est pas concernée). Source : brief coordinateur.
 - rust-analyzer est peu fiable ici : tout vérifier au compilateur. Source : `.claude/CLAUDE.md`, Règles communes.
+- Rien de privé dans le dépôt public : aucun contenu d'un pack privé, aucun chemin absolu propre à une machine, aucun jeton ou identifiant dans les fixtures, specs, plans, docs et wiki. Raison : le dépôt est public, les packs privés restent hors dépôt. Source : Dimitri, 2026-11-03 (« Les deux (Recommandé) »).
 - `graphify-out/` et `.graphifyignore` sont locaux et ne sont jamais commités ni poussés. Source : `mémoire:feedback_graphify_usage.md`.
 
 ## Rapport
