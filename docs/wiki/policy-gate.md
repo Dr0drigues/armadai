@@ -114,6 +114,6 @@ report says `not-compiled`).
 
 Uncertainty resolves to *no opinion*: an unreadable payload, an absent, legacy or invalid project, a
 tool other than `Agent`/`Task`, `policy.delegation: off`. The one exception is a pack the gate
-cannot read (above), which is refused, with the cure in the message. A gate that refuses because it
+cannot read (above), which is refused, with the cure in the message when there is one. A gate that refuses because it
 failed to understand is a gate you uninstall the same day, so the refusal is kept to the case where
 the gate knows the project cannot be read.

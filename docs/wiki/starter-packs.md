@@ -180,9 +180,9 @@ replaces it, in the files it compiles:
 - in the body (after the frontmatter) of agents, templates, commands and `SKILL.md`;
 - in the text values of the `native` block of `project.yaml`.
 
-Frontmatters, `scripts/`, `references/` and `native/<target>/` files are never substituted. `\{{` is kept as it is, backslash
-included, and starts no variable; `{{name}}` without `var.` belongs to agent templates. A value is inserted
-as it is, never rendered again.
+Frontmatters, `scripts/`, `references/` and `native/<target>/` files are never substituted.
+`\{{` is kept as it is, backslash included, and starts no variable; `{{name}}` without `var.`
+belongs to agent templates. A value is inserted as it is, never rendered again.
 
 Three layers give the value, the first that sets it wins:
 
@@ -225,7 +225,8 @@ the index at the current commit is offered too when no tag carries it. An archiv
 needs the index to have versions at all, and keeps in the cache the versions of its earlier syncs
 (each identified by a digest). A source without an index lists its packs with no version, so a
 range cannot be used with it. A source is cloned with `git clone --depth 1`, then completed with
-`git fetch --unshallow --force --prune --prune-tags`: submodules are not initialized, so a pack cannot rely on one.
+`git fetch --unshallow --force --prune --prune-tags`: submodules are not initialized, so a pack
+cannot rely on one.
 
 `.armadai/project.yaml`, `.armadai/pack.lock` and `pack-referents.yaml` are versioned or shared:
 a source that carries a secret (`user:pass@`, a token in the userinfo of an `https` URL, a query)
@@ -248,10 +249,11 @@ sources (registries.yaml): add it there, with its credentials` otherwise). An SS
   <name>` or `armadai init --pack <name>`".
 - Two packs installed by copy in one project: `pack update` refuses and changes nothing.
 - `vars.yaml` and `vars.local.yaml` are read through a symbolic link. The effective view copies the
-  files it compiles and does not follow links: in a project with `pack:`, or whenever any file
-  holds a `{{var.…}}`, every symbolic link among the listed files (agents, templates, commands,
-  skills, flows, automations) makes the command refuse (`<file> is a symbolic link, refused`),
-  whether or not that file holds a variable.
+  files it compiles and does not follow links. In a project with `pack:`, every command that
+  reads the project refuses a symbolic link among the listed files (agents, templates, commands,
+  skills, flows, automations): `<file> is a symbolic link, refused`, whether or not that file
+  holds a variable. Without `pack:`, only `link` refuses, and only once any file holds a
+  `{{var.…}}`.
 - The undo of a failed `link` after `pack add` or `pack update` does not cover the process being
   interrupted (Ctrl-C) between the writes and the end of the link.
 - For the policy gate (see [Policy gate](policy-gate.md)), a view that does not open is refused:
