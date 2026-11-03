@@ -161,7 +161,8 @@ fn errors_now(root: &Path, registry: &Path, env: Env) -> Vec<armadai_model::Diag
 /// own diagnostics, and so is one the lock would invalidate (M13): nothing is changed, the
 /// lock does not move toward a `link` that would fail on diagnostics. (A `link` that fails
 /// for another reason, a write, is undone by the caller through [`Undo`].) `retry` is the
-/// command to run again.
+/// command to run again. Nor does the `Undo` cover the process being interrupted (Ctrl-C)
+/// between the writes and the end of the link.
 fn check(
     root: &Path,
     lock: &PackLock,
@@ -426,7 +427,7 @@ pub fn add_in(
     let range = given.map_or_else(|| format!("^{}", best.version), str::to_string);
     cache::ensure_snapshot_in(registry, &source, name, &path, &best)?;
     // what `.armadai/` and the referent record keep: the source without its secrets
-    let shown = redact_url(&source.url);
+    let shown = source::recorded(&source.url);
     let new = lock_of(name, &shown, &best);
     check(
         root,

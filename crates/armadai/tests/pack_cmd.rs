@@ -1517,3 +1517,32 @@ fn a_failing_link_undoes_an_add() {
     }
     assert!(!env.config().join("pack-referents.yaml").exists());
 }
+
+#[test]
+fn an_ssh_source_has_no_secret_and_is_written_as_it_is() {
+    const SSH: &str = "git@example.com:org/packs.git";
+    let (env, ..) = released();
+    env.registries(&[SSH]);
+    // the clone of the ssh URL reads the local origin instead
+    let body = format!(
+        "n=$#; i=0\nwhile [ $i -lt $n ]; do a=$1; shift; [ \"$a\" = '{SSH}' ] && a='{}'; set -- \"$@\" \"$a\"; i=$((i+1)); done\nexec \"$REAL\" \"$@\"",
+        env.url()
+    );
+    let path = fake_git(env.dir.path(), &body);
+    let envs = [("PATH", path.as_str())];
+    ok(&env.run(&["pack", "add", "demo"], &envs));
+    assert_eq!(
+        env.text(".armadai/project.yaml"),
+        format!("schema_version: 1\npack:\n  name: demo\n  source: '{SSH}'\n  version: '^1.1.0'\n")
+    );
+    assert!(
+        env.text(".armadai/pack.lock")
+            .contains(&format!("source: {SSH}\n"))
+    );
+    // not in registries.yaml any more: the project's own source is still synced, and read
+    env.registries(&[]);
+    let sync = env.run(&["pack", "sync"], &envs);
+    ok(&sync);
+    assert!(!sync.err.contains("matches none"), "{}", sync.err);
+    ok(&env.run(&["link"], &envs));
+}

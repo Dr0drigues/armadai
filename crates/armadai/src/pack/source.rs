@@ -9,6 +9,37 @@ use armadai_core::registries::{RegistrySource, redact_url};
 
 use crate::starters_registry::effective_starter_sources;
 
+/// Whether `url` carries a secret: a query, a password (`user:pass@`), or any userinfo on
+/// an `http(s)` URL (`https://TOKEN@host`). An SSH login (`git@host:org/repo`,
+/// `ssh://git@host/…`) is not one. An `@` after the authority is ambiguous: a secret.
+fn carries_secret(url: &str) -> bool {
+    if url.contains('?') {
+        return true;
+    }
+    let (scheme, rest) = match url.split_once("://") {
+        Some((scheme, rest)) => (scheme.to_ascii_lowercase(), rest),
+        None => (String::new(), url),
+    };
+    let (authority, tail) = rest.split_at(rest.find(['/', '#']).unwrap_or(rest.len()));
+    if tail.contains('@') {
+        return true;
+    }
+    match authority.rfind('@') {
+        Some(at) => matches!(scheme.as_str(), "http" | "https") || authority[..at].contains(':'),
+        None => false,
+    }
+}
+
+/// The source as `.armadai/` and the referent record write it: as it is, unless it carries
+/// a secret, then as `redact_url` shows it (the user's `registries.yaml` keeps the real one).
+pub fn recorded(url: &str) -> String {
+    if carries_secret(url) {
+        redact_url(url)
+    } else {
+        url.to_string()
+    }
+}
+
 /// A URL `redact_url` has masked (it holds `***`): it cannot be synced as it stands.
 fn is_masked(url: &str) -> bool {
     url.contains("***")
@@ -43,5 +74,47 @@ pub fn real_url_in(recorded: &str, known: &[RegistrySource]) -> anyhow::Result<S
              only by their credentials: keep one",
             many.len()
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_what_carries_a_secret_is_masked() {
+        for plain in [
+            "git@example.com:org/packs.git",
+            "ssh://git@example.com/org/packs.git",
+            "https://example.com/org/packs.git",
+            "https://example.com/packs.tar.gz",
+            "file:///tmp/origin",
+        ] {
+            assert_eq!(recorded(plain), plain);
+        }
+        for (secret, shown) in [
+            (
+                "https://TOKEN@github.com/org/p.git",
+                "https://***@github.com/org/p.git",
+            ),
+            (
+                "https://user:pass@example.com/p.git",
+                "https://***@example.com/p.git",
+            ),
+            (
+                "ssh://user:pass@example.com/p.git",
+                "ssh://***@example.com/p.git",
+            ),
+            (
+                "https://example.com/p.tar.gz?sig=abc",
+                "https://example.com/p.tar.gz?***",
+            ),
+            (
+                "user:tok@example.com:org/p.git",
+                "***@example.com:org/p.git",
+            ),
+        ] {
+            assert_eq!(recorded(secret), shown, "{secret}");
+        }
     }
 }
