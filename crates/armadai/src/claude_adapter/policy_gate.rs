@@ -200,9 +200,19 @@ pub fn decide(raw: &str) -> Option<String> {
     };
     let view = match crate::pack::effective::open(&root, crate::pack::effective::Vars::Literal) {
         Ok(v) => v,
+        // a pack the view cannot open must not silence the gate after a link that
+        // worked (cache removed, lock advanced by a `git pull`): refuse (Dimitri,
+        // 2026-11-03). An invalid project outside a pack never gets here: it opens in
+        // place and is judged by `load_checked` below.
         Err(e) => {
-            invalid(format!(": {e}"));
-            return None;
+            eprintln!(
+                "armadai policy gate: {} could not be opened, delegation refused: {e}",
+                root.join(".armadai").display()
+            );
+            return Some(deny(format!(
+                "the project's pack cannot be read, so the delegation policy cannot be \
+                 checked: {e}"
+            )));
         }
     };
     let project = match view.load_checked() {
@@ -240,16 +250,18 @@ pub fn decide(raw: &str) -> Option<String> {
             allowed.into_iter().collect::<Vec<_>>().join(", ")
         )
     };
-    Some(
-        serde_json::json!({
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": reason,
-            }
-        })
-        .to_string(),
-    )
+    Some(deny(reason))
+}
+
+fn deny(reason: String) -> String {
+    serde_json::json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }
+    })
+    .to_string()
 }
 
 #[cfg(test)]

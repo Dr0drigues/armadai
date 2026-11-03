@@ -55,6 +55,12 @@ impl Env {
         }
     }
 
+    fn drop_snapshot(&self, commit: &str) {
+        let key = armadai_core::registries::cache_key(URL);
+        let dir = self.dir.path().join("config/registry/packs").join(key);
+        std::fs::remove_dir_all(dir.join("demo").join(commit)).unwrap();
+    }
+
     fn lock(&self, version: &str, commit: &str) {
         put(
             &self.root(),
@@ -179,9 +185,31 @@ fn link_writes_resolved_values_only_in_outputs() {
     line(".claude/commands/c.md", "Command: /x/env");
     line(".claude/skills/s/SKILL.md", "Skill: /x/env");
 
-    let after = tree(&env.root().join(".armadai"));
-    for (p, bytes) in &before {
-        assert_eq!(after.get(p), Some(bytes), "{} changed", p.display());
+    // the whole of `.armadai/` before and after: link adds only its manifest and
+    // .gitignore, and changes nothing it read
+    let mut after = tree(&env.root().join(".armadai"));
+    let written: Vec<PathBuf> = ["link-manifest.yaml", ".gitignore"]
+        .iter()
+        .map(|f| {
+            after
+                .remove(Path::new(f))
+                .map(|_| PathBuf::from(f))
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(written.len(), 2);
+    assert_eq!(after, before);
+    // Dimitri, 2026-11-03: the local manifest keeps a resolved value in clear in a
+    // managed array (`permissions.additionalDirectories`): accepted and documented.
+    // Every other file of `.armadai/` stays free of it.
+    for (p, bytes) in tree(&env.root().join(".armadai")) {
+        if p != Path::new("link-manifest.yaml") {
+            assert!(
+                !String::from_utf8_lossy(&bytes).contains("/x/env"),
+                "{} holds a resolved value",
+                p.display()
+            );
+        }
     }
 }
 
@@ -263,7 +291,18 @@ fn link_reads_the_lock_not_the_range() {
 #[test]
 fn link_without_the_snapshot_names_pack_sync() {
     let env = pack_env(&[]);
+    env.snapshot(
+        C1,
+        &[
+            ("project.yaml", PACK_MANIFEST),
+            ("agents/one.md", &agent("One")),
+        ],
+    );
     env.lock("1.0.0", C1);
+    env.ok(&["link"], &[]);
+    let linked = env.outputs();
+    assert!(!linked.is_empty());
+    env.drop_snapshot(C1);
     let out = env.run(&["link"], &[], "");
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
@@ -272,8 +311,7 @@ fn link_without_the_snapshot_names_pack_sync() {
             == "Error: pack demo 1.0.0 (111111111111) is not in the local cache: run `armadai pack sync`"),
         "{err}"
     );
-    assert!(!env.root().join(".claude").exists());
-    assert!(!env.root().join("CLAUDE.md").exists());
+    assert_eq!(env.outputs(), linked);
 }
 
 #[test]
@@ -390,6 +428,68 @@ fn the_gate_reads_the_pack_flows() {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
             "permissionDecisionReason": "the declared flows allow only [dev, qa] from the main thread; hand the work to one of those, or add `doc` to policy.free_agents in .armadai/project.yaml",
+        }})
+    );
+}
+
+const M6_OPENCODE: &str = "set by none of ARMADAI_VAR_DATA, .armadai/vars.local.yaml, .armadai/vars.yaml: replaced by an empty value";
+
+#[test]
+fn a_missing_variable_is_reported_for_each_target() {
+    let mut files = VARS_PROJECT.to_vec();
+    files[0] = (
+        ".armadai/project.yaml",
+        "schema_version: 1\ntargets: [claude, opencode]\n",
+    );
+    let env = Env::new(&files);
+    let text = env.ok(&["link"], &[]);
+    for target in ["claude", "opencode"] {
+        let line = format!("{target}: var data: approximated ({M6_OPENCODE})");
+        assert_eq!(
+            text.lines().filter(|l| *l == line).count(),
+            1,
+            "{target}: {text}"
+        );
+    }
+}
+
+#[test]
+fn the_gate_refuses_when_the_pack_view_cannot_be_opened() {
+    let env = pack_env(&[]);
+    env.snapshot(
+        C1,
+        &[
+            (
+                "project.yaml",
+                "schema_version: 1\ncoordinator: lead\npolicy:\n  delegation: strict\n",
+            ),
+            ("agents/lead.md", &agent("lead")),
+            ("agents/dev.md", &agent("dev")),
+            (
+                "flows/ship.yaml",
+                "steps:\n  build: { agent: dev }\nlinks: []\n",
+            ),
+        ],
+    );
+    env.lock("1.0.0", C1);
+    env.ok(&["link"], &[]);
+    env.drop_snapshot(C1);
+    let payload = json!({
+        "cwd": env.root().to_string_lossy(),
+        "tool_name": "Agent",
+        "agent_type": "",
+        "tool_input": {"subagent_type": "dev"},
+    })
+    .to_string();
+    let out = env.run(&["__claude-policy-gate"], &[], &payload);
+    assert!(out.status.success());
+    let got: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        got,
+        json!({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": "the project's pack cannot be read, so the delegation policy cannot be checked: pack demo 1.0.0 (111111111111) is not in the local cache: run `armadai pack sync`",
         }})
     );
 }
