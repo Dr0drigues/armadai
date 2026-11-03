@@ -287,12 +287,12 @@ mod tests {
     #[test]
     fn decimal_looking_text_keeps_its_spelling_but_native_numbers_stay_numbers() {
         let text = merged_text(
-            "name: 1.10\ntargets: [2.50]\nnative:\n  claude:\n    ratio: 1.5\n",
-            "coordinator: 3.0\n",
+            "schema_version: 1\nname: 1.10\ntargets: [2.50]\nnative:\n  claude:\n    ratio: 1.5\n",
+            "coordinator: 3.0\nextra: 1e3\n",
         );
         assert_eq!(
             text,
-            "name: \"1.10\"\ntargets:\n- \"2.50\"\nnative:\n  claude:\n    ratio: 1.5\ncoordinator: \"3.0\"\n"
+            "schema_version: 1\nname: \"1.10\"\ntargets:\n- \"2.50\"\nnative:\n  claude:\n    ratio: 1.5\ncoordinator: \"3.0\"\nextra: \"1e3\"\n"
         );
     }
 }
