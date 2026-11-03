@@ -78,15 +78,27 @@ pub fn write(root: &Path, lock: &PackLock) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The commit a tag points to now in the clone, when it differs from the lock's
-/// (`pack sync` only). A lock without tag or commit, or a tag gone from the clone: `None`.
-pub fn tag_moved(clone: &Path, resolved: &Resolved) -> anyhow::Result<Option<String>> {
+/// What became of the lock's tag in the clone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TagState {
+    /// The tag now points to this commit, not the lock's.
+    Moved(String),
+    /// The tag is no longer in the clone.
+    Gone,
+}
+
+/// `None` when the tag still points to the lock's commit, or the lock has no tag or
+/// commit (an archive). `pack sync` only.
+pub fn tag_moved(clone: &Path, resolved: &Resolved) -> anyhow::Result<Option<TagState>> {
     let (Some(tag), Some(commit)) = (&resolved.tag, &resolved.commit) else {
         return Ok(None);
     };
     let dir = clone.to_str().unwrap_or(".");
-    let now = git_output(&["-C", dir, "rev-parse", &format!("{tag}^{{commit}}")]).ok();
-    Ok(now.filter(|n| n != commit))
+    if git_output(&["-C", dir, "tag", "-l", tag])?.is_empty() {
+        return Ok(Some(TagState::Gone));
+    }
+    let now = git_output(&["-C", dir, "rev-parse", &format!("{tag}^{{commit}}")])?;
+    Ok((now != *commit).then_some(TagState::Moved(now)))
 }
 
 #[cfg(test)]
@@ -169,7 +181,12 @@ mod tests {
         git(repo, &["commit", "-qam", "two"]);
         git(repo, &["tag", "-f", "demo-v1.0.0"]);
         let second = git(repo, &["rev-parse", "HEAD"]);
-        assert_eq!(tag_moved(repo, &resolved).unwrap(), Some(second));
+        assert_eq!(
+            tag_moved(repo, &resolved).unwrap(),
+            Some(TagState::Moved(second))
+        );
+        git(repo, &["tag", "-d", "demo-v1.0.0"]);
+        assert_eq!(tag_moved(repo, &resolved).unwrap(), Some(TagState::Gone));
     }
 
     #[cfg(unix)]
