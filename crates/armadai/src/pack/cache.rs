@@ -115,6 +115,15 @@ pub fn ensure_snapshot_in(
         !id.is_empty(),
         "pack {pack} has a version without commit or digest"
     );
+    // Both become a path and `git` arguments: only plain names and hex ids pass.
+    for value in [pack, id.as_str()] {
+        let ok = if value == pack {
+            valid_name(value)
+        } else {
+            valid_id(value)
+        };
+        anyhow::ensure!(ok, "pack {pack} has an invalid name or version id: {value}");
+    }
     let dest = snapshot_dir_in(registry, &source.url, pack, &id);
     if dest.exists() {
         return Ok(dest);
@@ -130,11 +139,11 @@ pub fn ensure_snapshot_in(
             let tar = staging.path().join("pack.tar.gz");
             git_output(&[
                 "-C",
-                clone.to_str().unwrap_or("."),
+                path_arg(&clone)?,
                 "archive",
                 "--format=tar.gz",
                 "-o",
-                tar.to_str().unwrap_or(""),
+                path_arg(&tar)?,
                 &format!("{commit}:{path}"),
             ])?;
             extract_archive(&tar, &tree, &label, EXTRACT_LIMITS)?;
@@ -151,8 +160,30 @@ pub fn ensure_snapshot_in(
     }
     reject_escaping_links(&tree, &label)?;
     make_read_only(&tree)?;
-    std::fs::rename(&tree, &dest)?;
+    // Two callers may race to the same snapshot: the one that lost finds it in place.
+    if let Err(e) = std::fs::rename(&tree, &dest)
+        && !dest.exists()
+    {
+        return Err(e.into());
+    }
     Ok(dest)
+}
+
+/// One plain path component, not an option for `git`.
+fn valid_name(name: &str) -> bool {
+    let mut parts = Path::new(name).components();
+    matches!(parts.next(), Some(std::path::Component::Normal(_)))
+        && parts.next().is_none()
+        && !name.contains(['/', '\\'])
+        && !name.starts_with('-')
+}
+
+/// A commit (40 or 64 lowercase hex) or `sha256-<64 hex>`.
+fn valid_id(id: &str) -> bool {
+    let hex = |s: &str, n: &[usize]| {
+        n.contains(&s.len()) && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    };
+    hex(id, &[40, 64]) || id.strip_prefix("sha256-").is_some_and(|h| hex(h, &[64]))
 }
 
 /// Copy files and links, kept as they are (the digest covers links).
@@ -175,7 +206,8 @@ fn copy_tree(from: &Path, to: &Path) -> anyhow::Result<()> {
 }
 
 /// Files lose their write bits; folders keep theirs so that the cache can still be
-/// deleted (shortcut: a folder entry can be added by hand, the files cannot be edited).
+/// deleted (shortcut: a file can be added by hand, none edited; make folders read-only
+/// too once the cache is removed by a command that restores write bits first).
 fn make_read_only(dir: &Path) -> anyhow::Result<()> {
     for e in std::fs::read_dir(dir)? {
         let e = e?;
@@ -264,7 +296,11 @@ fn listed_packs(dir: &Path) -> (Vec<IndexPack>, bool) {
             let packs = index
                 .packs
                 .into_iter()
-                .filter(|p| safe(&p.path) && dir.join(&p.path).join("pack.yaml").is_file())
+                .filter(|p| {
+                    valid_name(&p.name)
+                        && safe(&p.path)
+                        && dir.join(&p.path).join("pack.yaml").is_file()
+                })
                 .collect();
             return (packs, true);
         }
@@ -735,7 +771,19 @@ mod tests {
             ..first.clone()
         };
         let err = ensure_snapshot_in(&registry, &source, "demo", "demo", &wrong).unwrap_err();
-        assert!(err.to_string().contains("no longer holds"), "{err}");
+        let found = tree_digest(
+            &registry
+                .join("starters")
+                .join(cache_key(&source.url))
+                .join("demo"),
+        )
+        .unwrap();
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "the cache no longer holds pack demo 1.0.0 (digest {found}): run `armadai pack sync`"
+            )
+        );
         assert!(!snapshot_dir_in(&registry, &source.url, "demo", &wrong.id()).exists());
     }
 
@@ -797,6 +845,93 @@ mod tests {
         );
         let v = sync_source_in(&registry, &file_url(&repo)).unwrap();
         assert_eq!(v.packs.keys().collect::<Vec<_>>(), ["demo"]);
+    }
+
+    fn commit_id() -> String {
+        "a".repeat(40)
+    }
+
+    #[test]
+    fn a_name_or_id_that_is_not_plain_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = tmp.path().join("registry");
+        let source = RegistrySource {
+            url: "https://example.com/p.git".into(),
+            kind: Some(SourceKind::Git),
+        };
+        let with = |commit: String| Available {
+            version: "1.0.0".into(),
+            tag: None,
+            commit: Some(commit),
+            digest: None,
+        };
+        let refused = |pack: &str, a: &Available, shown: &str| {
+            let err = ensure_snapshot_in(&registry, &source, pack, "demo", a).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!("pack {pack} has an invalid name or version id: {shown}")
+            );
+        };
+        for name in ["../escaped", "a/b", "a\\b", "-x", "..", "/abs"] {
+            refused(name, &with(commit_id()), name);
+        }
+        for id in [
+            "../../../../victim",
+            "--remote=/nonexistent",
+            &"A".repeat(40),
+            "abc",
+        ] {
+            refused("demo", &with(id.to_string()), id);
+        }
+        assert!(!registry.exists(), "nothing was created");
+    }
+
+    #[test]
+    fn a_remote_pack_name_cannot_leave_the_store() {
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = tmp.path().join("registry");
+        let source = RegistrySource {
+            url: "https://example.com/packs.tar.gz".into(),
+            kind: None,
+        };
+        let dir = tmp.path().join("src");
+        fs::create_dir_all(dir.join("demo")).unwrap();
+        fs::write(dir.join("demo/pack.yaml"), "name: demo\n").unwrap();
+        fs::write(
+            dir.join(INDEX_FILE),
+            "format: 1\npacks:\n  - name: ../../../escaped\n    path: demo\n    version: 1.0.0\n",
+        )
+        .unwrap();
+        let v = sync_source_with(&registry, &source, &Local(dir)).unwrap();
+        assert!(v.packs.is_empty());
+        assert!(!tmp.path().join("escaped").exists());
+    }
+
+    #[test]
+    fn the_snapshot_errors_say_what_is_wrong() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (source, registry, v) = two_versions(tmp.path());
+        let none = Available {
+            version: "1.0.0".into(),
+            tag: None,
+            commit: None,
+            digest: None,
+        };
+        let say = |a: &Available| {
+            ensure_snapshot_in(&registry, &source, "demo", "demo", a)
+                .unwrap_err()
+                .to_string()
+        };
+        assert_eq!(
+            say(&none),
+            "pack demo has a version without commit or digest"
+        );
+        let digest_only = Available {
+            digest: Some(format!("sha256:{}", "0".repeat(64))),
+            ..none
+        };
+        assert_eq!(say(&digest_only), "pack demo 1.0.0 has no commit");
+        drop(v);
     }
 
     #[test]
