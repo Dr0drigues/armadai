@@ -158,3 +158,92 @@ fn link_json_stays_pure() {
         )
     });
 }
+
+impl Env {
+    fn versions_path(&self) -> PathBuf {
+        self.dir
+            .path()
+            .join("config/registry/packs")
+            .join(armadai_core::registries::cache_key(URL))
+            .join("versions.yaml")
+    }
+}
+
+fn err_count(o: &Output, line: &str) -> usize {
+    String::from_utf8_lossy(&o.stderr)
+        .lines()
+        .filter(|l| *l == line)
+        .count()
+}
+
+#[test]
+fn the_three_surfaces_signal_a_newer_version_of_a_copy() {
+    let env = Env::new("^1");
+    // a copy: no `pack:` key, the install is recorded in the link manifest
+    put(&env.root(), ".armadai/project.yaml", "schema_version: 1\n");
+    std::fs::remove_file(env.root().join(".armadai/pack.lock")).unwrap();
+    put(
+        &env.root(),
+        ".armadai/agents/a.md",
+        "---\ndescription: d\n---\nbody\n",
+    );
+    put(
+        &env.root(),
+        ".armadai/link-manifest.yaml",
+        &format!("version: 1\npacks:\n  demo:\n    source: '{URL}'\n    version: 1.0.0\n"),
+    );
+    let note =
+        "note: pack demo 1.1.0 is in the cache (installed: 1.0.0): run `armadai pack update`";
+    for args in COMMANDS {
+        let o = env.run(args, None);
+        assert!(
+            o.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        assert_eq!(
+            err_count(&o, note),
+            1,
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+    }
+}
+
+#[test]
+fn an_unreadable_versions_file_is_reported_once_per_command() {
+    let env = Env::new("^1");
+    std::fs::write(env.versions_path(), "format: [\n").unwrap();
+    let prefix = format!(
+        "  warn: {} is not readable: ",
+        env.versions_path().display()
+    );
+    for args in COMMANDS {
+        let o = env.run(args, None);
+        let err = String::from_utf8_lossy(&o.stderr);
+        let n = err.lines().filter(|l| l.starts_with(&prefix)).count();
+        assert_eq!(n, 1, "{args:?}: {err}");
+    }
+}
+
+#[test]
+fn no_signal_when_the_cache_holds_only_the_locked_version() {
+    let env = Env::new("^1");
+    put(
+        env.versions_path().parent().unwrap(),
+        "versions.yaml",
+        &format!(
+            "format: 1\npacks:\n  demo:\n    path: demo\n    versions:\n      - {{ version: 1.0.0, tag: demo-v1.0.0, commit: '{C1}' }}\n"
+        ),
+    );
+    for args in COMMANDS {
+        let o = env.run(args, None);
+        assert!(
+            o.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(!err.contains("is in the cache"), "{args:?}: {err}");
+    }
+}
