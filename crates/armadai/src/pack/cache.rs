@@ -116,16 +116,16 @@ pub fn ensure_snapshot_in(
         "pack {pack} has a version without commit or digest"
     );
     // Both become a path and `git` arguments: only plain names and hex ids pass.
-    for value in [pack, id.as_str()] {
-        let ok = if value == pack {
-            valid_name(value)
-        } else {
-            valid_id(value)
-        };
-        anyhow::ensure!(ok, "pack {pack} has an invalid name or version id: {value}");
-    }
+    anyhow::ensure!(
+        valid_name(pack),
+        "pack {pack} has an invalid name or version id: {pack}"
+    );
+    anyhow::ensure!(
+        valid_id(&id),
+        "pack {pack} has an invalid name or version id: {id}"
+    );
     let dest = snapshot_dir_in(registry, &source.url, pack, &id);
-    if dest.exists() {
+    if dest.is_dir() {
         return Ok(dest);
     }
     let parent = dest.parent().expect("a snapshot has a parent");
@@ -162,7 +162,7 @@ pub fn ensure_snapshot_in(
     make_read_only(&tree)?;
     // Two callers may race to the same snapshot: the one that lost finds it in place.
     if let Err(e) = std::fs::rename(&tree, &dest)
-        && !dest.exists()
+        && !dest.is_dir()
     {
         return Err(e.into());
     }
@@ -174,7 +174,7 @@ fn valid_name(name: &str) -> bool {
     let mut parts = Path::new(name).components();
     matches!(parts.next(), Some(std::path::Component::Normal(_)))
         && parts.next().is_none()
-        && !name.contains(['/', '\\'])
+        && !name.contains(['/', '\\', ':'])
         && !name.starts_with('-')
 }
 
@@ -883,6 +883,9 @@ mod tests {
         ] {
             refused("demo", &with(id.to_string()), id);
         }
+        // an id equal to the pack name is still an id, not a name
+        refused("master", &with("master".into()), "master");
+        refused("a:b", &with(commit_id()), "a:b");
         assert!(!registry.exists(), "nothing was created");
     }
 
