@@ -1044,11 +1044,18 @@ fn already_invalid() -> (Env, PathBuf) {
     (env, second)
 }
 
+const ALREADY_INVALID: &str = "the project is already invalid: nothing was changed; fix the errors above, then run `armadai pack update` again";
+
 #[test]
-fn an_already_invalid_project_is_not_blamed_on_the_new_version() {
-    let (env, _second) = already_invalid();
+fn an_already_invalid_project_is_refused_without_blaming_the_new_version() {
+    let (env, second) = already_invalid();
     env.release("1.2.0", &[], &[]);
+    let before = tree(&env.root());
+    let others = tree(&second);
+    let referents = std::fs::read(env.config().join("pack-referents.yaml")).unwrap();
     let r = env.run(&["pack", "update"], &[]);
+    assert_ne!(r.code, Some(0), "{}{}", r.out, r.err);
+    assert!(r.err_has(&format!("Error: {ALREADY_INVALID}")), "{}", r.err);
     assert!(
         !r.err.contains("would make the project invalid"),
         "{}",
@@ -1059,19 +1066,45 @@ fn an_already_invalid_project_is_not_blamed_on_the_new_version() {
         "its diagnostics are shown: {}",
         r.err
     );
-    assert!(
-        env.text(".armadai/pack.lock")
-            .contains("version: \"1.2.0\"\n")
+    assert_eq!(tree(&env.root()), before, "lock and outputs untouched");
+    assert_eq!(tree(&second), others);
+    assert_eq!(
+        std::fs::read(env.config().join("pack-referents.yaml")).unwrap(),
+        referents
     );
 }
 
 #[test]
-fn a_new_error_on_an_already_invalid_project_is_still_blamed() {
-    let (env, _second) = already_invalid();
+fn add_refuses_an_already_invalid_project_too() {
+    let (env, ..) = released();
+    put(
+        &env.root(),
+        ".armadai/project.yaml",
+        "schema_version: 1\ntargets: [claude]\n",
+    );
     put(
         &env.root(),
         ".armadai/agents/mine.md",
-        "---\ndescription: mine\nskills: [nope, s]\n---\nM\n",
+        "---\ndescription: mine\nskills: [nope]\n---\nM\n",
+    );
+    let before = tree(&env.root());
+    let r = env.run(&["pack", "add", "demo"], &[]);
+    assert_ne!(r.code, Some(0));
+    assert!(
+        r.err_has("Error: the project is already invalid: nothing was changed; fix the errors above, then run `armadai pack add demo` again"),
+        "{}",
+        r.err
+    );
+    assert_eq!(tree(&env.root()), before);
+}
+
+#[test]
+fn a_new_error_on_a_valid_project_is_blamed_on_the_new_version() {
+    let (env, _second) = two_projects();
+    put(
+        &env.root(),
+        ".armadai/agents/mine.md",
+        "---\ndescription: mine\nskills: [s]\n---\nM\n",
     );
     env.release("1.2.0", &[], &["skills/s/SKILL.md"]);
     let before = tree(&env.root());

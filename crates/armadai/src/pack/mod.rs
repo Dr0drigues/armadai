@@ -96,35 +96,42 @@ fn lock_of(name: &str, source: &str, a: &Available) -> PackLock {
     }
 }
 
-type Errors = std::collections::BTreeSet<(String, String)>;
-
-/// The errors of the project as it is now, by (code, message): a diagnostic's file differs
-/// from one pack version to the next, what it says does not. Unreadable counts as none.
-fn errors_now(root: &Path, registry: &Path, env: Env) -> Errors {
+/// The diagnostics of the project as it is now (none when its view does not open).
+fn errors_now(root: &Path, registry: &Path, env: Env) -> Vec<armadai_model::Diagnostic> {
     let Ok(view) = effective::open_in(root, effective::Vars::Resolve(env), registry) else {
-        return Errors::new();
+        return Vec::new();
     };
-    (view.load_checked().err().unwrap_or_default().into_iter())
-        .map(|d| (d.code.to_string(), d.message))
-        .collect()
+    view.load_checked().err().unwrap_or_default()
 }
 
-/// The project as it would be with `lock`: no error the lock introduces (M13), else an
-/// error and nothing changed. A project already invalid stays so: `link` reports it.
+/// The project as it would be with `lock`. An already invalid project is refused with its
+/// own diagnostics, and so is one the lock would invalidate (M13): nothing is changed, the
+/// lock never moves toward a `link` that fails. `retry` is the command to run again.
 fn check(
     root: &Path,
     lock: &PackLock,
     registry: &Path,
     env: Env,
     version: &str,
+    retry: &str,
 ) -> anyhow::Result<()> {
-    let before = errors_now(root, registry, env);
+    // a directory with no project yet (`pack add` makes one) has nothing to be invalid
+    let now = if root.join(".armadai/project.yaml").is_file() {
+        errors_now(root, registry, env)
+    } else {
+        Vec::new()
+    };
+    if !now.is_empty() {
+        for d in &now {
+            eprintln!("{}", d.render());
+        }
+        bail!(
+            "the project is already invalid: nothing was changed; fix the errors above, then run \
+             `{retry}` again"
+        );
+    }
     let view = effective::open_with_lock_in(root, lock, effective::Vars::Resolve(env), registry)?;
-    if let Err(ds) = view.load_checked()
-        && ds
-            .iter()
-            .any(|d| !before.contains(&(d.code.to_string(), d.message.clone())))
-    {
+    if let Err(ds) = view.load_checked() {
         for d in &ds {
             eprintln!("{}", d.render());
         }
@@ -224,7 +231,14 @@ pub fn update_in(
             )],
         });
     }
-    check(root, &new, registry, env, &best.version)?;
+    check(
+        root,
+        &new,
+        registry,
+        env,
+        &best.version,
+        "armadai pack update",
+    )?;
     lock::write(root, &new)?;
     record(config, root, &new)?;
     let was = old.map_or("(none)".to_string(), |l| l.resolved.version);
@@ -348,7 +362,14 @@ pub fn add_in(
     let range = given.map_or_else(|| format!("^{}", best.version), str::to_string);
     cache::ensure_snapshot_in(registry, &source, name, &path, &best)?;
     let new = lock_of(name, &source.url, &best);
-    check(root, &new, registry, env, &best.version)?;
+    check(
+        root,
+        &new,
+        registry,
+        env,
+        &best.version,
+        &format!("armadai pack add {name}"),
+    )?;
     // the lock first: a lock without the key is ignored, the key without a lock is not
     lock::write(root, &new)?;
     write_project_yaml(root, &with_pack(text.as_deref(), name, &source.url, &range))?;
