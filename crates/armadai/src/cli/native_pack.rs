@@ -252,6 +252,12 @@ impl Created {
     }
 }
 
+/// Diagnostics of a project root, read through its effective view (a pack it references
+/// is part of it).
+fn project_diagnostics(root: &Path) -> anyhow::Result<Vec<armadai_model::Diagnostic>> {
+    Ok(crate::pack::effective::open(root, crate::pack::effective::Vars::Literal)?.validate())
+}
+
 /// Install the native pack at `pack_dir` into `root/.armadai/`. Existing files are
 /// kept (one warning each); an existing `project.yaml` wins over the pack's.
 pub fn install(root: &Path, pack_dir: &Path, name: &str) -> anyhow::Result<()> {
@@ -273,7 +279,7 @@ pub fn install(root: &Path, pack_dir: &Path, name: &str) -> anyhow::Result<()> {
     let had_project = base.join("project.yaml").is_file();
     let key = |d: &armadai_model::Diagnostic| (d.code, d.file.clone());
     let before: BTreeSet<_> = if had_project {
-        armadai_model::validate(root).iter().map(key).collect()
+        project_diagnostics(root)?.iter().map(key).collect()
     } else {
         BTreeSet::new()
     };
@@ -339,7 +345,14 @@ pub fn install(root: &Path, pack_dir: &Path, name: &str) -> anyhow::Result<()> {
         created.undo();
         return Err(e);
     }
-    let introduced: Vec<_> = armadai_model::validate(root)
+    let after = match project_diagnostics(root) {
+        Ok(ds) => ds,
+        Err(e) => {
+            created.undo();
+            return Err(e);
+        }
+    };
+    let introduced: Vec<_> = after
         .into_iter()
         .filter(|d| !before.contains(&key(d)))
         .collect();

@@ -105,6 +105,23 @@ impl Env {
     }
 }
 
+fn tree_of(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    fn walk(d: &Path, out: &mut Vec<(PathBuf, Vec<u8>)>) {
+        for e in std::fs::read_dir(d).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else {
+                out.push((p.clone(), std::fs::read(&p).unwrap()));
+            }
+        }
+    }
+    let mut v = Vec::new();
+    walk(dir, &mut v);
+    v.sort();
+    v
+}
+
 #[test]
 fn validate_accepts_a_reference_project() {
     let env = Env::reference();
@@ -125,6 +142,13 @@ fn validate_keeps_an_unresolved_variable() {
         &env.root(),
         ".armadai/agents/a.md",
         "---\ndescription: '{{var.d}}'\n---\nuse {{var.home}}\n",
+    );
+    // a command whose whole body is a variable: empty once rendered, so a resolved read
+    // would fail with `command-empty-body`
+    put(
+        &env.root(),
+        ".armadai/commands/c.md",
+        "---\ndescription: run it\n---\n{{var.cmd}}\n",
     );
     let before = env.tree();
     let (code, out, err) = env.run(&["validate"]);
@@ -160,8 +184,11 @@ fn list_and_inspect_show_the_pack_agents() {
 fn new_agent_in_a_reference_project() {
     let env = Env::reference();
     let before = env.tree();
+    let cache = env.snapshot_dir();
+    let cache_before = tree_of(&cache);
     let (code, out, err) = env.run(&["new", "agent", "c", "--skills", "s"]);
     assert_eq!(code, Some(0), "{out}{err}");
+    assert_eq!(tree_of(&cache), cache_before, "the cache is never written");
     let after = env.tree();
     let added: Vec<_> = after
         .iter()
@@ -197,15 +224,10 @@ fn flow_status_knows_the_pack_flows() {
 fn skills_lists_the_pack_skills_without_a_scratch_path() {
     let env = Env::reference();
     let (code, out, err) = env.run(&["skills", "list"]);
-    assert_eq!(code, Some(0), "{out}{err}");
-    assert!(
-        out.lines()
-            .any(|l| l.contains(" s ") || l.trim_start().starts_with("s ")),
-        "{out}"
-    );
-    assert!(
-        !out.contains("/tmp") && !out.contains("/var/folders"),
-        "{out}"
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(
+        out,
+        "  NAME  DESCRIPTION  VERSION  TOOLS\n  ----  -----------  -------  -----\n  s     d            -        -\n\n  1 skill(s) found.\n"
     );
 }
 
@@ -220,6 +242,106 @@ fn inspect_names_the_layer_of_the_agent() {
     let (_, out, _) = env.run(&["inspect", "b"]);
     assert!(
         out.lines().any(|l| l == "Source: .armadai/agents/b.md"),
+        "{out}"
+    );
+}
+
+impl Env {
+    fn snapshot_dir(&self) -> PathBuf {
+        self.dir
+            .path()
+            .join("config/registry/packs")
+            .join(armadai_core::registries::cache_key(URL))
+    }
+}
+
+#[test]
+fn list_diagnostics_are_placed_like_validates() {
+    let env = Env::reference();
+    // the overlay's own lines are not the merged file's: a position must not leak
+    put(
+        &env.root(),
+        ".armadai/project.yaml",
+        "\n\n\npack: { name: demo, source: 'https://example.com/packs.git', version: latest }\ntargets: [claude, foo]\nschema_version: 1\n",
+    );
+    let (code, out, _) = env.run(&["validate"]);
+    assert_eq!(code, Some(1), "{out}");
+    let diag = out
+        .lines()
+        .find(|l| l.contains("unknown-target"))
+        .unwrap_or_else(|| panic!("{out}"))
+        .to_string();
+    let (_, _, err) = env.run(&["list"]);
+    assert!(err.lines().any(|l| l == diag), "want `{diag}` in:\n{err}");
+    let (_, _, err) = env.run(&["inspect", "a"]);
+    assert!(err.lines().any(|l| l == diag), "want `{diag}` in:\n{err}");
+}
+
+#[test]
+fn unlink_without_manifest_and_without_the_pack_cleans_the_project() {
+    let env = Env::reference();
+    // an agent of the project alone: the fallback sees the project only
+    put(
+        &env.root(),
+        ".armadai/agents/b.md",
+        "---\ndescription: own agent\n---\nB\n",
+    );
+    let (code, out, err) = env.run(&["link", "--target", "claude"]);
+    assert_eq!(code, Some(0), "{out}{err}");
+    let b = env.root().join(".claude/agents/b.md");
+    assert!(b.is_file());
+    std::fs::remove_file(env.root().join(".armadai/link-manifest.yaml")).unwrap();
+    std::fs::remove_dir_all(env.snapshot_dir()).unwrap();
+    let (code, out, err) = env.run(&["unlink", "--target", "claude"]);
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert!(!b.exists(), "{out}{err}");
+    let warn = "pack demo 1.0.0 (111111111111) is not in the local cache: run `armadai pack sync`";
+    assert_eq!(
+        err.lines().filter(|l| l.contains(warn)).count(),
+        1,
+        "the open error is shown once: {err}"
+    );
+}
+
+#[test]
+fn init_pack_validates_through_the_view() {
+    let env = Env::reference();
+    let pack = env.dir.path().join("packs/p");
+    put(
+        &pack,
+        "pack.yaml",
+        "name: p\nformat: 1\ndescription: d\nversion: 1.0.0\n",
+    );
+    put(&pack, "project.yaml", "schema_version: 1\n");
+    put(&pack, "agents/c.md", "---\ndescription: c\n---\nC\n");
+    std::fs::remove_dir_all(env.snapshot_dir()).unwrap();
+    let before = env.tree();
+    let (code, out, err) = env.run(&["init", "--pack", pack.to_str().unwrap(), "--force"]);
+    assert_eq!(code, Some(1), "{out}{err}");
+    assert!(
+        err.lines().any(|l| l.ends_with(
+            "pack demo 1.0.0 (111111111111) is not in the local cache: run `armadai pack sync`"
+        )),
+        "{err}"
+    );
+    assert_eq!(env.tree(), before, "nothing is written");
+}
+
+#[test]
+fn inspect_names_the_layer_of_the_template_of_an_instance() {
+    let env = Env::reference();
+    let snap = env.snapshot_dir().join("demo").join(COMMIT);
+    put(
+        &snap,
+        "templates/t.md",
+        "---\ndescription: from a template\n---\nT\n",
+    );
+    put(&env.root(), ".armadai/agents/i.md", "---\nfrom: t\n---\n");
+    let (code, out, err) = env.run(&["inspect", "i"]);
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert!(
+        out.lines()
+            .any(|l| l == "Source: .armadai/agents/i.md, from: t (pack demo, templates/t.md)"),
         "{out}"
     );
 }

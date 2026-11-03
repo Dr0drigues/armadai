@@ -22,12 +22,15 @@ pub fn load_with_origins() -> anyhow::Result<(
 )> {
     let root = crate::compile::find_project(&std::env::current_dir()?)?;
     let view = crate::pack::effective::open(&root, crate::pack::effective::Vars::Literal)?;
-    let loaded = view.load_project();
-    let mut ds = loaded.diagnostics;
+    // `check` reads the view's own files (its positions are in them); the diagnostics
+    // are put on the real files only after, all together
+    let mut loaded = armadai_model::load_project(&view.sources);
+    let mut ds = std::mem::take(&mut loaded.diagnostics);
     if let Some(p) = &loaded.project {
-        ds.extend(view.remap(armadai_model::check(p, &loaded.origins)));
+        ds.extend(armadai_model::check(p, &loaded.origins));
     }
-    for d in &ds {
+    view.remap_origins(&mut loaded.origins);
+    for d in &view.remap(ds) {
         let s = crate::cli::style::warn();
         anstream::eprintln!("{s}{}{s:#}", d.render());
     }

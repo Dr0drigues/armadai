@@ -298,7 +298,7 @@ impl Effective {
         )
     }
 
-    fn remap_origins(&self, o: &mut Origins) {
+    pub fn remap_origins(&self, o: &mut Origins) {
         for (file, _) in o.files.values_mut() {
             if let Some((_, real)) = self.real(file) {
                 *file = real;
