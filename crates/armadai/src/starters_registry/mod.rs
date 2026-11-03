@@ -239,7 +239,7 @@ fn list_archive_entries(
 /// absolute-path entry (zip-slip) is rejected up front rather than allowed to
 /// write outside `dest`. `label` names the archive in messages. An archive over
 /// `limits` (entry count, then total file size) is refused before extraction.
-fn extract_archive(
+pub(crate) fn extract_archive(
     archive: &Path,
     dest: &Path,
     label: &str,
@@ -289,7 +289,7 @@ fn extract_archive(
 
 /// Upper bounds on what one archive may hold once extracted.
 #[derive(Clone, Copy)]
-struct ExtractLimits {
+pub(crate) struct ExtractLimits {
     /// Total size of its files.
     bytes: u64,
     /// Number of entries (files, directories, links): each costs an inode.
@@ -300,7 +300,7 @@ struct ExtractLimits {
     names_bytes: usize,
 }
 
-const EXTRACT_LIMITS: ExtractLimits = ExtractLimits {
+pub(crate) const EXTRACT_LIMITS: ExtractLimits = ExtractLimits {
     bytes: 1 << 30, // 1 GiB
     entries: 100_000,
     // PATH_MAX on Linux (macOS: 1024): a longer name cannot be extracted anyway.
@@ -451,7 +451,7 @@ fn sweep_orphans(dir: &Path, prefix: &str, restore: bool) {
 }
 
 /// A uniquely named temp dir, private (0700) on unix, removed on drop.
-fn private_tempdir(prefix: &str, parent: &Path) -> std::io::Result<tempfile::TempDir> {
+pub(crate) fn private_tempdir(prefix: &str, parent: &Path) -> std::io::Result<tempfile::TempDir> {
     let mut builder = tempfile::Builder::new();
     builder.prefix(prefix);
     #[cfg(unix)]
@@ -461,7 +461,7 @@ fn private_tempdir(prefix: &str, parent: &Path) -> std::io::Result<tempfile::Tem
 
 /// Refuse an extracted tree holding a symlink that resolves outside `root`
 /// (or nowhere): a pack must not reach the rest of the disk through its cache.
-fn reject_escaping_links(root: &Path, label: &str) -> anyhow::Result<()> {
+pub(crate) fn reject_escaping_links(root: &Path, label: &str) -> anyhow::Result<()> {
     let root = root.canonicalize()?;
     let mut dirs = vec![root.clone()];
     while let Some(dir) = dirs.pop() {

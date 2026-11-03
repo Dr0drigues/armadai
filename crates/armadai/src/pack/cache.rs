@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::linker::manifest::digest_of;
 use crate::starters_registry::{
-    ArchiveFetcher, GitFetcher, StarterFetcher, complete_clone, git_output,
+    ArchiveFetcher, EXTRACT_LIMITS, GitFetcher, StarterFetcher, complete_clone, extract_archive,
+    git_output, private_tempdir, reject_escaping_links,
 };
 
 const INDEX_FILE: &str = "armadai-packs.yaml";
@@ -92,6 +93,104 @@ pub fn store_dir(url: &str) -> PathBuf {
     store_dir_in(&armadai_core::config::registry_cache_dir(), url)
 }
 
+/// `<store>/<pack>/<id>`: one pack at one version, written once, never modified.
+pub fn snapshot_dir_in(registry: &Path, url: &str, pack: &str, id: &str) -> PathBuf {
+    store_dir_in(registry, url).join(pack).join(id)
+}
+
+/// The snapshot of `pack` at `available`, extracted when absent: git, `git archive
+/// <commit>:<path>` from the local clone through `extract_archive` and
+/// `reject_escaping_links`; archive, a copy of the cache's pack folder, refused when
+/// its `tree_digest` differs from `available.digest`. Built in a staging folder and
+/// renamed into place, so a failed one is never visible. No network.
+pub fn ensure_snapshot_in(
+    registry: &Path,
+    source: &RegistrySource,
+    pack: &str,
+    path: &str,
+    available: &Available,
+) -> anyhow::Result<PathBuf> {
+    let id = available.id();
+    anyhow::ensure!(
+        !id.is_empty(),
+        "pack {pack} has a version without commit or digest"
+    );
+    let dest = snapshot_dir_in(registry, &source.url, pack, &id);
+    if dest.exists() {
+        return Ok(dest);
+    }
+    let parent = dest.parent().expect("a snapshot has a parent");
+    std::fs::create_dir_all(parent)?;
+    let staging = private_tempdir(".staging-", parent)?;
+    let tree = staging.path().join("tree");
+    let clone = registry.join("starters").join(cache_key(&source.url));
+    let label = format!("{pack} {}", available.version);
+    match (source.resolved_kind(), &available.commit) {
+        (SourceKind::Git, Some(commit)) => {
+            let tar = staging.path().join("pack.tar.gz");
+            git_output(&[
+                "-C",
+                clone.to_str().unwrap_or("."),
+                "archive",
+                "--format=tar.gz",
+                "-o",
+                tar.to_str().unwrap_or(""),
+                &format!("{commit}:{path}"),
+            ])?;
+            extract_archive(&tar, &tree, &label, EXTRACT_LIMITS)?;
+        }
+        (SourceKind::Archive, _) => {
+            copy_tree(&clone.join(path), &tree)?;
+            let found = tree_digest(&tree)?;
+            anyhow::ensure!(
+                available.digest.as_deref() == Some(found.as_str()),
+                "the cache no longer holds pack {label} (digest {found}): run `armadai pack sync`"
+            );
+        }
+        (SourceKind::Git, None) => anyhow::bail!("pack {label} has no commit"),
+    }
+    reject_escaping_links(&tree, &label)?;
+    make_read_only(&tree)?;
+    std::fs::rename(&tree, &dest)?;
+    Ok(dest)
+}
+
+/// Copy files and links, kept as they are (the digest covers links).
+fn copy_tree(from: &Path, to: &Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for e in std::fs::read_dir(from)? {
+        let e = e?;
+        let (src, dst) = (e.path(), to.join(e.file_name()));
+        let kind = e.file_type()?;
+        if kind.is_dir() {
+            copy_tree(&src, &dst)?;
+        } else if kind.is_symlink() {
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(std::fs::read_link(&src)?, &dst)?;
+        } else {
+            std::fs::copy(&src, &dst)?;
+        }
+    }
+    Ok(())
+}
+
+/// Files lose their write bits; folders keep theirs so that the cache can still be
+/// deleted (shortcut: a folder entry can be added by hand, the files cannot be edited).
+fn make_read_only(dir: &Path) -> anyhow::Result<()> {
+    for e in std::fs::read_dir(dir)? {
+        let e = e?;
+        let kind = e.file_type()?;
+        if kind.is_dir() {
+            make_read_only(&e.path())?;
+        } else if kind.is_file() {
+            let mut perm = e.metadata()?.permissions();
+            perm.set_readonly(true);
+            std::fs::set_permissions(e.path(), perm)?;
+        }
+    }
+    Ok(())
+}
+
 /// `versions.yaml` of a source: no network, no git.
 pub fn versions_in(registry: &Path, url: &str) -> Option<Versions> {
     let text = std::fs::read_to_string(store_dir_in(registry, url).join(VERSIONS_FILE)).ok()?;
@@ -126,6 +225,21 @@ pub fn sync_source_with(
         }
         SourceKind::Archive => archive_versions(&clone, packs, previous)?,
     };
+    if source.resolved_kind() == SourceKind::Archive {
+        // The next sync replaces the cache: freeze what it holds now.
+        for (name, pv) in &versions.packs {
+            let Ok(digest) = tree_digest(&clone.join(&pv.path)) else {
+                continue;
+            };
+            if let Some(a) = pv
+                .versions
+                .iter()
+                .find(|a| a.digest.as_ref() == Some(&digest))
+            {
+                ensure_snapshot_in(registry, source, name, &pv.path, a)?;
+            }
+        }
+    }
     let store = store_dir_in(registry, url);
     std::fs::create_dir_all(&store)?;
     let tmp = store.join(format!("{VERSIONS_FILE}.tmp"));
@@ -502,6 +616,113 @@ mod tests {
         sync_source_in(&registry, &source).unwrap();
         git(&clone, &["cat-file", "-e", &untagged]);
         git(&clone, &["cat-file", "-e", &first]);
+    }
+
+    /// Two tagged versions of `demo`, `a.md` holding `A1` then `A2`.
+    fn two_versions(tmp: &Path) -> (RegistrySource, PathBuf, Versions) {
+        let repo = origin(tmp);
+        commit(&repo, &[("demo/a.md", "A1"), (INDEX_FILE, &index("1.0.0"))]);
+        git(&repo, &["tag", "demo-v1.0.0"]);
+        commit(&repo, &[("demo/a.md", "A2"), (INDEX_FILE, &index("1.1.0"))]);
+        git(&repo, &["tag", "demo-v1.1.0"]);
+        let registry = tmp.join("registry");
+        let source = file_url(&repo);
+        let v = sync_source_in(&registry, &source).unwrap();
+        (source, registry, v)
+    }
+
+    #[test]
+    fn two_versions_live_side_by_side() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (source, registry, v) = two_versions(tmp.path());
+        let got: Vec<_> = v.packs["demo"]
+            .versions
+            .iter()
+            .map(|a| {
+                let dir = ensure_snapshot_in(&registry, &source, "demo", "demo", a).unwrap();
+                assert_eq!(
+                    dir,
+                    snapshot_dir_in(&registry, &source.url, "demo", &a.id())
+                );
+                fs::read_to_string(dir.join("a.md")).unwrap()
+            })
+            .collect();
+        assert_eq!(got, ["A1", "A2"]);
+    }
+
+    #[test]
+    fn a_snapshot_is_never_rewritten() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (source, registry, v) = two_versions(tmp.path());
+        let a = &v.packs["demo"].versions[0];
+        let dir = ensure_snapshot_in(&registry, &source, "demo", "demo", a).unwrap();
+        let file = dir.join("a.md");
+        let mut perm = fs::metadata(&file).unwrap().permissions();
+        assert!(perm.readonly(), "a snapshot file is read-only");
+        #[allow(clippy::permissions_set_readonly_false)]
+        perm.set_readonly(false);
+        fs::set_permissions(&file, perm).unwrap();
+        fs::write(&file, "edited").unwrap();
+        ensure_snapshot_in(&registry, &source, "demo", "demo", a).unwrap();
+        assert_eq!(fs::read_to_string(file).unwrap(), "edited");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_interrupted_snapshot_is_never_visible() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = origin(tmp.path());
+        std::os::unix::fs::symlink("/etc/hosts", repo.join("demo/out")).unwrap();
+        let commit = commit(&repo, &[("demo/a.md", "A1"), (INDEX_FILE, &index("1.0.0"))]);
+        let registry = tmp.path().join("registry");
+        let source = file_url(&repo);
+        sync_source_in(&registry, &source).unwrap();
+        let a = Available {
+            version: "1.0.0".into(),
+            tag: None,
+            commit: Some(commit),
+            digest: None,
+        };
+        let err = ensure_snapshot_in(&registry, &source, "demo", "demo", &a).unwrap_err();
+        assert!(err.to_string().contains("points outside"), "{err}");
+        let left: Vec<_> = fs::read_dir(store_dir_in(&registry, &source.url).join("demo"))
+            .unwrap()
+            .collect();
+        assert!(left.is_empty(), "nothing left behind: {left:?}");
+    }
+
+    #[test]
+    fn an_archive_snapshot_checks_its_digest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = tmp.path().join("registry");
+        let source = RegistrySource {
+            url: "https://example.com/packs.tar.gz".into(),
+            kind: None,
+        };
+        let sync = |body: &str, version: &str| {
+            let dir = tmp.path().join(version);
+            fs::create_dir_all(dir.join("demo")).unwrap();
+            fs::write(dir.join("demo/pack.yaml"), body).unwrap();
+            fs::write(dir.join(INDEX_FILE), index(version)).unwrap();
+            sync_source_with(&registry, &source, &Local(dir)).unwrap()
+        };
+        let v1 = sync("name: demo\n", "1.0.0");
+        sync("name: demo\nx: 1\n", "1.1.0");
+        // the first version outlived the replacement of the cache
+        let first = &v1.packs["demo"].versions[0];
+        let dir = snapshot_dir_in(&registry, &source.url, "demo", &first.id());
+        assert_eq!(
+            fs::read_to_string(dir.join("pack.yaml")).unwrap(),
+            "name: demo\n"
+        );
+        // a digest the cache does not hold: refused, no snapshot
+        let wrong = Available {
+            digest: Some(format!("sha256:{}", "0".repeat(64))),
+            ..first.clone()
+        };
+        let err = ensure_snapshot_in(&registry, &source, "demo", "demo", &wrong).unwrap_err();
+        assert!(err.to_string().contains("no longer holds"), "{err}");
+        assert!(!snapshot_dir_in(&registry, &source.url, "demo", &wrong.id()).exists());
     }
 
     #[test]
