@@ -1544,5 +1544,23 @@ fn an_ssh_source_has_no_secret_and_is_written_as_it_is() {
     let sync = env.run(&["pack", "sync"], &envs);
     ok(&sync);
     assert!(!sync.err.contains("matches none"), "{}", sync.err);
+    // a source with no secret is shown as it is written
+    assert_eq!(sync.out, format!("Synced {SSH}: 1 pack(s), 2 version(s)\n"));
+    assert!(
+        sync.err_has(&format!(
+            "note: {SSH} comes from .armadai/project.yaml (pack demo), not from your registries.yaml"
+        )),
+        "{}",
+        sync.err
+    );
+    let status = env.run(&["pack", "status"], &envs);
+    assert!(
+        status
+            .out
+            .lines()
+            .any(|l| l == format!("  source:    {SSH}")),
+        "{}",
+        status.out
+    );
     ok(&env.run(&["link"], &envs));
 }

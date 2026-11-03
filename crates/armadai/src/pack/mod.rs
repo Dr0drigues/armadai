@@ -14,7 +14,7 @@ pub mod vars;
 use std::path::Path;
 
 use anyhow::{bail, ensure};
-use armadai_core::registries::{RegistrySource, redact_url};
+use armadai_core::registries::RegistrySource;
 
 use self::cache::{Available, valid_name};
 use self::lock::{PackLock, Resolved};
@@ -415,7 +415,7 @@ pub fn add_in(
                     "pack {name} is in several of your sources ({}): pass --source <url>",
                     holders
                         .iter()
-                        .map(|s| redact_url(&s.url))
+                        .map(|s| source::recorded(&s.url))
                         .collect::<Vec<_>>()
                         .join(", ")
                 ),

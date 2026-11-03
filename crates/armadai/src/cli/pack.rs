@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use armadai_core::registries::{RegistrySource, cache_key, redact_url};
+use armadai_core::registries::{RegistrySource, cache_key};
 use clap::Subcommand;
 
 use crate::pack::cache::{self, Available};
@@ -137,7 +137,7 @@ fn sync(root: Option<&Path>, registry: &Path, only: Option<String>) -> anyhow::R
     {
         eprintln!(
             "note: {} comes from .armadai/project.yaml (pack {}), not from your registries.yaml",
-            redact_url(&d.source),
+            source::recorded(&d.source),
             d.name
         );
     }
@@ -150,7 +150,7 @@ fn sync(root: Option<&Path>, registry: &Path, only: Option<String>) -> anyhow::R
                 let n: usize = v.packs.values().map(|p| p.versions.len()).sum();
                 println!(
                     "Synced {}: {} pack(s), {n} version(s)",
-                    redact_url(&s.url),
+                    source::recorded(&s.url),
                     v.packs.len()
                 );
                 synced.insert(s.url.clone());

@@ -4,7 +4,6 @@
 use std::path::Path;
 
 use anyhow::anyhow;
-use armadai_core::registries::redact_url;
 
 use super::cache::{self, Available};
 use super::resolve::{self, Range};
@@ -130,7 +129,7 @@ pub fn report(root: &Path, registry: &Path, config: &Path) -> anyhow::Result<Str
         let mut b = format!(
             "Pack {} (reference)\n  source:    {}\n  range:     {}\n  locked:    {} ({at})\n  in cache:  {in_cache}\n",
             d.name,
-            redact_url(&d.source),
+            source::recorded(&d.source),
             d.version,
             r.version
         );
@@ -158,7 +157,7 @@ pub fn report(root: &Path, registry: &Path, config: &Path) -> anyhow::Result<Str
         };
         let mut b = format!(
             "Pack {name} (copy)\n  source:    {}\n  installed: {installed}\n",
-            redact_url(&p.source)
+            source::recorded(&p.source)
         );
         if let Some(n) = resolve::best(&Range::Latest, &cached(registry, &p.source, &name)) {
             b.push_str(&format!("  in cache:  {}\n", n.version));
