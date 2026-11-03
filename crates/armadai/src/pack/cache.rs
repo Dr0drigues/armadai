@@ -938,6 +938,19 @@ mod tests {
     }
 
     #[test]
+    fn a_file_in_a_snapshot_place_is_not_a_snapshot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (source, registry, v) = two_versions(tmp.path());
+        let a = &v.packs["demo"].versions[0];
+        let dest = snapshot_dir_in(&registry, &source.url, "demo", &a.id());
+        fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        fs::write(&dest, "not a folder").unwrap();
+        // refused at the entry, and again when the rename finds the file
+        assert!(ensure_snapshot_in(&registry, &source, "demo", "demo", a).is_err());
+        assert!(dest.is_file());
+    }
+
+    #[test]
     fn tree_digest_sees_content_and_exec_bit() {
         let tmp = tempfile::tempdir().unwrap();
         let make = |name: &str, body: &str, exec: bool| {
