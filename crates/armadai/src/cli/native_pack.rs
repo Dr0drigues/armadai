@@ -62,7 +62,8 @@ pub fn files(pack_dir: &Path) -> anyhow::Result<PackFiles> {
                 #[cfg(not(unix))]
                 let exec = false;
                 out.push((rel, std::fs::read(&path)?, exec));
-            } else if rel.components().count() > 1 {
+            } else if rel.components().count() > 1 && rel.file_name() != Some(".gitkeep".as_ref()) {
+                // a `.gitkeep` only keeps an empty folder in git: neither installed nor reported
                 ignored.push(rel);
             }
         }
@@ -425,6 +426,24 @@ pub fn install(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_gitkeep_is_not_reported_as_ignored() {
+        let d = tempfile::tempdir().unwrap();
+        for f in [
+            "agents/.gitkeep",
+            "agents/a.md",
+            "agents/notes.txt",
+            "pack.yaml",
+        ] {
+            let p = d.path().join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, "x").unwrap();
+        }
+        let pack = files(d.path()).unwrap();
+        assert_eq!(pack.ignored, [PathBuf::from("agents/notes.txt")]);
+        assert_eq!(pack.files.len(), 1);
+    }
 
     #[test]
     fn the_white_list() {
