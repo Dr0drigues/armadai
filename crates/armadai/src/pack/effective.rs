@@ -49,7 +49,7 @@ fn id12(id: &str) -> &str {
 
 /// The `pack:` key of the project's `project.yaml` as (name, source); `None` when
 /// there is none, or the file is not readable (the loader reports that, with a position).
-fn pack_ref(root: &Path) -> Option<(String, String)> {
+pub(super) fn pack_ref(root: &Path) -> Option<(String, String)> {
     let text = std::fs::read_to_string(root.join(".armadai/project.yaml")).ok()?;
     let v = armadai_model::yaml::from_str_manifest(&text).ok()?;
     let p = v.get("pack")?;
