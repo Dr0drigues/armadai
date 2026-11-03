@@ -665,3 +665,19 @@ fn an_unreadable_versions_file_is_reported_once_when_the_source_fails() {
     let n = run.err.lines().filter(|l| l.starts_with(&prefix)).count();
     assert_eq!(n, 1, "{}", run.err);
 }
+
+#[test]
+fn the_signal_survives_an_unrelated_failing_source() {
+    let (env, _, _) = locked();
+    let bad = format!("file://{}/nowhere", env.dir.path().display());
+    env.registries(&[&bad, &env.url()]);
+    let run = env.run(&["pack", "sync"], &[]);
+    assert_eq!(run.code, Some(1), "{}{}", run.out, run.err);
+    assert!(
+        run.err_has(
+            "note: pack demo 1.1.0 is in the cache (locked: 1.0.0): run `armadai pack update`"
+        ),
+        "{}",
+        run.err
+    );
+}

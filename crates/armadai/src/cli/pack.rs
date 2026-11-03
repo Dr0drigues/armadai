@@ -71,6 +71,7 @@ fn sync(root: Option<&Path>, registry: &Path, only: Option<String>) -> anyhow::R
 
     let mut failed = 0;
     let mut synced = BTreeSet::new();
+    let mut unsynced = BTreeSet::new();
     for s in &sources {
         match cache::sync_source_in(registry, s) {
             Ok(v) => {
@@ -85,6 +86,7 @@ fn sync(root: Option<&Path>, registry: &Path, only: Option<String>) -> anyhow::R
             Err(e) => {
                 eprintln!("{}", sync_warning(&s.url, &e));
                 failed += 1;
+                unsynced.insert(s.url.clone());
             }
         }
     }
@@ -94,10 +96,14 @@ fn sync(root: Option<&Path>, registry: &Path, only: Option<String>) -> anyhow::R
     {
         failed += check_lock(root, registry, &sources, &synced);
     }
-    // a source that failed keeps its old `versions.yaml`: no signal from it
-    if failed == 0
-        && let Some(root) = root
+    // a source that failed keeps its old `versions.yaml` (already warned about): no
+    // signal read from it, one from a source that just synced stays
+    if let Some(root) = root
+        && !declared
+            .as_ref()
+            .is_some_and(|d| unsynced.contains(&d.source))
         && let Some(n) = status::newer(root, registry)
+        && !unsynced.contains(&n.source)
     {
         eprintln!("{}", status::note(&n));
     }
