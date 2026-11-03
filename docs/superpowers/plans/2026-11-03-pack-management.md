@@ -812,6 +812,31 @@ Tests attendus : `every_kept_command_has_a_help_description` (mutation : retirer
 
 Commit : `docs(pack): document pack modes, commands and variables`
 
+---
+
+### Tâche 19 (cli-specialist) : corrections après le rejet de `review` (2026-11-03)
+
+Le reviewer a rejeté la branche, et Dimitri a tranché quatre de ses points le 2026-11-03 (mots cités ci-dessous). À refaire : cette tâche seule. Les tâches 5, 13, 15 et 16 ne sont touchées que sur les lignes nommées ici.
+
+Fichiers : `crates/armadai/src/pack/copy.rs`, `pack/status.rs`, `pack/mod.rs`, `pack/cache.rs` (`valid_name`, index), `cli/init.rs` (id enregistré), `crates/armadai/tests/pack_cmd.rs`.
+
+1. **Refus « plusieurs packs » sans test** (rejet, `copy.rs:226-231`). Mesure du reviewer : avec la condition remplacée par `if false && installed.next().is_some()`, `cargo test --no-fail-fast -p armadai` sort 0 (976 passés). Nouveau test d'intégration `update_refuses_several_copied_packs` :
+   - il part d'un manifeste avec deux entrées sous `packs:` et lance `pack update` ;
+   - il vérifie la sortie non nulle et la ligne d'erreur entière (`several packs were installed by copy in this project: pack update takes one; nothing was changed`) ;
+   - il vérifie que `.armadai/` et `link-manifest.yaml` sont identiques octet pour octet.
+   Mutation : la même que celle du reviewer, qui doit faire rougir le test.
+2. **M8/M9 alignés** (« Aligner status (Recommandé) »). `pack status` reprend la classification de `copy::unknown` : M8 quand `.armadai/` contient plus qu'un `project.yaml`, M9 sinon. Le texte M9 est défini en un seul endroit (une constante, ou une fonction de `copy.rs`), et `status.rs:169` l'appelle au lieu de le recopier. Test `status_classifies_like_update` : deux projets, l'un avec seulement `project.yaml`, l'autre avec un agent en plus, et aucun manifeste. `pack status` et `pack update` doivent donner la même ligne entière (M9 pour le premier, M8 pour le second). Mutation : rétablir l'ancien M9 inconditionnel de `status` → le second projet rougit.
+3. **Nom de pack resserré** (« Resserrer (Recommandé) »). `valid_name` applique la règle d'id du modèle, `[a-z0-9][a-z0-9-]{0,63}` (via `armadai_model::is_valid_id`, sans copie de la règle). Un pack mal nommé d'une source est écarté de `versions.yaml` avec M27 (`pack <pack> has an invalid name or version id: <valeur>`).
+   À vérifier par grep et à rapporter :
+   - l'effet sur `discover_packs` et sur les packs intégrés (tous en kebab-case aujourd'hui, à confirmer par un test qui les parcourt) ;
+   - `pack new`, qui applique déjà cette règle et doit rester inchangé.
+   Test `a_badly_named_pack_is_left_out` : une source avec `Demo_Pack` et `demo` → seul `demo` figure dans `versions.yaml`, M27 en ligne entière. Mutation : l'ancienne règle → `Demo_Pack` retenu, rouge.
+4. **Plage d'abord** (« Plage d'abord (Recommandé) »). `pack update <version>` contrôle la plage de `project.yaml` avant la résolution (vers `pack/mod.rs:290`). Une version hors plage reçoit toujours M31, qu'elle soit présente ou non dans le cache, et rien n'est changé.
+   Le test existant `update_with_an_unknown_version_names_it` est adapté : `9.9.9` hors plage donne M31, et une version dans la plage mais absente du cache donne M14. Nouveau test `update_outside_the_range_refuses_even_when_cached` : la version `2.0.0` est au cache et la plage est `^1` → M31 ; verrou et `.claude/` sont identiques octet pour octet. Mutation : résoudre avant de contrôler la plage → `2.0.0` est verrouillée, rouge.
+5. **Id d'une copie unifié sur le commit** (« Unifier sur le commit (Recommandé) »). `init --pack` d'un pack venant d'une source git enregistre dans `InstalledPack.id` le commit, comme après `pack update`. L'empreinte reste l'id d'un dossier ou d'une archive. Test `init_pack_from_git_records_the_commit` : l'id vaut le commit de la tête de l'origine (40 hex), et pour un dossier il vaut `sha256:…`. Mutation : garder l'empreinte pour git → rouge.
+
+Commit : `fix(pack): close the review findings on pack update and status`
+
 ## 5. Textes de sortie (validés tels quels par Dimitri le 2026-11-03 ; anglais, comme toutes les sorties du binaire)
 
 `<…>` est remplacé ; `<id12>` = 12 premiers caractères du commit (ou du digest sans `sha256:`).
@@ -862,6 +887,7 @@ Textes ajoutés en cours d'exécution, **validés par Dimitri le 2026-11-03** :
 - **M28** (`parse_range`, tâche 6) : `` `<s>` is not `latest`, a version or a version range: <erreur semver> ``
 - **M29** : `<chemin> is a symbolic link; it is not written through`
 - **M30** (lecture du verrou, tâche 6) : `.armadai/pack.lock: <erreur YAML>`
+- **M31** (`pack update <version>` hors plage, tâche 19 ; « Plage d'abord ») : `pack <name> <version> is outside the range <range> of .armadai/project.yaml; nothing was changed: change pack.version there to move to it`
 
 ## 6. Ce que le plan laisse, et pourquoi
 
