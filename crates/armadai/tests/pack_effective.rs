@@ -354,27 +354,31 @@ fn skills_show_names_the_real_layer() {
         ".armadai/skills/own/SKILL.md",
         "---\nname: own\ndescription: mine\n---\nO\n",
     );
-    put(&env.root(), ".armadai/skills/own/scripts/x.sh", "echo x\n");
     let snap = env.snapshot_dir().join("demo").join(COMMIT);
-    put(&snap, "skills/s/scripts/run.sh", "echo run\n");
     let root = env.root().canonicalize().unwrap();
+    let files = ["scripts/x.sh", "references/r.md", "assets/i.txt"];
+    for f in files {
+        put(&env.root(), &format!(".armadai/skills/own/{f}"), "x\n");
+        put(&snap, &format!("skills/s/{f}"), "x\n");
+    }
     let (code, out, err) = env.run(&["skills", "show", "own"]);
     assert_eq!(code, Some(0), "{out}{err}");
     let want = format!("Source: {}", root.join(".armadai/skills/own").display());
     assert!(out.lines().any(|l| l == want), "want `{want}` in:\n{out}");
-    let want = format!(
-        "  - {}",
-        root.join(".armadai/skills/own/scripts/x.sh").display()
-    );
-    assert!(out.lines().any(|l| l == want), "want `{want}` in:\n{out}");
+    for f in files {
+        let want = format!("  - {}", root.join(".armadai/skills/own").join(f).display());
+        assert!(out.lines().any(|l| l == want), "want `{want}` in:\n{out}");
+    }
     let (code, out, err) = env.run(&["skills", "show", "s"]);
     assert_eq!(code, Some(0), "{out}{err}");
     assert!(
         out.lines().any(|l| l == "Source: pack demo, skills/s"),
         "{out}"
     );
-    let want = format!("  - {}", snap.join("skills/s/scripts/run.sh").display());
-    assert!(out.lines().any(|l| l == want), "want `{want}` in:\n{out}");
+    for f in files {
+        let want = format!("  - {}", snap.join("skills/s").join(f).display());
+        assert!(out.lines().any(|l| l == want), "want `{want}` in:\n{out}");
+    }
 }
 
 #[test]
