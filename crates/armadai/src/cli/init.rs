@@ -355,7 +355,7 @@ fn record_origin(
         {
             ("embedded".to_string(), None)
         }
-        None => (std::path::absolute(dir)?.display().to_string(), None),
+        None => (dir.canonicalize()?.display().to_string(), None),
     };
     // a file kept by an earlier install of the same pack stays recorded as it was
     let mut files = crate::linker::manifest::installed_packs(root)

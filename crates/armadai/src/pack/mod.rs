@@ -6,6 +6,7 @@ pub mod cache;
 pub mod copy;
 pub mod effective;
 pub mod lock;
+pub mod outputs;
 pub mod referents;
 pub mod resolve;
 pub mod source;
@@ -97,14 +98,14 @@ impl Undo {
     pub fn message(&self) -> String {
         if self.record.is_some() {
             return format!(
-                "pack {} {} was not applied: link failed, so the files of .armadai/ and the \
-                 record of the pack are back as they were",
+                "pack {} {} was not applied: link failed, so the files of .armadai/, the record \
+                 of the pack and the files link had written are back as they were",
                 self.pack, self.version
             );
         }
         format!(
-            "pack {} {} was not applied: link failed, so .armadai/pack.lock and the referent \
-             record are back as they were",
+            "pack {} {} was not applied: link failed, so .armadai/pack.lock, the referent \
+             record and the files link had written are back as they were",
             self.pack, self.version
         )
     }

@@ -1460,20 +1460,25 @@ fn add_in_a_legacy_project_is_refused_and_writes_nothing() {
     assert!(!env.root().join(".armadai").exists());
 }
 
-const NOT_APPLIED: &str = "pack demo 1.2.0 was not applied: link failed, so .armadai/pack.lock and the referent record are back as they were";
+const NOT_APPLIED: &str = "pack demo 1.2.0 was not applied: link failed, so .armadai/pack.lock, the referent record and the files link had written are back as they were";
 
 #[test]
 fn a_failing_link_puts_the_old_lock_back() {
     let (env, _second) = two_projects();
     env.release(
         "1.2.0",
-        &[("agents/a.md", "---\ndescription: from the pack\n---\nNEW\n")],
+        &[
+            ("agents/a.md", "---\ndescription: from the pack\n---\nNEW\n"),
+            ("agents/9.md", &agent("NINE")),
+        ],
         &[],
     );
     let out = env.root().join(".claude/agents/a.md");
+    let original = std::fs::read(&out).unwrap();
     std::fs::remove_file(&out).unwrap();
     std::fs::create_dir(&out).unwrap();
     let before = tree(&env.root().join(".armadai"));
+    let claude = tree(&env.root().join(".claude"));
     // as after a clone: the project is on the pack, the record does not know it yet
     std::fs::remove_file(env.config().join("pack-referents.yaml")).unwrap();
     let r = env.run(&["pack", "update"], &[]);
@@ -1481,7 +1486,23 @@ fn a_failing_link_puts_the_old_lock_back() {
     assert!(r.err_has(NOT_APPLIED), "{}", r.err);
     assert!(!r.out.contains(".armadai/pack.lock updated"), "{}", r.out);
     assert_eq!(tree(&env.root().join(".armadai")), before);
+    assert_eq!(tree(&env.root().join(".claude")), claude);
     assert!(!env.config().join("pack-referents.yaml").exists());
+    no_stale_edit_after(&env, &out, &original);
+}
+
+/// The way out of the failure: the file back, and the next `link` finds nothing edited.
+fn no_stale_edit_after(env: &Env, out: &Path, original: &[u8]) {
+    std::fs::remove_dir(out).unwrap();
+    std::fs::write(out, original).unwrap();
+    let r = env.run(&["link"], &[]);
+    ok(&r);
+    assert!(
+        !(r.out.to_string() + &r.err).contains("edited since the last link"),
+        "{}{}",
+        r.out,
+        r.err
+    );
 }
 
 #[test]
@@ -1492,7 +1513,7 @@ fn a_failing_link_undoes_an_add() {
     let r = env.run(&["pack", "add", "demo"], &[]);
     assert_ne!(r.code, Some(0), "{}{}", r.out, r.err);
     assert!(
-        r.err_has("pack demo 1.1.0 was not applied: link failed, so .armadai/pack.lock and the referent record are back as they were"),
+        r.err_has("pack demo 1.1.0 was not applied: link failed, so .armadai/pack.lock, the referent record and the files link had written are back as they were"),
         "{}",
         r.err
     );
@@ -1636,8 +1657,10 @@ fn update_replaces_unchanged_and_keeps_edited() {
     let rec = record(&env);
     let files = &rec["packs"]["demo"]["files"];
     assert_eq!(files["agents/b.md"], sha(agent("B").as_bytes()));
-    assert_ne!(files["agents/a.md"], sha(mine.as_bytes()));
-    assert_ne!(files["agents/a.md"], sha(agent("A2").as_bytes()));
+    assert_eq!(
+        files["agents/a.md"],
+        sha(b"---\ndescription: from the pack\n---\nA\n")
+    );
     assert_eq!(rec["packs"]["demo"]["version"], "1.1.0");
 }
 
@@ -1668,6 +1691,8 @@ fn update_merges_project_yaml() {
         "{}",
         r.out
     );
+    // the inline list and the order are the user's, the merge writes the canonical form
+    assert!(r.err_has(CANONICAL_WARN), "{}", r.err);
     let merged =
         armadai_model::yaml::from_str_manifest(&env.text(".armadai/project.yaml")).unwrap();
     assert_eq!(
@@ -1893,7 +1918,10 @@ fn init_pack_from_a_folder_records_the_folder_and_not_a_kept_file() {
     ok(&r);
     let rec = record(&env);
     let demo = &rec["packs"]["demo"];
-    assert_eq!(demo["source"], dir.to_str().unwrap());
+    assert_eq!(
+        demo["source"],
+        std::fs::canonicalize(&dir).unwrap().to_str().unwrap()
+    );
     assert!(demo.get("version").is_none(), "{demo}");
     let files = demo["files"].as_object().unwrap();
     assert_eq!(
@@ -2003,4 +2031,159 @@ fn a_copy_update_never_writes_through_a_symbolic_link() {
         r.err
     );
     assert_eq!(std::fs::read_to_string(&target).unwrap(), agent("OUTSIDE"));
+}
+
+const NOT_APPLIED_COPY: &str = "pack demo 1.1.0 was not applied: link failed, so the files of .armadai/, the record of the pack and the files link had written are back as they were";
+
+#[test]
+fn a_failing_link_puts_a_copy_update_back() {
+    let env = Env::new();
+    env.native("1.0.0", &[("agents/9.md", &agent("NINE0"))], &[]);
+    env.registries(&[&env.url()]);
+    ok(&env.run(&["init", "--pack", "demo", "--link"], &[]));
+    env.native(
+        "1.1.0",
+        &[
+            ("agents/a.md", &agent("NEW")),
+            ("agents/9.md", &agent("NINE")),
+        ],
+        &[],
+    );
+    let out = env.root().join(".claude/agents/a.md");
+    let original = std::fs::read(&out).unwrap();
+    std::fs::remove_file(&out).unwrap();
+    std::fs::create_dir(&out).unwrap();
+    let armadai = tree(&env.root().join(".armadai"));
+    let claude = tree(&env.root().join(".claude"));
+    let r = env.run(&["pack", "update"], &[]);
+    assert_ne!(r.code, Some(0), "{}{}", r.out, r.err);
+    assert!(r.err_has(NOT_APPLIED_COPY), "{}", r.err);
+    assert_eq!(tree(&env.root().join(".armadai")), armadai);
+    assert_eq!(tree(&env.root().join(".claude")), claude);
+    no_stale_edit_after(&env, &out, &original);
+}
+
+const CANONICAL_WARN: &str = "  warn: .armadai/project.yaml was rewritten in canonical form: its comments, key order and inline forms are not kept";
+
+#[test]
+fn a_merge_warns_when_it_drops_comments() {
+    let env = Env::new();
+    env.copied(&[]);
+    put(
+        &env.root(),
+        ".armadai/project.yaml",
+        "# my team\nschema_version: 1\ntargets: [claude]\npolicy:\n  free_agents: [Explore]\n",
+    );
+    env.native(
+        "1.1.0",
+        &[(
+            "project.yaml",
+            "schema_version: 1\ntargets: [claude]\npolicy:\n  free_agents: [Explore, Plan]\n",
+        )],
+        &[],
+    );
+    let r = env.run(&["pack", "update"], &[]);
+    ok(&r);
+    assert!(r.err_has(CANONICAL_WARN), "{}", r.err);
+    assert!(!env.text(".armadai/project.yaml").contains("# my team"));
+}
+
+#[test]
+fn a_merge_of_a_canonical_file_says_nothing() {
+    let env = Env::new();
+    env.copied(&[]);
+    put(
+        &env.root(),
+        ".armadai/project.yaml",
+        "schema_version: 1\ntargets:\n- claude\npolicy:\n  free_agents:\n  - Explore\n",
+    );
+    env.native(
+        "1.1.0",
+        &[(
+            "project.yaml",
+            "schema_version: 1\ntargets: [claude]\npolicy:\n  free_agents: [Explore, Plan]\n",
+        )],
+        &[],
+    );
+    let r = env.run(&["pack", "update"], &[]);
+    ok(&r);
+    assert!(
+        r.out_has("  merged .armadai/project.yaml (your keys kept, the pack's added)"),
+        "{}",
+        r.out
+    );
+    assert!(!r.err.contains("canonical form"), "{}", r.err);
+}
+
+#[test]
+fn a_vanished_source_folder_is_named() {
+    let env = Env::new();
+    let dir = env.dir.path().join("mypack");
+    put(&dir, "pack.yaml", NATIVE);
+    put(&dir, "agents/a.md", &agent("A1"));
+    ok(&env.run(&["init", "--pack", dir.to_str().unwrap(), "--no-link"], &[]));
+    let real = std::fs::canonicalize(&dir).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let before = tree(&env.root());
+    let r = env.run(&["pack", "update"], &[]);
+    assert_ne!(r.code, Some(0), "{}{}", r.out, r.err);
+    assert!(
+        r.err_has(&format!(
+            "Error: pack demo was installed from the folder {}, which is no longer there: nothing was changed",
+            real.display()
+        )),
+        "{}",
+        r.err
+    );
+    assert_eq!(tree(&env.root()), before);
+}
+
+#[test]
+fn a_folder_with_dot_dot_is_recorded_without_it() {
+    let env = Env::new();
+    let dir = env.dir.path().join("mypack");
+    put(&dir, "pack.yaml", NATIVE);
+    put(&dir, "agents/a.md", &agent("A1"));
+    let odd = format!("{}/../mypack", env.root().display());
+    ok(&env.run(&["init", "--pack", &odd, "--no-link"], &[]));
+    let rec = record(&env);
+    assert_eq!(
+        rec["packs"]["demo"]["source"],
+        std::fs::canonicalize(&dir).unwrap().to_str().unwrap()
+    );
+}
+
+#[test]
+fn a_file_the_pack_never_installed_is_not_called_edited() {
+    let env = Env::new();
+    let dir = env.dir.path().join("mypack");
+    put(&dir, "pack.yaml", NATIVE);
+    put(&dir, "agents/a.md", &agent("A1"));
+    put(&dir, "agents/b.md", &agent("B1"));
+    put(
+        &env.root(),
+        ".armadai/project.yaml",
+        "schema_version: 1\ntargets: [claude]\n",
+    );
+    put(&env.root(), ".armadai/agents/a.md", &agent("MINE"));
+    ok(&env.run(
+        &[
+            "init",
+            "--pack",
+            dir.to_str().unwrap(),
+            "--force",
+            "--no-link",
+        ],
+        &[],
+    ));
+    put(&dir, "agents/a.md", &agent("A2"));
+    let r = env.run(&["pack", "update"], &[]);
+    ok(&r);
+    assert!(
+        r.err_has("  warn: .armadai/agents/a.md exists and was not installed by the pack: kept, the pack's version is not applied"),
+        "{}",
+        r.err
+    );
+    assert!(!r.err.contains("edited since"), "{}", r.err);
+    assert_eq!(env.text(".armadai/agents/a.md"), agent("MINE"));
 }

@@ -9,6 +9,7 @@ use clap::Subcommand;
 use crate::cli::new_wizard::{PackAnswers, ask_pack, pack_answers, plan_pack};
 use crate::pack::cache::{self, Available};
 use crate::pack::lock::{self, TagState};
+use crate::pack::outputs::Outputs;
 use crate::pack::{source, status};
 use crate::starters_registry::{effective_starter_sources, sync_warning};
 
@@ -105,19 +106,20 @@ pub fn execute(what: PackCommand) -> anyhow::Result<()> {
                 source.as_deref(),
                 &env,
             )?;
-            finish(done)
+            finish(&root, done)
         }
         PackCommand::Update { version } => {
             let env = |n: &str| std::env::var(n).ok();
+            let root = root?;
             let done = crate::pack::update_in(
-                &root?,
+                &root,
                 &armadai_core::config::config_dir(),
                 &registry,
                 &effective_starter_sources(),
                 version.as_deref(),
                 &env,
             )?;
-            finish(done)
+            finish(&root, done)
         }
         PackCommand::New { .. } => unreachable!("handled above"),
         PackCommand::Status => {
@@ -129,15 +131,28 @@ pub fn execute(what: PackCommand) -> anyhow::Result<()> {
 }
 
 /// Link the project on its new lock, then say what changed.
-fn finish(done: crate::pack::Done) -> anyhow::Result<()> {
-    if done.relink
-        && let Err(e) = crate::cli::link::execute(vec![], false, false, None, None, false, false)
-    {
-        if let Some(undo) = &done.undo {
-            undo.restore();
-            eprintln!("{}", undo.message());
+fn finish(root: &Path, done: crate::pack::Done) -> anyhow::Result<()> {
+    if done.relink {
+        // what link may rewrite is copied first: a failed link puts it back with the rest
+        let outputs = match Outputs::take(root) {
+            Ok(o) => o,
+            Err(e) => {
+                if let Some(undo) = &done.undo {
+                    undo.restore();
+                    eprintln!("{}", undo.message());
+                }
+                return Err(e.into());
+            }
+        };
+        if let Err(e) = crate::cli::link::execute(vec![], false, false, None, None, false, false) {
+            if let Some(undo) = &done.undo {
+                // the files first: the record of the pack is read from the link manifest
+                outputs.restore();
+                undo.restore();
+                eprintln!("{}", undo.message());
+            }
+            return Err(e);
         }
-        return Err(e);
     }
     for l in done.lines {
         println!("{l}");

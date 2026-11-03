@@ -27,6 +27,8 @@ pub enum CopyAction {
     Remove,
     /// Edited since the install: kept, the pack's version is not applied.
     KeepEdited,
+    /// Present, never installed by the pack (the project's own file) and different: kept.
+    KeepNotInstalled,
     /// Installed, then removed by hand: not added back.
     KeepRemovedByHand,
     /// Gone from the pack but edited: kept.
@@ -55,6 +57,7 @@ pub fn plan_copy_update(
                 CopyAction::Replace
             }
             (Some(_), Some(_)) if p == Path::new(PROJECT) => CopyAction::MergeManifest,
+            (Some(_), Some(_)) if was.is_none() => CopyAction::KeepNotInstalled,
             (Some(_), Some(_)) => CopyAction::KeepEdited,
             (None, None) => continue,
             (None, Some(d)) if was == Some(d) => CopyAction::Remove,
@@ -99,6 +102,11 @@ fn locate(
              update` without one"
         );
         Some(PathBuf::from(src))
+    } else if Path::new(src).is_absolute() {
+        bail!(
+            "pack {name} was installed from the folder {src}, which is no longer there: nothing \
+             was changed"
+        );
     } else {
         None
     };
@@ -267,8 +275,15 @@ pub fn update_in(
     let plan = plan_copy_update(&recorded.files, &disk, &bytes);
 
     let touched: Vec<PathBuf> = (plan.iter())
-        .filter(|(_, a)| !matches!(a, CopyAction::KeepEdited | CopyAction::KeepRemovedByHand))
-        .filter(|(_, a)| !matches!(a, CopyAction::KeepDroppedEdited))
+        .filter(|(_, a)| {
+            !matches!(
+                a,
+                CopyAction::KeepEdited
+                    | CopyAction::KeepNotInstalled
+                    | CopyAction::KeepRemovedByHand
+                    | CopyAction::KeepDroppedEdited
+            )
+        })
         .map(|(p, _)| base.join(p))
         .collect();
     let mut undo = Undo::new(&name, &shown, &touched)?;
@@ -304,7 +319,14 @@ pub fn update_in(
                     ));
                 }
                 CopyAction::MergeManifest => {
-                    if let Some(text) = merged(&base.join(rel), &bytes[rel])? {
+                    if let Some((text, lossy)) = merged(&base.join(rel), &bytes[rel])? {
+                        if lossy {
+                            warns.push(
+                                "  warn: .armadai/project.yaml was rewritten in canonical form: \
+                                 its comments, key order and inline forms are not kept"
+                                    .into(),
+                            );
+                        }
                         write(&base, rel, text.as_bytes(), false, &mut undo.dirs)?;
                         lines.push(
                             "  merged .armadai/project.yaml (your keys kept, the pack's added)"
@@ -315,6 +337,10 @@ pub fn update_in(
                 CopyAction::KeepEdited => warns.push(format!(
                     "  warn: .armadai/{shown_rel} was edited since the pack installed it: kept, \
                      the pack's new version is not applied"
+                )),
+                CopyAction::KeepNotInstalled => warns.push(format!(
+                    "  warn: .armadai/{shown_rel} exists and was not installed by the pack: kept, \
+                     the pack's version is not applied"
                 )),
                 CopyAction::KeepRemovedByHand => warns.push(format!(
                     "  warn: .armadai/{shown_rel} was removed by hand: not added back"
@@ -361,13 +387,15 @@ pub fn update_in(
 }
 
 /// The edited `project.yaml` with the pack's keys added (the user's values win), or `None`
-/// when the pack has nothing to add: the file is then left as the user wrote it.
-fn merged(disk: &Path, pack: &[u8]) -> anyhow::Result<Option<String>> {
+/// when the pack has nothing to add: the file is then left as the user wrote it. The flag
+/// says the canonical form loses something of the user's text.
+fn merged(disk: &Path, pack: &[u8]) -> anyhow::Result<Option<(String, bool)>> {
     let read = |text: &str, what: &str| {
         armadai_model::yaml::from_str_manifest(text)
             .map_err(|e| anyhow::anyhow!("{what} project.yaml: {e}"))
     };
-    let mine = read(&std::fs::read_to_string(disk)?, "your")?;
+    let text = std::fs::read_to_string(disk)?;
+    let mine = read(&text, "your")?;
     let theirs = read(&String::from_utf8_lossy(pack), "the pack's")?;
     let both = armadai_model::pack::merge_manifest_values(&theirs, &mine);
     if both == mine {
@@ -377,7 +405,14 @@ fn merged(disk: &Path, pack: &[u8]) -> anyhow::Result<Option<String>> {
     // as maps)
     let typed: armadai_model::Manifest = serde_json::from_value(both)
         .map_err(|e| anyhow::anyhow!("the merged project.yaml is not valid: {e}"))?;
-    Ok(Some(armadai_model::render_manifest(&typed)))
+    let written = armadai_model::render_manifest(&typed);
+    // lossy: the user's own keys alone, written canonically, would not give their file back
+    let own: armadai_model::Manifest =
+        serde_json::from_value(mine).map_err(|e| anyhow::anyhow!("your project.yaml: {e}"))?;
+    Ok(Some((
+        written,
+        text != armadai_model::render_manifest(&own),
+    )))
 }
 
 /// Remove the folders a removed file leaves empty, up to `.armadai/`.
@@ -417,6 +452,7 @@ mod tests {
             (p("agents/edited.md"), Some(d("e-mine"))),
             (p("agents/by-hand.md"), None),
             (p("agents/new.md"), None),
+            (p("agents/own.md"), Some(d("own-mine"))),
             (p("agents/dropped.md"), Some(d("d1"))),
             (p("agents/dropped-edited.md"), Some(d("x-mine"))),
             (p("agents/gone.md"), None),
@@ -427,6 +463,7 @@ mod tests {
             (p("agents/edited.md"), b"e2".to_vec()),
             (p("agents/by-hand.md"), b"h2".to_vec()),
             (p("agents/new.md"), b"n2".to_vec()),
+            (p("agents/own.md"), b"own2".to_vec()),
             (p("project.yaml"), b"m2".to_vec()),
         ]);
         assert_eq!(
@@ -436,6 +473,7 @@ mod tests {
                 (p("agents/edited.md"), KeepEdited),
                 (p("agents/by-hand.md"), KeepRemovedByHand),
                 (p("agents/new.md"), Add),
+                (p("agents/own.md"), KeepNotInstalled),
                 (p("agents/dropped.md"), Remove),
                 (p("agents/dropped-edited.md"), KeepDroppedEdited),
                 (p("project.yaml"), MergeManifest),
