@@ -169,13 +169,10 @@ pub fn ensure_snapshot_in(
     Ok(dest)
 }
 
-/// One plain path component, not an option for `git`.
+/// The id rule of the model, `[a-z0-9][a-z0-9-]{0,63}`: one plain path component, never
+/// an option for `git`.
 pub(crate) fn valid_name(name: &str) -> bool {
-    let mut parts = Path::new(name).components();
-    matches!(parts.next(), Some(std::path::Component::Normal(_)))
-        && parts.next().is_none()
-        && !name.contains(['/', '\\', ':'])
-        && !name.starts_with('-')
+    armadai_model::is_valid_id(name)
 }
 
 /// A commit (40 or 64 lowercase hex) or `sha256-<64 hex>`.
@@ -287,6 +284,15 @@ pub fn sync_source_with(
     Ok(versions)
 }
 
+/// M27 for a pack of a source whose name is not an id: it is left out, with a warning.
+fn named(name: &str) -> bool {
+    let ok = valid_name(name);
+    if !ok {
+        eprintln!("  warn: pack {name} has an invalid name or version id: {name}");
+    }
+    ok
+}
+
 /// The packs of a fetched source: the index (`true`), else what `discover_packs` finds
 /// (`false`, no version). An index entry needs its `pack.yaml`, as in `discover_packs`.
 fn listed_packs(dir: &Path) -> (Vec<IndexPack>, bool) {
@@ -304,9 +310,7 @@ fn listed_packs(dir: &Path) -> (Vec<IndexPack>, bool) {
                 .packs
                 .into_iter()
                 .filter(|p| {
-                    valid_name(&p.name)
-                        && safe(&p.path)
-                        && dir.join(&p.path).join("pack.yaml").is_file()
+                    named(&p.name) && safe(&p.path) && dir.join(&p.path).join("pack.yaml").is_file()
                 })
                 .collect();
             return (packs, true);
@@ -316,8 +320,9 @@ fn listed_packs(dir: &Path) -> (Vec<IndexPack>, bool) {
         .into_iter()
         .filter_map(|d| {
             let path = d.strip_prefix(dir).ok()?.to_string_lossy().into_owned();
-            Some(IndexPack {
-                name: d.file_name()?.to_string_lossy().into_owned(),
+            let name = d.file_name()?.to_string_lossy().into_owned();
+            named(&name).then_some(IndexPack {
+                name,
                 path,
                 version: None,
             })
@@ -894,6 +899,21 @@ mod tests {
         refused("master", &with("master".into()), "master");
         refused("a:b", &with(commit_id()), "a:b");
         assert!(!registry.exists(), "nothing was created");
+    }
+
+    #[test]
+    fn every_embedded_pack_has_a_valid_name() {
+        let dir = armadai_core::starter::builtin_starters_dir();
+        let names: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path().join("pack.yaml").is_file())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.len() >= 8, "{names:?}");
+        let bad: Vec<_> = names.iter().filter(|n| !valid_name(n)).collect();
+        assert!(bad.is_empty(), "{bad:?}");
+        assert!(!valid_name("Demo_Pack") && !valid_name(&"a".repeat(65)));
     }
 
     #[test]

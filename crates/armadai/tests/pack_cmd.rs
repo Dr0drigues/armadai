@@ -959,7 +959,16 @@ fn update_with_an_unknown_version_names_it() {
     let r = env.run(&["pack", "update", "9.9.9"], &[]);
     assert_ne!(r.code, Some(0));
     assert!(
-        r.err_has("Error: no cached version of pack demo matches 9.9.9 (cached: 1.0.0): run `armadai pack sync`, or change pack.version in .armadai/project.yaml"),
+        r.err_has("Error: pack demo 9.9.9 is outside the range ^1.0.0 of .armadai/project.yaml; nothing was changed: change pack.version there to move to it"),
+        "{}",
+        r.err
+    );
+    assert_eq!(env.lock_bytes(), before);
+    // inside the range but nowhere in the cache
+    let r = env.run(&["pack", "update", "1.5.0"], &[]);
+    assert_ne!(r.code, Some(0));
+    assert!(
+        r.err_has("Error: no cached version of pack demo matches 1.5.0 (cached: 1.0.0): run `armadai pack sync`, or change pack.version in .armadai/project.yaml"),
         "{}",
         r.err
     );
@@ -1883,10 +1892,7 @@ fn init_pack_records_its_origin() {
     let demo = &rec["packs"]["demo"];
     assert_eq!(demo["source"], env.url());
     assert_eq!(demo["version"], "1.0.0");
-    assert!(
-        demo["id"].as_str().unwrap().starts_with("sha256:"),
-        "{demo}"
-    );
+    assert_eq!(demo["id"], env.head(), "{demo}");
     assert_eq!(
         demo["files"]["agents/a.md"],
         sha(b"---\ndescription: from the pack\n---\nA\n")
@@ -1930,6 +1936,10 @@ fn init_pack_from_a_folder_records_the_folder_and_not_a_kept_file() {
         std::fs::canonicalize(&dir).unwrap().to_str().unwrap()
     );
     assert!(demo.get("version").is_none(), "{demo}");
+    assert!(
+        demo["id"].as_str().unwrap().starts_with("sha256:"),
+        "{demo}"
+    );
     let files = demo["files"].as_object().unwrap();
     assert_eq!(
         files.keys().map(String::as_str).collect::<Vec<_>>(),
@@ -2245,4 +2255,97 @@ fn a_failing_link_brings_back_the_output_it_removed() {
     assert_ne!(r.code, Some(0), "{}{}", r.out, r.err);
     assert!(r.err_has(NOT_APPLIED_COPY), "{}", r.err);
     assert_eq!(std::fs::read(&old).unwrap(), compiled);
+}
+
+#[test]
+fn update_outside_the_range_refuses_even_when_cached() {
+    let (env, _second) = two_projects();
+    env.release("2.0.0", &[], &[]);
+    ok(&env.run(&["pack", "sync"], &[]));
+    let before = tree(&env.root());
+    let r = env.run(&["pack", "update", "2.0.0"], &[]);
+    assert_ne!(r.code, Some(0), "{}{}", r.out, r.err);
+    assert!(
+        r.err_has("Error: pack demo 2.0.0 is outside the range ^1.0.0 of .armadai/project.yaml; nothing was changed: change pack.version there to move to it"),
+        "{}",
+        r.err
+    );
+    assert_eq!(tree(&env.root()), before);
+}
+
+#[test]
+fn update_refuses_several_copied_packs() {
+    let env = Env::new();
+    env.copied(&[]);
+    put(
+        &env.root(),
+        ".armadai/link-manifest.yaml",
+        &format!(
+            "version: 1\npacks:\n  demo: {{ source: '{URL}', version: 1.0.0 }}\n  other: {{ source: '{URL}', version: 1.0.0 }}\n"
+        ),
+    );
+    let before = tree(&env.root().join(".armadai"));
+    let r = env.run(&["pack", "update"], &[]);
+    assert_ne!(r.code, Some(0), "{}{}", r.out, r.err);
+    assert!(
+        r.err_has("Error: several packs were installed by copy in this project: pack update takes one; nothing was changed"),
+        "{}",
+        r.err
+    );
+    assert_eq!(tree(&env.root().join(".armadai")), before);
+}
+
+#[test]
+fn status_classifies_like_update() {
+    let env = Env::new();
+    let empty = env.other_project("empty");
+    put(&empty, ".armadai/project.yaml", "schema_version: 1\n");
+    let held = env.other_project("held");
+    put(&held, ".armadai/project.yaml", "schema_version: 1\n");
+    put(&held, ".armadai/agents/a.md", &agent("A"));
+    for (dir, line) in [
+        (
+            &empty,
+            "this project references no pack and records no installed pack: use `armadai pack add <name>` or `armadai init --pack <name>`",
+        ),
+        (
+            &held,
+            "the origin of this project's pack is unknown here (.armadai/link-manifest.yaml has no packs: section, as after a fresh clone): pack update guesses nothing, nothing was changed",
+        ),
+    ] {
+        let status = env.run_in(dir, &["pack", "status"], &[]);
+        assert_eq!(status.out, format!("{line}\n"), "{}", status.err);
+        let update = env.run_in(dir, &["pack", "update"], &[]);
+        assert_ne!(update.code, Some(0));
+        assert!(update.err_has(&format!("Error: {line}")), "{}", update.err);
+    }
+}
+
+#[test]
+fn a_badly_named_pack_is_left_out() {
+    let env = Env::new();
+    put(&env.origin(), "Demo_Pack/pack.yaml", "name: Demo_Pack\n");
+    put(&env.origin(), "demo/pack.yaml", "name: demo\n");
+    git(&env.origin(), &["add", "-A"]);
+    git(&env.origin(), &["commit", "-qm", "two packs"]);
+    env.registries(&[&env.url()]);
+    let r = env.run(&["pack", "sync"], &[]);
+    ok(&r);
+    assert!(
+        r.err_has("  warn: pack Demo_Pack has an invalid name or version id: Demo_Pack"),
+        "{}",
+        r.err
+    );
+    let text = std::fs::read_to_string(env.versions_path(&env.url())).unwrap();
+    assert!(text.contains("demo:"), "{text}");
+    assert!(!text.contains("Demo_Pack"), "{text}");
+}
+
+#[test]
+fn init_pack_from_git_records_the_commit() {
+    let env = Env::new();
+    env.copied(&[]);
+    let id = record(&env)["packs"]["demo"]["id"].clone();
+    assert_eq!(id, env.head());
+    assert_eq!(id.as_str().unwrap().len(), 40);
 }

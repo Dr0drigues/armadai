@@ -152,21 +152,24 @@ fn locate(
 
 /// A project with no record of its pack: M8 when it holds what a pack could have
 /// installed (a fresh clone loses the manifest, which is not versioned), else M9.
-fn unknown(root: &Path) -> anyhow::Error {
+/// `pack status` says the same.
+pub(super) fn unknown_text(root: &Path) -> String {
     let holds_more = native_pack::read_listed(&root.join(".armadai"), false)
         .is_ok_and(|f| f.iter().any(|(r, ..)| r != Path::new(PROJECT)));
     if holds_more {
-        anyhow::anyhow!(
-            "the origin of this project's pack is unknown here (.armadai/link-manifest.yaml has \
-             no packs: section, as after a fresh clone): pack update guesses nothing, nothing \
-             was changed"
-        )
+        "the origin of this project's pack is unknown here (.armadai/link-manifest.yaml has \
+         no packs: section, as after a fresh clone): pack update guesses nothing, nothing \
+         was changed"
+            .to_string()
     } else {
-        anyhow::anyhow!(
-            "this project references no pack and records no installed pack: use \
-             `armadai pack add <name>` or `armadai init --pack <name>`"
-        )
+        "this project references no pack and records no installed pack: use \
+         `armadai pack add <name>` or `armadai init --pack <name>`"
+            .to_string()
     }
+}
+
+fn unknown(root: &Path) -> anyhow::Error {
+    anyhow::anyhow!(unknown_text(root))
 }
 
 /// Refuse to follow a symbolic link on the way to `rel` under `base`.

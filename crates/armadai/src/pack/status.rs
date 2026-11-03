@@ -165,11 +165,7 @@ pub fn report(root: &Path, registry: &Path, config: &Path) -> anyhow::Result<Str
         blocks.push(b);
     }
     if blocks.is_empty() {
-        return Ok(
-            "this project references no pack and records no installed pack: use \
-                   `armadai pack add <name>` or `armadai init --pack <name>`\n"
-                .to_string(),
-        );
+        return Ok(format!("{}\n", super::copy::unknown_text(root)));
     }
     Ok(blocks.join("\n"))
 }

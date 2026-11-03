@@ -343,11 +343,24 @@ fn record_origin(
         .into_iter()
         .find(|s| dir.starts_with(cache.join(cache_key(&s.url))))
         .map(|s| s.url);
+    let mut id = None;
     let (source, version) = match url {
         Some(url) => {
             let version = crate::pack::cache::read_index(&cache.join(cache_key(&url)))
                 .and_then(|i| i.packs.into_iter().find(|p| p.name == name))
                 .and_then(|p| p.version);
+            // what `pack update` records for a versioned git source: the commit
+            let clone = cache.join(cache_key(&url));
+            if version.is_some() && clone.join(".git").exists() {
+                id = std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&clone)
+                    .args(["rev-parse", "HEAD"])
+                    .output()
+                    .ok()
+                    .filter(|o| o.status.success())
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+            }
             (crate::pack::source::recorded(&url), version)
         }
         None if !is_path(asked)
@@ -369,7 +382,10 @@ fn record_origin(
         crate::linker::manifest::InstalledPack {
             source,
             version,
-            id: Some(crate::pack::cache::tree_digest(dir)?),
+            id: match id {
+                Some(id) => Some(id),
+                None => Some(crate::pack::cache::tree_digest(dir)?),
+            },
             files,
         },
     )

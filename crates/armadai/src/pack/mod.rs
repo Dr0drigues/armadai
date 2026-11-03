@@ -271,6 +271,26 @@ fn others_lines(config: &Path, root: &Path, lock: &PackLock) -> anyhow::Result<V
     Ok(lines)
 }
 
+/// M31: `version` must be inside the range of `project.yaml`.
+fn in_range(d: &status::Declared, version: &str) -> anyhow::Result<()> {
+    let range = resolve::parse_range(&d.version).map_err(anyhow::Error::msg)?;
+    let one = Available {
+        version: version.trim().to_string(),
+        tag: None,
+        commit: None,
+        digest: None,
+    };
+    ensure!(
+        resolve::best(&range, std::slice::from_ref(&one)).is_some(),
+        "pack {} {} is outside the range {} of .armadai/project.yaml; nothing was changed: \
+         change pack.version there to move to it",
+        d.name,
+        one.version,
+        d.version
+    );
+    Ok(())
+}
+
 /// `pack update`: a project that references a pack is moved on its lock, one that
 /// installed a pack by copy goes through [`copy::update_in`].
 pub fn update_in(
@@ -286,6 +306,10 @@ pub fn update_in(
     };
     let source = source_of(known, &source::real_url_in(&d.source, known)?);
     sync_or_stop(registry, &source)?;
+    // The range comes first: an exact version outside it is refused cached or not.
+    if let Some(v) = version.filter(|v| semver::Version::parse(v.trim()).is_ok()) {
+        in_range(&d, v)?;
+    }
     let (best, path) = resolve_in(
         registry,
         &source,
@@ -294,15 +318,7 @@ pub fn update_in(
         true,
     )?;
     if version.is_some() {
-        let range = resolve::parse_range(&d.version).map_err(anyhow::Error::msg)?;
-        ensure!(
-            resolve::best(&range, std::slice::from_ref(&best)).is_some(),
-            "pack {} {} is outside the range {} of .armadai/project.yaml; nothing was changed: \
-             change pack.version there to move to it",
-            d.name,
-            best.version,
-            d.version
-        );
+        in_range(&d, &best.version)?;
     }
     cache::ensure_snapshot_in(registry, &source, &d.name, &path, &best)?;
     let new = lock_of(&d.name, &d.source, &best);
