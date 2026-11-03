@@ -36,7 +36,13 @@ pub fn path_in(config: &Path) -> PathBuf {
     config.join(FILE)
 }
 
-/// Empty when the file is absent.
+/// Only `format` is read first, so a newer format with new fields still says so.
+#[derive(Deserialize)]
+struct Head {
+    format: u32,
+}
+
+/// Empty when the file is absent; an unreadable or foreign file is an error.
 pub fn load_in(config: &Path) -> anyhow::Result<Vec<Referent>> {
     let p = path_in(config);
     let text = match std::fs::read_to_string(&p) {
@@ -44,27 +50,48 @@ pub fn load_in(config: &Path) -> anyhow::Result<Vec<Referent>> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
         Err(e) => anyhow::bail!("{}: {e}", p.display()),
     };
-    let doc: Doc = armadai_model::yaml::from_str(&text)
-        .map_err(|e| anyhow::anyhow!("{}: {e}", p.display()))?;
-    if doc.format != 1 {
+    let bad = |e: &dyn std::fmt::Display| anyhow::anyhow!("{}: {e}", p.display());
+    let head: Head = armadai_model::yaml::from_str(&text).map_err(|e| bad(&e))?;
+    if head.format != 1 {
         anyhow::bail!(
             "{}: unsupported format {} (expected 1)",
             p.display(),
-            doc.format
+            head.format
         );
     }
+    let doc: Doc = armadai_model::yaml::from_str(&text).map_err(|e| bad(&e))?;
     Ok(doc.referents)
 }
 
-/// Add or keep `(pack, source, project)` (project canonicalised); never removes an entry.
+/// Add or keep `(pack, source, project)` (project made absolute, canonical when it
+/// exists); never removes an entry. Read and write run under an exclusive lock on
+/// `pack-referents.yaml.lock`, so concurrent calls lose nothing.
 pub fn record_in(config: &Path, mut r: Referent) -> anyhow::Result<()> {
-    r.project = std::fs::canonicalize(&r.project).unwrap_or(r.project);
+    let abs = std::path::absolute(&r.project).unwrap_or(r.project);
+    r.project = std::fs::canonicalize(&abs).unwrap_or(abs);
+    std::fs::create_dir_all(config)?;
+    let lock = path_in(config).with_extension("yaml.lock");
+    if std::fs::symlink_metadata(&lock).is_ok_and(|m| m.file_type().is_symlink()) {
+        anyhow::bail!(
+            "{} is a symbolic link; it is not written through",
+            lock.display()
+        );
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock)
+        .map_err(|e| anyhow::anyhow!("opening the lock {}: {e}", lock.display()))?;
+    file.lock()
+        .map_err(|e| anyhow::anyhow!("locking {}: {e}", lock.display()))?;
     let mut all = load_in(config)?;
     if all.contains(&r) {
         return Ok(());
     }
     all.push(r);
-    write(config, all)
+    write(config, all) // dropping `file` releases the lock
 }
 
 /// Written whole (`.tmp` then rename), never through a symbolic link.
@@ -84,7 +111,6 @@ fn write(config: &Path, referents: Vec<Referent>) -> anyhow::Result<()> {
         referents,
     })
     .map_err(|e| anyhow::anyhow!("{e}"))?;
-    std::fs::create_dir_all(config)?;
     std::fs::write(&tmp, text)?;
     std::fs::rename(&tmp, &p)?;
     Ok(())
@@ -247,10 +273,78 @@ mod tests {
         std::fs::write(&target, "format: 1\n").unwrap();
         std::os::unix::fs::symlink(&target, path_in(&cfg)).unwrap();
         let err = record_in(&cfg, r("demo", t.path())).unwrap_err();
-        assert!(
-            err.to_string()
-                .ends_with("is a symbolic link; it is not written through")
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "{} is a symbolic link; it is not written through",
+                path_in(&cfg).display()
+            )
         );
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "format: 1\n");
+    }
+
+    #[test]
+    fn an_unreadable_or_foreign_file_fails_record_and_is_left_alone() {
+        let t = tempfile::tempdir().unwrap();
+        let cfg = t.path().join("cfg");
+        std::fs::create_dir_all(&cfg).unwrap();
+        let p = path_in(&cfg);
+        let proj = project(t.path(), "a", Some("demo"));
+        let shown = p.display();
+        for (text, msg) in [
+            ("{{{ user data", None),
+            (
+                "format: 2\nreferents: []\n",
+                Some(format!("{shown}: unsupported format 2 (expected 1)")),
+            ),
+            (
+                "format: 2\nsomething_new: 1\n",
+                Some(format!("{shown}: unsupported format 2 (expected 1)")),
+            ),
+            ("format: 1\nextra: 1\n", None),
+        ] {
+            std::fs::write(&p, text).unwrap();
+            let err = record_in(&cfg, r("demo", &proj)).unwrap_err().to_string();
+            match msg {
+                Some(m) => assert_eq!(err, m),
+                None => assert!(err.starts_with(&format!("{shown}: ")), "{err}"),
+            }
+            assert_eq!(std::fs::read_to_string(&p).unwrap(), text);
+            assert!(load_in(&cfg).is_err());
+        }
+    }
+
+    #[test]
+    fn concurrent_records_keep_every_entry() {
+        let t = tempfile::tempdir().unwrap();
+        let cfg = t.path().join("cfg");
+        let projects: Vec<PathBuf> = (0..8)
+            .map(|i| project(t.path(), &format!("p{i}"), Some("demo")))
+            .collect();
+        for _ in 0..10 {
+            let _ = std::fs::remove_dir_all(&cfg);
+            std::thread::scope(|s| {
+                for p in &projects {
+                    let (cfg, p) = (&cfg, p);
+                    s.spawn(move || record_in(cfg, r("demo", p)).unwrap());
+                }
+            });
+            let mut got: Vec<_> = load_in(&cfg)
+                .unwrap()
+                .into_iter()
+                .map(|x| x.project)
+                .collect();
+            let mut want = projects.clone();
+            got.sort();
+            want.sort();
+            assert_eq!(got, want);
+        }
+    }
+
+    #[test]
+    fn a_relative_project_is_stored_absolute() {
+        let t = tempfile::tempdir().unwrap();
+        record_in(t.path(), r("demo", Path::new("no/such/dir"))).unwrap();
+        assert!(load_in(t.path()).unwrap()[0].project.is_absolute());
     }
 }
