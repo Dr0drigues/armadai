@@ -378,13 +378,14 @@ pub fn snapshot_dir_in(registry: &Path, url: &str, pack: &str, id: &str) -> Path
 /// `available.digest`. No network.
 pub fn ensure_snapshot_in(registry: &Path, source: &RegistrySource, pack: &str, path: &str, available: &Available) -> anyhow::Result<PathBuf>;
 ```
-`extract_archive`, `reject_escaping_links`, `EXTRACT_LIMITS` et `private_tempdir` de `starters_registry` passent en `pub(crate)` ; aucun nouveau code d'extraction. À chaque `sync_source_in` d'une source archive, chaque pack listé est figé (le cache sera remplacé par la synchronisation suivante).
+Avant tout `git` ou `create_dir_all`, `ensure_snapshot_in` valide le nom du pack (`valid_name`) et l'identifiant (`valid_id` : 40 ou 64 caractères hexadécimaux minuscules, ou `sha256-<64 hex>`) ; un refus donne M27. Les tâches 9, 13 et 15, qui lisent un commit dans le verrou, passent par cette même validation. `extract_archive`, `reject_escaping_links`, `EXTRACT_LIMITS` et `private_tempdir` de `starters_registry` passent en `pub(crate)` ; aucun nouveau code d'extraction. À chaque `sync_source_in` d'une source archive, chaque pack listé est figé (le cache sera remplacé par la synchronisation suivante).
 
 Tests attendus :
 - `two_versions_live_side_by_side` : origine taguée `demo-v1.0.0` (agent `a.md` = `A1`) puis `demo-v1.1.0` (`A2`) ; deux `ensure_snapshot_in` → deux dossiers, `A1` et `A2`. Mutation : extraire `HEAD` au lieu du commit → deux fois `A2`, rouge.
 - `a_snapshot_is_never_rewritten` : un instantané existant n'est pas réextrait (contenu modifié à la main dans l'instantané conservé après un second appel). Mutation : réextraire toujours → rouge.
 - `an_interrupted_snapshot_is_never_visible` : extraction refusée (lien sortant dans l'arbre, `reject_escaping_links`) → aucun dossier `<id>` créé, aucun dossier de transit laissé. Mutation : extraire directement dans `<id>`.
 - `an_archive_snapshot_checks_its_digest` : `available.digest` ≠ empreinte du cache → erreur, pas d'instantané. Mutation : ne pas comparer.
+- `a_bad_name_or_id_runs_nothing` : un nom contenant `..` ou `/`, un identifiant `../x`, en majuscules ou de 39 caractères → M27, aucun `git` lancé, aucun dossier créé. Mutation : valider après `create_dir_all` → un dossier apparaît, rouge.
 
 Commit : `feat(starters): keep one snapshot per pack version`
 
@@ -422,8 +423,17 @@ impl Resolved { /// commit, else digest: what `link` reads (the tag is never tru
 pub fn read(root: &Path) -> anyhow::Result<Option<PackLock>>;
 /// Written whole (`.tmp` then rename), never through a symbolic link.
 pub fn write(root: &Path, lock: &PackLock) -> anyhow::Result<()>;
-/// The commit a tag points to now in the clone differs from the lock's (`pack sync` only).
-pub fn tag_moved(clone: &Path, resolved: &Resolved) -> anyhow::Result<Option<String>>;
+pub enum TagState {
+    /// The tag now points to this other commit.
+    Moved(String),
+    /// The tag no longer exists in the clone.
+    Gone,
+}
+/// Whether the lock's tag still points to its commit in the clone (`pack sync` only).
+/// The tag is first checked as `<pack>-v<semver>` (`pack` not empty), then read by
+/// `git rev-parse --verify --quiet --end-of-options refs/tags/<tag>^{commit}`: exit
+/// code 1 is `Gone`, any other failure an error built by `git_failure`.
+pub fn tag_moved(clone: &Path, pack: &str, resolved: &Resolved) -> anyhow::Result<Option<TagState>>;
 ```
 Forme du fichier (nom proposé, question Q2) :
 ```yaml
@@ -442,7 +452,7 @@ Tests attendus :
 - `no_match_is_none` : `^3` → `None`.
 - `lock_roundtrips_and_refuses_unknown_keys` : écriture puis lecture égales ; une clé `branch:` refusée. Mutation : retirer `deny_unknown_fields`.
 - `lock_id_is_the_commit_not_the_tag` : `Resolved { tag: Some(t), commit: Some(c) }.id() == c`. Mutation : rendre le tag.
-- `tag_moved_is_reported` : tag déplacé dans un clone local (`git tag -f`) → `Some(nouveau commit)` ; tag en place → `None`. Mutation : comparer le tag à lui-même.
+- `tag_moved_is_reported` : tag déplacé dans un clone local (`git tag -f`) → `Some(TagState::Moved(nouveau commit))` ; tag supprimé (`git tag -d`) → `Some(TagState::Gone)` ; tag en place → `None` ; tag qui n'a pas la forme `<pack>-v<semver>`, ou nom de pack vide → erreur, sans lancer `git`. Mutations : comparer le tag à lui-même ; traiter tout échec de `git` comme `Gone`.
 - `write_refuses_a_link` : `.armadai/pack.lock` lien symbolique → erreur, cible intacte.
 
 Commit : `feat(pack): resolve a version range and lock it`
@@ -659,7 +669,7 @@ pub enum PackCommand {
     // Add, Update: task 15 ; New: task 17
 }
 ```
-`pack sync` : sources = `effective_starter_sources()` ∪ `pack.source` du projet courant s'il y en a un (note M2 quand elle n'est pas dans `registries.yaml`) ; `cache::sync_source` pour chacune (échec : `sync_warning` existant, on continue, sortie non nulle si une a échoué) ; ligne M1 par source ; pour le projet courant en mode référence : `ensure_snapshot` du commit verrouillé, avertissement M3 si son tag a bougé (verrou inchangé) ; puis le signal (M4) s'il y a lieu.
+`pack sync` : sources = `effective_starter_sources()` ∪ `pack.source` du projet courant s'il y en a un (note M2 quand elle n'est pas dans `registries.yaml`) ; `cache::sync_source` pour chacune (échec : `sync_warning` existant, on continue, sortie non nulle si une a échoué) ; ligne M1 par source ; pour le projet courant en mode référence : `ensure_snapshot` du commit verrouillé (validé par `valid_id`, tâche 5), puis `tag_moved(clone, <nom de pack du verrou>, resolved)` : `Moved` → M3, `Gone` → M3b ; le verrou n'est jamais modifié ; puis le signal (M4) s'il y a lieu.
 `pack status` : M17, à partir du verrou ou de la section `packs:`, de `versions.yaml` et du registre des référents ; ne lance aucun processus.
 `pack::status` :
 ```rust
@@ -675,6 +685,8 @@ pub fn note(n: &Newer) -> String; // M4
 Tests attendus (intégration, `crates/armadai/tests/pack_cmd.rs` nouveau) :
 - `sync_refreshes_and_reports` (critère 11, bout à bout) : origine `file://` dans `registries.yaml` ; `pack sync` → M1 en ligne entière ; commit de plus dans l'origine ; `pack sync` → `versions.yaml` gagne la version.
 - `sync_signals_a_moved_tag` (critère 2) : verrou sur `demo-v1.0.0` ; tag déplacé dans l'origine (`git tag -f`) ; `pack sync` → M3 en ligne entière, `.armadai/pack.lock` identique octet pour octet. Mutation : réécrire le verrou → rouge.
+- `sync_signals_a_gone_tag` : tag supprimé dans l'origine (`git tag -d`) puis `pack sync` → M3b en ligne entière, verrou identique octet pour octet. Mutation : émettre M3 pour `Gone` → rouge.
+- `sync_reports_an_unreadable_file` : un index ou un `versions.yaml` illisible → M23 (`  warn: <chemin> is not readable: <erreur>`, tâche 4) en ligne entière. Mutation : avaler l'erreur en silence → rouge.
 - `status_and_the_signal_touch_no_network` (critère 17) : `PATH` préfixé d'un dossier où `git` et `curl` sont des scripts qui écrivent un témoin puis échouent ; `pack status` (sortie M17 en égalité de lignes) → aucun témoin. Mutation : lister les tags par `git` dans `status` → témoin présent, rouge. (Le procédé reprend celui du test « link sans réseau » existant s'il en existe un : à chercher par `/usr/bin/grep -rln "network" crates/armadai/tests` ; sinon celui-ci.)
 - `status_lists_referents_and_flags_the_missing` (critère 10) : deux référents, un supprimé → les deux lignes M12/M17, `(missing)` sur le second.
 - `sync_continues_after_a_failing_source` : deux sources, la première invalide → la seconde est synchronisée, sortie non nulle, avertissement existant masquant les secrets.
@@ -839,6 +851,17 @@ Commit : `docs(pack): document pack modes, commands and variables`
 - **M20** (diagnostics) : a `pack-empty-source` : message ``pack.source` is empty``, hint `the URL of the pack's source, as in registries.yaml` ; b `pack-empty-version` : message ``pack.version` is empty``, hint `latest, a version such as 1.2.3, or a range such as ^1.3`
 - **M21** (aide) : `pack` : `Install, refresh, update and create starter packs` ; les lignes `///` des sous-commandes des tâches 13, 15 et 17.
 - **M22** (vue effective, `NestedPack`) : `pack <name>: its own project.yaml references a pack (pack:), which is not supported`
+
+Textes ajoutés en cours d'exécution, **validés par Dimitri le 2026-11-03** :
+- **M3b** (`pack sync`, tag disparu ; décision « Avertir ») : `warn: tag <tag> of pack <name> no longer exists, .armadai/pack.lock keeps <commit12>`
+- **M23** (index ou `versions.yaml` illisible, tâche 4) : `  warn: <chemin> is not readable: <erreur>`
+- **M24** : `pack <pack> has a version without commit or digest`
+- **M25** : `pack <pack> <version> has no commit`
+- **M26** : `the cache no longer holds pack <pack> <version> (digest <found>): run \`armadai pack sync\``
+- **M27** (`valid_name`/`valid_id`, tâche 5) : `pack <pack> has an invalid name or version id: <valeur>`
+- **M28** (`parse_range`, tâche 6) : `` `<s>` is not `latest`, a version or a version range: <erreur semver> ``
+- **M29** : `<chemin> is a symbolic link; it is not written through`
+- **M30** (lecture du verrou, tâche 6) : `.armadai/pack.lock: <erreur YAML>`
 
 ## 6. Ce que le plan laisse, et pourquoi
 
