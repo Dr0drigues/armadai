@@ -78,6 +78,7 @@ impl Env {
             .env("HOME", self.dir.path().join("home"))
             .env("ARMADAI_CONFIG_DIR", self.dir.path().join("config"))
             .env_remove("ARMADAI_VAR_DATA")
+            .env_remove("ARMADAI_VAR_DATA_DIR")
             .envs(envs.iter().copied())
             .args(args)
             .write_stdin(stdin.to_string())
@@ -490,4 +491,239 @@ fn the_gate_refuses_when_the_pack_view_cannot_be_opened() {
             "permissionDecisionReason": "the project's pack cannot be read, so the delegation policy cannot be checked: pack demo 1.0.0 (111111111111) is not in the local cache: run `armadai pack sync`",
         }})
     );
+}
+
+// Pack variables in the keys of `native` and in the `vars:` of template instances.
+
+const KEYS_MANIFEST: &str = "schema_version: 1\ntargets: [claude, opencode]\nnative:\n  claude:\n    env:\n      \"{{var.data-dir}}/x\": \"1\"\n  opencode:\n    permission:\n      external_directory:\n        \"{{var.data-dir}}/**\": allow\n";
+const E2: &str = "Error: project.yaml: under native, the key \"{{var.data-dir}}/x\" uses variable data-dir, which is empty or set by none of ARMADAI_VAR_DATA_DIR, .armadai/vars.local.yaml, .armadai/vars.yaml: a key never takes an empty value";
+
+fn keys_env(extra: &[(&str, &str)]) -> Env {
+    let mut files = vec![(".armadai/project.yaml", KEYS_MANIFEST)];
+    files.extend_from_slice(extra);
+    Env::new(&files)
+}
+
+fn whole(env: &Env) -> BTreeMap<PathBuf, Vec<u8>> {
+    tree(&env.root())
+}
+
+fn stderr(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+fn opencode_key(env: &Env) -> Value {
+    let v: Value = serde_json::from_str(&env.read("opencode.json")).unwrap();
+    v["permission"]["external_directory"].clone()
+}
+
+#[test]
+fn a_variable_in_a_native_key_is_rendered_by_priority() {
+    // distinct values per layer: env > vars.local.yaml > vars.yaml
+    let layers = [
+        (&[][..], "/srv/shared"),
+        (
+            &[(".armadai/vars.local.yaml", "data-dir: /srv/local\n")][..],
+            "/srv/local",
+        ),
+    ];
+    for (local, want) in layers {
+        let mut files = vec![(".armadai/vars.yaml", "data-dir: /srv/shared\n")];
+        files.extend_from_slice(local);
+        let env = keys_env(&files);
+        env.ok(&["link"], &[]);
+        assert_eq!(opencode_key(&env), json!({ format!("{want}/**"): "allow" }));
+        let settings: Value = serde_json::from_str(&env.read(".claude/settings.json")).unwrap();
+        assert_eq!(settings["env"], json!({ format!("{want}/x"): "1" }));
+        for f in ["opencode.json", ".claude/settings.json"] {
+            assert!(!env.read(f).contains("{{"), "{f}");
+        }
+    }
+    let env = keys_env(&[
+        (".armadai/vars.yaml", "data-dir: /srv/shared\n"),
+        (".armadai/vars.local.yaml", "data-dir: /srv/local\n"),
+    ]);
+    env.ok(&["link"], &[("ARMADAI_VAR_DATA_DIR", "/srv/env")]);
+    assert_eq!(opencode_key(&env), json!({"/srv/env/**": "allow"}));
+    let settings: Value = serde_json::from_str(&env.read(".claude/settings.json")).unwrap();
+    assert_eq!(settings["env"], json!({"/srv/env/x": "1"}));
+}
+
+#[test]
+fn two_native_keys_rendering_the_same_text_stop_link_before_any_write() {
+    let manifest = |extra: &str| {
+        format!(
+            "schema_version: 1\ntargets: [opencode]\nnative:\n  opencode:\n    permission:\n      external_directory:\n        \"{{{{var.a}}}}/**\": allow\n{extra}"
+        )
+    };
+    let env = Env::new(&[
+        (".armadai/project.yaml", &manifest("")),
+        (".armadai/vars.yaml", "a: /srv/data\n"),
+    ]);
+    env.ok(&["link"], &[]);
+    assert_eq!(opencode_key(&env), json!({"/srv/data/**": "allow"}));
+
+    put(
+        &env.root(),
+        ".armadai/project.yaml",
+        &manifest("        \"/srv/data/**\": deny\n"),
+    );
+    let before = whole(&env);
+    let out = env.run(&["link"], &[], "");
+    assert_eq!(out.status.code(), Some(1));
+    let err = stderr(&out);
+    assert!(
+        err.lines().any(|l| l
+            == "Error: project.yaml: under native, the keys \"{{var.a}}/**\" and \"/srv/data/**\" both render as \"/srv/data/**\""),
+        "{err}"
+    );
+    // opencode.json and the manifest are byte-identical: nothing was written
+    let mut after = whole(&env);
+    let project = PathBuf::from(".armadai/project.yaml");
+    assert_ne!(after.remove(&project), None);
+    let mut before = before;
+    before.remove(&project);
+    assert_eq!(after, before);
+}
+
+#[test]
+fn an_empty_or_unset_variable_in_a_native_key_stops_link_before_any_write() {
+    // a first good link, so that "nothing written" is a comparison with real outputs
+    let env = keys_env(&[(".armadai/vars.yaml", "data-dir: /srv/shared\n")]);
+    env.ok(&["link"], &[]);
+    let before = whole(&env);
+    let cases: [(&str, Option<&str>, &str); 3] = [
+        ("unset", None, ""),
+        ("empty in vars.yaml", None, "data-dir: ''\n"),
+        (
+            "empty in the environment",
+            Some(""),
+            "data-dir: /srv/shared\n",
+        ),
+    ];
+    for (name, envv, vars) in cases {
+        put(&env.root(), ".armadai/vars.yaml", vars);
+        let envs: Vec<(&str, &str)> = envv
+            .map(|v| ("ARMADAI_VAR_DATA_DIR", v))
+            .into_iter()
+            .collect();
+        let out = env.run(&["link"], &envs, "");
+        assert_eq!(out.status.code(), Some(1), "{name}");
+        let err = stderr(&out);
+        assert!(err.lines().any(|l| l == E2), "{name}: {err}");
+        let mut after = whole(&env);
+        let mut want = before.clone();
+        after.remove(Path::new(".armadai/vars.yaml"));
+        want.remove(Path::new(".armadai/vars.yaml"));
+        assert_eq!(after, want, "{name}");
+    }
+
+    // the same variable in a value, not a key: link succeeds with an empty value
+    let env = Env::new(&[
+        (
+            ".armadai/project.yaml",
+            "schema_version: 1\ntargets: [claude]\nnative:\n  claude:\n    permissions:\n      additionalDirectories: [\"{{var.data-dir}}\"]\n",
+        ),
+        (".armadai/vars.yaml", "data-dir: ''\n"),
+    ]);
+    env.ok(&["link"], &[]);
+    let settings: Value = serde_json::from_str(&env.read(".claude/settings.json")).unwrap();
+    assert_eq!(
+        settings["permissions"]["additionalDirectories"],
+        json!([""])
+    );
+    std::fs::remove_file(env.root().join(".armadai/vars.yaml")).unwrap();
+    let text = env.ok(&["link"], &[]);
+    let line = "claude: var data-dir: approximated (set by none of ARMADAI_VAR_DATA_DIR, .armadai/vars.local.yaml, .armadai/vars.yaml: replaced by an empty value)";
+    assert!(text.lines().any(|l| l == line), "{text}");
+}
+
+#[test]
+fn a_native_key_with_a_dot_after_rendering_names_the_rendered_key() {
+    // R3: the refusal is the OpenCode adapter's, on the rendered key
+    let env = Env::new(&[
+        (
+            ".armadai/project.yaml",
+            "schema_version: 1\ntargets: [opencode]\nnative:\n  opencode:\n    \"{{var.k}}\": 1\n",
+        ),
+        (".armadai/vars.yaml", "k: a.b\n"),
+    ]);
+    let before = whole(&env);
+    let out = env.run(&["link"], &[], "");
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).lines().any(|l| l
+            == "Error: native.opencode key `a.b` contains a `.`: armadai cannot own it in opencode.json"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(whole(&env), before);
+}
+
+const TEMPLATE: &str = "---\ndescription: d\n---\nIn {{dir}}\n";
+
+fn instance_env(vars_block: &str, shared: &str) -> Env {
+    Env::new(&[
+        (
+            ".armadai/project.yaml",
+            "schema_version: 1\ntargets: [claude]\n",
+        ),
+        (".armadai/templates/t.md", TEMPLATE),
+        (
+            ".armadai/agents/r.md",
+            &format!("---\nfrom: t\n{vars_block}---\nbody\n"),
+        ),
+        (".armadai/vars.yaml", shared),
+    ])
+}
+
+#[test]
+fn an_instance_gets_rendered_vars_and_its_source_stays_unchanged() {
+    for (value, yaml, want) in [
+        ("/srv/data", "data-dir: /srv/data\n", "In /srv/data"),
+        ("a: b # c", "data-dir: 'a: b # c'\n", "In a: b # c"),
+    ] {
+        let env = instance_env("vars:\n  dir: \"{{var.data-dir}}\"\n", yaml);
+        let src = env.read(".armadai/agents/r.md");
+        env.ok(&["link"], &[]);
+        let out = env.read(".claude/agents/r.md");
+        assert!(out.lines().any(|l| l == want), "{value}: {out}");
+        assert!(!out.contains("{{"), "{out}");
+        assert_eq!(env.read(".armadai/agents/r.md"), src);
+    }
+}
+
+#[test]
+fn a_nested_or_list_value_in_instance_vars_is_refused_before_any_write() {
+    for block in [
+        "vars:\n  dir:\n    x: \"{{var.data-dir}}\"\n",
+        "vars:\n  dir:\n    - \"{{var.data-dir}}\"\n",
+    ] {
+        let env = instance_env(block, "data-dir: /srv/data\n");
+        let before = whole(&env);
+        let out = env.run(&["link"], &[], "");
+        assert_eq!(out.status.code(), Some(1), "{block}");
+        let err = stderr(&out);
+        assert!(
+            err.contains("invalid type") && err.contains("expected a string"),
+            "{block}: {err}"
+        );
+        assert_eq!(whole(&env), before, "{block}");
+    }
+}
+
+#[test]
+fn validate_keeps_pack_variables_literal_and_reports_no_error() {
+    let env = Env::new(&[
+        (".armadai/project.yaml", KEYS_MANIFEST),
+        (".armadai/templates/t.md", TEMPLATE),
+        (
+            ".armadai/agents/r.md",
+            "---\nfrom: t\nvars:\n  dir: \"{{var.data-dir}}\"\n---\nbody\n",
+        ),
+    ]);
+    let out = env.run(&["validate"], &[], "");
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert_eq!(out.status.code(), Some(0), "{text}{}", stderr(&out));
+    assert_eq!(text, "0 error(s), 0 warning(s)\n");
 }
