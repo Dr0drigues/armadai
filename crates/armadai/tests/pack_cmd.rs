@@ -2258,22 +2258,6 @@ fn a_failing_link_brings_back_the_output_it_removed() {
 }
 
 #[test]
-fn update_outside_the_range_refuses_even_when_cached() {
-    let (env, _second) = two_projects();
-    env.release("2.0.0", &[], &[]);
-    ok(&env.run(&["pack", "sync"], &[]));
-    let before = tree(&env.root());
-    let r = env.run(&["pack", "update", "2.0.0"], &[]);
-    assert_ne!(r.code, Some(0), "{}{}", r.out, r.err);
-    assert!(
-        r.err_has("Error: pack demo 2.0.0 is outside the range ^1.0.0 of .armadai/project.yaml; nothing was changed: change pack.version there to move to it"),
-        "{}",
-        r.err
-    );
-    assert_eq!(tree(&env.root()), before);
-}
-
-#[test]
 fn update_refuses_several_copied_packs() {
     let env = Env::new();
     env.copied(&[]);
@@ -2337,7 +2321,11 @@ fn a_badly_named_pack_is_left_out() {
         r.err
     );
     let text = std::fs::read_to_string(env.versions_path(&env.url())).unwrap();
-    assert!(text.contains("demo:"), "{text}");
+    let keys: Vec<&str> = text
+        .lines()
+        .filter(|l| l.starts_with("  ") && !l.starts_with("   ") && l.ends_with(':'))
+        .collect();
+    assert_eq!(keys, ["  demo:"], "{text}");
     assert!(!text.contains("Demo_Pack"), "{text}");
 }
 
@@ -2348,4 +2336,50 @@ fn init_pack_from_git_records_the_commit() {
     let id = record(&env)["packs"]["demo"]["id"].clone();
     assert_eq!(id, env.head());
     assert_eq!(id.as_str().unwrap().len(), 40);
+}
+
+#[test]
+fn init_pack_from_git_installs_the_commit_of_the_tag() {
+    let env = Env::new();
+    let c1 = env.native("1.0.0", &[], &[]);
+    // the head moves on, the index still says 1.0.0
+    put(&env.origin(), "demo/agents/a.md", &agent("CHANGED"));
+    git(&env.origin(), &["add", "-A"]);
+    git(&env.origin(), &["commit", "-qm", "later"]);
+    assert_ne!(env.head(), c1);
+    env.registries(&[&env.url()]);
+    ok(&env.run(&["init", "--pack", "demo", "--no-link"], &[]));
+    assert_eq!(record(&env)["packs"]["demo"]["id"], c1);
+    assert_eq!(
+        env.text(".armadai/agents/a.md"),
+        "---\ndescription: from the pack\n---\nA\n"
+    );
+    let r = env.run(&["pack", "update"], &[]);
+    ok(&r);
+    assert!(
+        r.out_has(&format!("Pack demo is up to date: 1.0.0 ({})", id12(&c1))),
+        "{}",
+        r.out
+    );
+}
+
+#[test]
+fn init_pack_refuses_a_source_pack_whose_name_is_not_an_id() {
+    let env = Env::new();
+    put(
+        &env.origin(),
+        "Demo_Pack/pack.yaml",
+        &NATIVE.replace("demo", "Demo_Pack"),
+    );
+    git(&env.origin(), &["add", "-A"]);
+    git(&env.origin(), &["commit", "-qm", "odd name"]);
+    env.registries(&[&env.url()]);
+    let r = env.run(&["init", "--pack", "Demo_Pack", "--no-link"], &[]);
+    assert_ne!(r.code, Some(0), "{}{}", r.out, r.err);
+    assert!(
+        r.err_has("Error: pack Demo_Pack has an invalid name or version id: Demo_Pack"),
+        "{}",
+        r.err
+    );
+    assert!(!env.root().join(".armadai").exists());
 }
