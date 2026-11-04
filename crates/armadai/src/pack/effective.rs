@@ -649,6 +649,33 @@ mod tests {
     }
 
     #[test]
+    fn an_instance_keeps_its_diagnostic_lines() {
+        let root = tempfile::tempdir().unwrap();
+        put(root.path(), ".armadai/project.yaml", MANIFEST);
+        put(
+            root.path(),
+            ".armadai/templates/t.md",
+            "---\ndescription: d\n---\nIn {{a}}\n",
+        );
+        let agent = ".armadai/agents/r.md";
+        // `vars:` spans 3 lines and holds a pack variable; the bad skill is on line 6
+        put(
+            root.path(),
+            agent,
+            "---\nfrom: t\nvars:\n  a: \"{{var.d}}\"\n  b: x\nskills: [nope]\n---\nbody\n",
+        );
+        let env = |k: &str| (k == "ARMADAI_VAR_D").then(|| "/srv/d".to_string());
+        let e = open_in(root.path(), Vars::Resolve(&env), root.path()).unwrap();
+        let ds = e.validate();
+        let d = ds
+            .iter()
+            .find(|d| d.code == "unknown-skill")
+            .unwrap_or_else(|| panic!("no unknown-skill: {ds:?}"));
+        assert_eq!(d.file, root.path().join(agent));
+        assert_eq!(d.line, Some(6), "{d:?}");
+    }
+
+    #[test]
     fn native_numbers_read_as_in_a_plain_project() {
         let native = "native:\n  claude:\n    big: 123456789012345678901234567890\n    dec: 1.10\n    int: 42\n    txt: '{{var.x}}'\n";
         let direct = tempfile::tempdir().unwrap();
