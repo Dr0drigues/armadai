@@ -466,6 +466,13 @@ mod tests {
         let mut v = json!({"{{var.a}}/**": "allow", "/srv/data/**": "deny"});
         let err = render_value(&mut v, &vals(&[("a", "/srv/data")]), &mut BTreeSet::new());
         assert_eq!(err, Err(E1.to_string()));
+        // reverse order: the plain key comes first
+        let mut v = json!({"/srv/data/**": "deny", "{{var.a}}/**": "allow"});
+        let err = render_value(&mut v, &vals(&[("a", "/srv/data")]), &mut BTreeSet::new());
+        assert_eq!(
+            err,
+            Err("under native, the keys \"/srv/data/**\" and \"{{var.a}}/**\" both render as \"/srv/data/**\"".to_string())
+        );
     }
 
     #[test]
