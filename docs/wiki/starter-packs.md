@@ -221,16 +221,19 @@ Two keys of one object that render the same text stop it too:
 Error: project.yaml: under native, the keys "{{var.a}}/**" and "/srv/data/**" both render as "/srv/data/**"
 ```
 
-A value keeps the rule above: an empty or unset variable gives an empty value and the
-`approximated` line. The same goes for a text value of `vars:` of an instance.
+A value is more lenient: a variable that is empty or not set gives an empty value, and only a
+variable that no layer sets (not one set to an empty value) adds the `approximated` line. The same
+goes for a text value of `vars:` of an instance.
 
-In an instance, `vars:` must be a block that starts a frontmatter line (`vars:` at column 0, its
-entries indented below); otherwise `link` stops with `agents/<id>.md: vars holds a pack variable
-but is not a "vars:" block at the start of a frontmatter line: write it that way`. A diagnostic
-about a key of `vars:` points at the `vars:` line, not at the entry.
+In an instance, `link` rewrites the `vars:` entry of the frontmatter, written as a block or as an
+object on the same line (`vars: {dir: "{{var.d}}"}`). If the frontmatter has no such entry at the
+start of a line (for instance a whole frontmatter in flow style, `{from: t, vars: {...}}`), `link`
+stops with `agents/<id>.md: vars holds a pack variable but is not a "vars:" block at the start of a
+frontmatter line: write it that way`. A diagnostic about a key of `vars:` points at the `vars:`
+line, not at the entry.
 
-Not covered yet: a variable in the frontmatter outside `vars:`, in `scripts/` or in
-`native/<target>/` files stays as written, with no warning (tracked in
+Not covered yet: a variable in the frontmatter outside `vars:`, in `scripts/`, in `references/` or
+in `native/<target>/` files stays as written, with no warning (tracked in
 [#547](https://github.com/Dr0drigues/armadai/issues/547)).
 
 The substitution happens at `link` only, on the effective view: the files of `.armadai/` and the
