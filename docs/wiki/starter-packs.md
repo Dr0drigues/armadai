@@ -178,9 +178,12 @@ variable: `{{var.name}}` (or `{{ var.name }}`), `name` an id (`[a-z0-9][a-z0-9-]
 replaces it, in the files it compiles:
 
 - in the body (after the frontmatter) of agents, templates, commands and `SKILL.md`;
-- in the text values of the `native` block of `project.yaml`.
+- in the text values **and the keys** of the `native` block of `project.yaml`;
+- in the text values of `vars:` of an agent that is a template instance (`from:`): a value is
+  written back as a string, so it is never parsed again as YAML (`a: b # c` stays that text).
 
-Frontmatters, `scripts/`, `references/` and `native/<target>/` files are never substituted.
+Frontmatters (except `vars:` of an instance), `scripts/`, `references/` and `native/<target>/`
+files are never substituted.
 `\{{` is kept as it is, backslash included, and starts no variable; `{{name}}` without `var.`
 belongs to agent templates. A value is inserted as it is, never rendered again.
 
@@ -203,6 +206,32 @@ A name no layer sets becomes an empty value, and the report says so, as `approxi
 ```
 var home-dir: approximated (set by none of ARMADAI_VAR_HOME_DIR, .armadai/vars.local.yaml, .armadai/vars.yaml: replaced by an empty value)
 ```
+
+In a key of `native`, a variable is a rule selector: if no layer sets it, or a layer sets it to an
+empty value, `link` stops before writing anything (a key `"{{var.data-dir}}/**"` would otherwise
+become `"/**"`):
+
+```
+Error: project.yaml: under native, the key "{{var.data-dir}}/**" uses variable data-dir, which is empty or set by none of ARMADAI_VAR_DATA_DIR, .armadai/vars.local.yaml, .armadai/vars.yaml: a key never takes an empty value
+```
+
+Two keys of one object that render the same text stop it too:
+
+```
+Error: project.yaml: under native, the keys "{{var.a}}/**" and "/srv/data/**" both render as "/srv/data/**"
+```
+
+A value keeps the rule above: an empty or unset variable gives an empty value and the
+`approximated` line. The same goes for a text value of `vars:` of an instance.
+
+In an instance, `vars:` must be a block that starts a frontmatter line (`vars:` at column 0, its
+entries indented below); otherwise `link` stops with `agents/<id>.md: vars holds a pack variable
+but is not a "vars:" block at the start of a frontmatter line: write it that way`. A diagnostic
+about a key of `vars:` points at the `vars:` line, not at the entry.
+
+Not covered yet: a variable in the frontmatter outside `vars:`, in `scripts/` or in
+`native/<target>/` files stays as written, with no warning (tracked in
+[#547](https://github.com/Dr0drigues/armadai/issues/547)).
 
 The substitution happens at `link` only, on the effective view: the files of `.armadai/` and the
 snapshots keep `{{var.name}}`.
@@ -263,7 +292,11 @@ sources (registries.yaml): add it there, with its credentials` otherwise). An SS
   snapshot by hand, none edited.
 - A tag deleted in the source, followed by a `gc` of the local clone, can make a lock
   irreparable: the commit is gone with the tag. Tracked in [#540](https://github.com/Dr0drigues/armadai/issues/540).
-- The `scripts/` and `references/` files of a skill, and the frontmatters, are not substituted.
+- The `scripts/` and `references/` files of a skill, and the frontmatters (except `vars:` of an
+  instance), are not substituted.
+- A key at the top of `native.<target>` is checked once rendered: an error about it names the
+  rendered key (for OpenCode: ``native.opencode key `<key>` contains a `.`: armadai cannot own it
+  in opencode.json``).
 
 ## Available Packs
 
