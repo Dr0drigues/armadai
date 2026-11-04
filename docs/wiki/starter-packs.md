@@ -262,7 +262,7 @@ sources (registries.yaml): add it there, with its credentials` otherwise). An SS
 - Whole snapshot files lose their write bits, folders keep theirs: a file can be added to a
   snapshot by hand, none edited.
 - A tag deleted in the source, followed by a `gc` of the local clone, can make a lock
-  irreparable: the commit is gone with the tag. Tracked as an issue to come.
+  irreparable: the commit is gone with the tag. Tracked in [#540](https://github.com/Dr0drigues/armadai/issues/540).
 - The `scripts/` and `references/` files of a skill, and the frontmatters, are not substituted.
 
 ## Available Packs
