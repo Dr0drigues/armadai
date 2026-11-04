@@ -364,8 +364,18 @@ fn pin(asked: &str, dir: &Path, name: &str) -> anyhow::Result<Option<Pinned>> {
         Some((pv.path, a))
     };
     // never synced yet: the sync gives the clone its tags
-    let Some((path, a)) = held(crate::pack::cache::versions_in(&registry, &source.url))
-        .or_else(|| held(crate::pack::cache::sync_source_in(&registry, &source).ok()))
+    let synced = || match crate::pack::cache::sync_source_in(&registry, &source) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            eprintln!(
+                "{}",
+                crate::starters_registry::sync_warning(&source.url, &e)
+            );
+            None
+        }
+    };
+    let Some((path, a)) =
+        held(crate::pack::cache::versions_in(&registry, &source.url)).or_else(|| held(synced()))
     else {
         return Ok(None);
     };

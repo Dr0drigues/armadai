@@ -2383,3 +2383,20 @@ fn init_pack_refuses_a_source_pack_whose_name_is_not_an_id() {
     );
     assert!(!env.root().join(".armadai").exists());
 }
+
+#[test]
+fn init_pack_warns_when_the_sync_fails_and_installs_from_the_cache() {
+    let env = Env::new();
+    env.native("1.0.0", &[], &[]);
+    env.registries(&[&env.url()]);
+    ok(&env.run(&["init", "--pack", "demo", "--no-link"], &[]));
+    // the cache holds the pack, but no versions.yaml and the origin is gone
+    std::fs::remove_file(env.versions_path(&env.url())).unwrap();
+    std::fs::remove_dir_all(env.origin()).unwrap();
+    let second = env.other_project("second");
+    let r = env.run_in(&second, &["init", "--pack", "demo", "--no-link"], &[]);
+    ok(&r);
+    let prefix = format!("  warn: failed to sync starter source {}: ", env.url());
+    assert!(r.err.lines().any(|l| l.starts_with(&prefix)), "{}", r.err);
+    assert!(second.join(".armadai/agents/a.md").is_file());
+}
