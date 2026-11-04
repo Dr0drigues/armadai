@@ -615,6 +615,17 @@ mod tests {
     }
 
     #[test]
+    fn a_one_line_vars_entry_is_rewritten_in_place() {
+        let src = "---\nfrom: t\nvars: {dir: \"{{var.d}}\"}\nmodel: m\n---\nbody\n";
+        let mut f = files(&[("agents/a.md", src)]);
+        render_files(&mut f, &vals(&[("d", "/srv/d")])).unwrap();
+        assert_eq!(
+            agent_bytes(&f),
+            "---\nfrom: t\nvars: {\"dir\":\"/srv/d\"}\nmodel: m\n---\nbody\n"
+        );
+    }
+
+    #[test]
     fn a_value_with_yaml_syntax_stays_one_string() {
         let dir = tempfile::tempdir().unwrap();
         let base = dir.path().join(".armadai");

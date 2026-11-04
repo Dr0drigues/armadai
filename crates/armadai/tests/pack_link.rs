@@ -72,13 +72,16 @@ impl Env {
     }
 
     fn run(&self, args: &[&str], envs: &[(&str, &str)], stdin: &str) -> Output {
-        Command::cargo_bin("armadai")
-            .unwrap()
-            .current_dir(self.root())
+        let mut cmd = Command::cargo_bin("armadai").unwrap();
+        // no inherited pack variable may reach the run, whatever its name
+        for (k, _) in std::env::vars_os() {
+            if k.to_string_lossy().starts_with("ARMADAI_VAR_") {
+                cmd.env_remove(k);
+            }
+        }
+        cmd.current_dir(self.root())
             .env("HOME", self.dir.path().join("home"))
             .env("ARMADAI_CONFIG_DIR", self.dir.path().join("config"))
-            .env_remove("ARMADAI_VAR_DATA")
-            .env_remove("ARMADAI_VAR_DATA_DIR")
             .envs(envs.iter().copied())
             .args(args)
             .write_stdin(stdin.to_string())
@@ -695,18 +698,31 @@ fn an_instance_gets_rendered_vars_and_its_source_stays_unchanged() {
 
 #[test]
 fn a_nested_or_list_value_in_instance_vars_is_refused_before_any_write() {
-    for block in [
-        "vars:\n  dir:\n    x: \"{{var.data-dir}}\"\n",
-        "vars:\n  dir:\n    - \"{{var.data-dir}}\"\n",
+    for (block, kind) in [
+        ("vars:\n  dir:\n    x: \"{{var.data-dir}}\"\n", "map"),
+        ("vars:\n  dir:\n    - \"{{var.data-dir}}\"\n", "sequence"),
     ] {
         let env = instance_env(block, "data-dir: /srv/data\n");
         let before = whole(&env);
         let out = env.run(&["link"], &[], "");
         assert_eq!(out.status.code(), Some(1), "{block}");
         let err = stderr(&out);
+        // the diagnostic line from the file name on (the root is a temp dir)
+        let diag: Vec<&str> = err
+            .lines()
+            .filter_map(|l| l.find("agents/r.md:").map(|i| &l[i..]))
+            .collect();
+        assert_eq!(
+            diag,
+            [format!(
+                "agents/r.md:3:1: error[invalid-yaml]: invalid type: {kind}, expected a string"
+            )],
+            "{err}"
+        );
         assert!(
-            err.contains("invalid type") && err.contains("expected a string"),
-            "{block}: {err}"
+            err.lines()
+                .any(|l| l == "Error: the project is invalid; nothing was written"),
+            "{err}"
         );
         assert_eq!(whole(&env), before, "{block}");
     }
