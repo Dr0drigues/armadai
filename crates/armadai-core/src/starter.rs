@@ -294,30 +294,34 @@ pub fn user_packs_masking_embedded() -> Vec<(String, PathBuf)> {
 
 /// Discover pack directories under a fetched registry dir.
 ///
-/// Hybrid: an `armadai-starters.yaml` at the root RESTRICTS to its listed
-/// `path:`s; otherwise every directory containing a `pack.yaml` is a pack.
+/// Three levels: an `armadai-packs.yaml` at the root (the versioned index)
+/// RESTRICTS to its listed `path:`s; else an `armadai-starters.yaml` (read for
+/// compatibility) does the same; otherwise every directory containing a
+/// `pack.yaml` is a pack.
 pub fn discover_packs(registry_dir: &Path) -> Vec<PathBuf> {
-    let manifest_path = registry_dir.join("armadai-starters.yaml");
-    if manifest_path.is_file()
-        && let Ok(content) = std::fs::read_to_string(&manifest_path)
-        && let Ok(manifest) = armadai_model::yaml::from_str::<StartersManifest>(&content)
-        && !manifest.packs.is_empty()
-    {
-        return manifest
-            .packs
-            .iter()
-            .filter(|p| {
-                let path = std::path::Path::new(&p.path);
-                !path.components().any(|c| {
-                    matches!(
-                        c,
-                        std::path::Component::ParentDir | std::path::Component::RootDir
-                    )
+    for file in ["armadai-packs.yaml", "armadai-starters.yaml"] {
+        let manifest_path = registry_dir.join(file);
+        if manifest_path.is_file()
+            && let Ok(content) = std::fs::read_to_string(&manifest_path)
+            && let Ok(manifest) = armadai_model::yaml::from_str::<StartersManifest>(&content)
+            && !manifest.packs.is_empty()
+        {
+            return manifest
+                .packs
+                .iter()
+                .filter(|p| {
+                    let path = std::path::Path::new(&p.path);
+                    !path.components().any(|c| {
+                        matches!(
+                            c,
+                            std::path::Component::ParentDir | std::path::Component::RootDir
+                        )
+                    })
                 })
-            })
-            .map(|p| registry_dir.join(&p.path))
-            .filter(|d| d.join("pack.yaml").is_file())
-            .collect();
+                .map(|p| registry_dir.join(&p.path))
+                .filter(|d| d.join("pack.yaml").is_file())
+                .collect();
+        }
     }
     let mut out = Vec::new();
     scan_for_packs(registry_dir, 0, &mut out);
@@ -665,6 +669,25 @@ description: Minimal pack
             .unwrap();
         }
         assert_eq!(pack_in_source(tmp.path(), "b"), Some(tmp.path().join("b")));
+    }
+
+    #[test]
+    fn discover_prefers_the_new_index() {
+        let tmp = tempfile::tempdir().unwrap();
+        for d in ["a", "b", "c"] {
+            std::fs::create_dir_all(tmp.path().join(d)).unwrap();
+            std::fs::write(tmp.path().join(d).join("pack.yaml"), "name: x\n").unwrap();
+        }
+        let write = |f: &str, body: &str| std::fs::write(tmp.path().join(f), body).unwrap();
+        // The legacy manifest alone: its paths.
+        write("armadai-starters.yaml", "packs:\n  - path: b\n");
+        assert_eq!(discover_packs(tmp.path()), vec![tmp.path().join("b")]);
+        // Both: only the paths of the new index.
+        write(
+            "armadai-packs.yaml",
+            "format: 1\npacks:\n  - name: a\n    path: a\n    version: 1.0.0\n",
+        );
+        assert_eq!(discover_packs(tmp.path()), vec![tmp.path().join("a")]);
     }
 
     #[test]

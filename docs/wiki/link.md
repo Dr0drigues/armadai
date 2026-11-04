@@ -43,6 +43,22 @@ armadai link --force                 # overwrite files link did not write
 
 Every target is planned and checked before the first write.
 
+## Packs and variables
+
+A project with a `pack:` key is compiled from its effective view: the locked snapshot of the pack
+(`.armadai/pack.lock`, read from the local cache, never the network) overlaid by the project's own
+files. `link` adds two kinds of line to the report:
+
+| Element | Status | Reason |
+|---|---|---|
+| `pack <name>` | `compiled` | `<version> (<id12>), from the cache` |
+| `var <name>` | `approximated` | `set by none of ARMADAI_VAR_<NAME>, .armadai/vars.local.yaml, .armadai/vars.yaml: replaced by an empty value` |
+
+When the cache holds a newer version than the lock, `link` also writes a `note:` on stderr that
+names `armadai pack update`. If the lock is missing, belongs to another pack or source, or points
+at a snapshot the cache does not hold, `link` stops with the message that says which command to
+run (`armadai pack update` or `armadai pack sync`). See [Starter packs](starter-packs.md).
+
 ## Claude Code
 
 | Declared | Produced |
@@ -198,6 +214,10 @@ exact values. `armadai unlink` reads that manifest and applies the
 inverse of each recorded outcome, so it removes exactly what `link` produced and nothing else —
 including files whose agent has since been removed from the project, which is the case no amount
 of regeneration can recover — then forgets the target.
+
+A pack installed by copy (`init --pack`) is recorded in a `packs:` section (source, version, and the
+digest of each file the install wrote), which `armadai pack update` reads. The section is
+optional, and a binary older than pack management that rewrites the manifest drops it.
 
 The manifest is data on disk, so `unlink` treats it as untrusted input: it re-derives the target's
 output directory from the project config and refuses the manifest wholesale if the two disagree,

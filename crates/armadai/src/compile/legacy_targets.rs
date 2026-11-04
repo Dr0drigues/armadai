@@ -65,7 +65,7 @@ pub struct LegacyCompiler {
 }
 
 impl Compiler for LegacyCompiler {
-    fn compile(&self, project: &Project, root: &Path) -> anyhow::Result<Plan> {
+    fn compile(&self, project: &Project, _root: &Path, sources: &Path) -> anyhow::Result<Plan> {
         let t = self.target;
         let linker = create_linker(t)?;
         let mut agents = link_agents(project, t);
@@ -98,8 +98,8 @@ impl Compiler for LegacyCompiler {
         }
         for id in project.skills.keys() {
             for (rel, content) in read_tree(
-                &root.join(".armadai/skills").join(id),
-                &root.join(".armadai"),
+                &sources.join(".armadai/skills").join(id),
+                &sources.join(".armadai"),
             )? {
                 plan.artifacts.push(Artifact {
                     path: PathBuf::from("skills").join(id).join(rel),
@@ -282,7 +282,7 @@ mod tests {
         let (dir, p) = migrated();
         for t in TARGETS {
             let plan = LegacyCompiler { target: t }
-                .compile(&p, dir.path())
+                .compile(&p, dir.path(), dir.path())
                 .unwrap();
             let golden = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join(format!("tests/golden/legacy_targets/{t}.txt"));
@@ -319,7 +319,7 @@ mod tests {
         drop(p);
         for t in TARGETS {
             let plan = LegacyCompiler { target: t }
-                .compile(&p2, dir.path())
+                .compile(&p2, dir.path(), dir.path())
                 .unwrap();
             for e in [
                 "flow orchestration",
@@ -351,7 +351,7 @@ mod tests {
             .iter()
             .map(|t| {
                 LegacyCompiler { target: t }
-                    .compile(&p, dir.path())
+                    .compile(&p, dir.path(), dir.path())
                     .unwrap()
             })
             .collect();
@@ -377,7 +377,7 @@ mod tests {
         let (p2, _) = armadai_model::load_checked(dir.path()).unwrap();
         for (t, before) in TARGETS.iter().zip(before) {
             let plan = LegacyCompiler { target: t }
-                .compile(&p2, dir.path())
+                .compile(&p2, dir.path(), dir.path())
                 .unwrap();
             let lines = |e: &str| {
                 let l = line(&plan, e).unwrap_or_else(|| panic!("{t}: no `{e}`"));

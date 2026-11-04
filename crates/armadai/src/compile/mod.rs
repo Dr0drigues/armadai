@@ -334,6 +334,82 @@ pub fn find_project(cwd: &Path) -> anyhow::Result<PathBuf> {
 }
 
 pub trait Compiler {
-    /// `root` is the project root (the directory holding `.armadai/`).
-    fn compile(&self, project: &Project, root: &Path) -> anyhow::Result<Plan>;
+    /// `root`: the project root, where files are written and the user's files read
+    /// (the root `CLAUDE.md`; `opencode.json` is read by `patch.rs`, not here). `sources`: the directory holding the
+    /// `.armadai/` to compile — `root` itself, or the effective view of task 9.
+    fn compile(&self, project: &Project, root: &Path, sources: &Path) -> anyhow::Result<Plan>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write(dir: &Path, rel: &str, content: &str) {
+        let p = dir.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, content).unwrap();
+    }
+
+    /// A project with a coordinator and one skill `s` (with a script), in `dir`.
+    fn sources_with_skill(dir: &Path) -> Project {
+        write(
+            dir,
+            ".armadai/project.yaml",
+            "schema_version: 1\ncoordinator: lead\n",
+        );
+        write(
+            dir,
+            ".armadai/agents/lead.md",
+            "---\ndescription: L\n---\nB\n",
+        );
+        write(
+            dir,
+            ".armadai/skills/s/SKILL.md",
+            "---\nname: s\ndescription: S\n---\nB\n",
+        );
+        write(dir, ".armadai/skills/s/scripts/run.sh", "#!/bin/sh\n");
+        armadai_model::load_checked(dir).unwrap().0
+    }
+
+    #[test]
+    fn skills_are_read_from_sources() {
+        let sources = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let p = sources_with_skill(sources.path());
+        for t in ["claude", "opencode", "codex", "copilot"] {
+            let plan = compiler_for(t, Path::new(default_output(t)))
+                .unwrap()
+                .compile(&p, root.path(), sources.path())
+                .unwrap();
+            for want in ["skills/s/SKILL.md", "skills/s/scripts/run.sh"] {
+                assert!(
+                    plan.artifacts.iter().any(|a| a.path == Path::new(want)),
+                    "{t}: no {want}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_root_claude_md_is_read_under_root() {
+        let sources = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let p = sources_with_skill(sources.path());
+        let kept = |root: &Path| {
+            let plan = compiler_for("claude", Path::new(".claude"))
+                .unwrap()
+                .compile(&p, root, sources.path())
+                .unwrap();
+            plan.report
+                .lines
+                .iter()
+                .any(|l| l.element == "CLAUDE.md" && l.status == Status::Approximated)
+        };
+        assert!(!kept(root.path()));
+        write(root.path(), "CLAUDE.md", "mine\n");
+        write(sources.path(), "CLAUDE.md", "theirs\n");
+        assert!(kept(root.path()));
+        std::fs::remove_file(root.path().join("CLAUDE.md")).unwrap();
+        assert!(!kept(root.path()), "sources' CLAUDE.md must not count");
+    }
 }

@@ -52,13 +52,8 @@ pub struct GitFetcher;
 impl StarterFetcher for GitFetcher {
     fn fetch(&self, url: &str, dest: &Path) -> anyhow::Result<()> {
         if dest.join(".git").is_dir() {
-            run_git(&[
-                "-C",
-                dest.to_str().unwrap_or("."),
-                "pull",
-                "--ff-only",
-                "-q",
-            ])?;
+            run_git(&["-C", path_arg(dest)?, "pull", "--ff-only", "-q"])
+                .map_err(|e| masked(e, url))?;
         } else {
             if let Some(parent) = dest.parent() {
                 std::fs::create_dir_all(parent)?;
@@ -68,6 +63,8 @@ impl StarterFetcher for GitFetcher {
                 "--depth",
                 "1",
                 "-q",
+                // a source starting with `-` is a URL, never an option
+                "--",
                 url,
                 dest.to_str().unwrap_or("."),
             ])?;
@@ -77,15 +74,47 @@ impl StarterFetcher for GitFetcher {
 }
 
 fn run_git(args: &[&str]) -> anyhow::Result<()> {
+    git_output(args).map(|_| ())
+}
+
+/// Stdout of a `git` run (trimmed); failures are masked by [`git_failure`].
+pub(crate) fn git_output(args: &[&str]) -> anyhow::Result<String> {
     let out = std::process::Command::new("git").args(args).output()?;
     if !out.status.success() {
         anyhow::bail!(git_failure(args, &String::from_utf8_lossy(&out.stderr)));
     }
-    Ok(())
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Give a clone its whole history and every tag: `pack sync` extracts any version
+/// from it. The `--depth 1` clone of `init --pack` is completed in place.
+pub(crate) fn complete_clone(dest: &Path, url: &str) -> anyhow::Result<()> {
+    let dir = path_arg(dest)?;
+    let shallow = dest.join(".git").join("shallow").exists();
+    let mut args = vec!["-C", dir, "fetch"];
+    if shallow {
+        args.push("--unshallow");
+    }
+    // A tag deleted in the origin is deleted here too (`pack sync` reports it as gone);
+    // `--tags` would turn pruning off, `--prune-tags` fetches the tags by itself.
+    args.extend(["--force", "--prune", "--prune-tags", "-q"]);
+    run_git(&args).map_err(|e| masked(e, url))
+}
+
+/// A path as a `git` argument; a path that is not UTF-8 is an error, never `.`.
+pub(crate) fn path_arg(path: &Path) -> anyhow::Result<&str> {
+    path.to_str()
+        .ok_or_else(|| anyhow::anyhow!("path {} is not valid UTF-8", path.display()))
+}
+
+/// `err` with the credentials of `url` masked: git names the remote in its messages
+/// but the argv of a `-C <dir>` run does not, so [`git_failure`] cannot see it.
+fn masked(err: anyhow::Error, url: &str) -> anyhow::Error {
+    anyhow::anyhow!(mask_url_secrets(&err.to_string(), url))
 }
 
 /// The error for a failed `git` run, with any URL credential in argv or stderr masked.
-fn git_failure(args: &[&str], stderr: &str) -> String {
+pub(crate) fn git_failure(args: &[&str], stderr: &str) -> String {
     let msg = format!("git {} failed: {}", args.join(" "), stderr.trim());
     args.iter()
         .fold(msg, |msg, arg| mask_url_secrets(&msg, arg))
@@ -221,7 +250,7 @@ fn list_archive_entries(
 /// absolute-path entry (zip-slip) is rejected up front rather than allowed to
 /// write outside `dest`. `label` names the archive in messages. An archive over
 /// `limits` (entry count, then total file size) is refused before extraction.
-fn extract_archive(
+pub(crate) fn extract_archive(
     archive: &Path,
     dest: &Path,
     label: &str,
@@ -271,7 +300,7 @@ fn extract_archive(
 
 /// Upper bounds on what one archive may hold once extracted.
 #[derive(Clone, Copy)]
-struct ExtractLimits {
+pub(crate) struct ExtractLimits {
     /// Total size of its files.
     bytes: u64,
     /// Number of entries (files, directories, links): each costs an inode.
@@ -282,7 +311,7 @@ struct ExtractLimits {
     names_bytes: usize,
 }
 
-const EXTRACT_LIMITS: ExtractLimits = ExtractLimits {
+pub(crate) const EXTRACT_LIMITS: ExtractLimits = ExtractLimits {
     bytes: 1 << 30, // 1 GiB
     entries: 100_000,
     // PATH_MAX on Linux (macOS: 1024): a longer name cannot be extracted anyway.
@@ -433,7 +462,7 @@ fn sweep_orphans(dir: &Path, prefix: &str, restore: bool) {
 }
 
 /// A uniquely named temp dir, private (0700) on unix, removed on drop.
-fn private_tempdir(prefix: &str, parent: &Path) -> std::io::Result<tempfile::TempDir> {
+pub(crate) fn private_tempdir(prefix: &str, parent: &Path) -> std::io::Result<tempfile::TempDir> {
     let mut builder = tempfile::Builder::new();
     builder.prefix(prefix);
     #[cfg(unix)]
@@ -443,7 +472,7 @@ fn private_tempdir(prefix: &str, parent: &Path) -> std::io::Result<tempfile::Tem
 
 /// Refuse an extracted tree holding a symlink that resolves outside `root`
 /// (or nowhere): a pack must not reach the rest of the disk through its cache.
-fn reject_escaping_links(root: &Path, label: &str) -> anyhow::Result<()> {
+pub(crate) fn reject_escaping_links(root: &Path, label: &str) -> anyhow::Result<()> {
     let root = root.canonicalize()?;
     let mut dirs = vec![root.clone()];
     while let Some(dir) = dirs.pop() {
@@ -549,7 +578,7 @@ pub fn fetch_starter_source(source: &RegistrySource) -> anyhow::Result<PathBuf> 
 
 /// The warning for a source that failed to sync, with its credentials masked
 /// in the URL and in the error (git echoes its argv and URL).
-fn sync_warning(url: &str, err: &anyhow::Error) -> String {
+pub(crate) fn sync_warning(url: &str, err: &anyhow::Error) -> String {
     let line = format!("  warn: failed to sync starter source {url}: {err}");
     mask_url_secrets(&line, url)
 }
@@ -930,6 +959,46 @@ pub(crate) mod archive_tests {
             "fatal: unable to access 'https://127.0.0.1:9/e.git?token=s3cretQ/'",
         );
         assert!(!msg.contains("s3cretQ"), "{msg}");
+    }
+
+    const SECRET_URL: &str = "file:///nonexistent/armadai-probe.git?access_token=QUERYSECRET123";
+
+    /// A clone whose `origin` is [`SECRET_URL`]: any fetch from it fails, locally.
+    fn clone_with_failing_origin(dir: &Path) {
+        let git = |args: &[&str]| {
+            let mut full = vec!["-C", dir.to_str().unwrap()];
+            full.extend(args);
+            assert!(
+                std::process::Command::new("git")
+                    .args(&full)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+        };
+        fs::create_dir_all(dir).unwrap();
+        git(&["init", "-q"]);
+        git(&["remote", "add", "origin", SECRET_URL]);
+        git(&["config", "branch.master.remote", "origin"]);
+        git(&["config", "branch.master.merge", "refs/heads/master"]);
+        git(&["symbolic-ref", "HEAD", "refs/heads/master"]);
+    }
+
+    #[test]
+    fn a_failed_pull_masks_the_url_query() {
+        let tmp = tempfile::tempdir().unwrap();
+        clone_with_failing_origin(tmp.path());
+        let err = GitFetcher.fetch(SECRET_URL, tmp.path()).unwrap_err();
+        assert!(!err.to_string().contains("QUERYSECRET123"), "{err}");
+    }
+
+    #[test]
+    fn a_failed_history_fetch_masks_the_url_query() {
+        let tmp = tempfile::tempdir().unwrap();
+        clone_with_failing_origin(tmp.path());
+        let err = complete_clone(tmp.path(), SECRET_URL).unwrap_err();
+        assert!(!err.to_string().contains("QUERYSECRET123"), "{err}");
     }
 
     #[test]

@@ -64,10 +64,10 @@ impl OpencodeCompiler {
 }
 
 impl Compiler for OpencodeCompiler {
-    fn compile(&self, project: &Project, root: &Path) -> anyhow::Result<Plan> {
+    fn compile(&self, project: &Project, _root: &Path, sources: &Path) -> anyhow::Result<Plan> {
         compile_with(
             project,
-            root,
+            sources,
             &armadai_core::config::try_load_user_config_for(T)?,
             &self.team,
         )
@@ -76,7 +76,7 @@ impl Compiler for OpencodeCompiler {
 
 fn compile_with(
     project: &Project,
-    root: &Path,
+    sources: &Path,
     config: &UserConfig,
     team: &str,
 ) -> anyhow::Result<Plan> {
@@ -195,8 +195,8 @@ fn compile_with(
     }
 
     for id in project.skills.keys() {
-        let dir = root.join(".armadai/skills").join(id);
-        let (files, backups) = super::read_tree_skipping(&dir, &root.join(".armadai"))?;
+        let dir = sources.join(".armadai/skills").join(id);
+        let (files, backups) = super::read_tree_skipping(&dir, &sources.join(".armadai"))?;
         for rel in backups {
             plan.report.push(
                 T,
@@ -983,13 +983,13 @@ mod tests {
         .unwrap();
         let (p, _) = armadai_model::load_checked(dir.path()).unwrap();
         let plan = OpencodeCompiler::new(Path::new(".opencode"))
-            .compile(&p, dir.path())
+            .compile(&p, dir.path(), dir.path())
             .unwrap();
         assert_eq!(front(&plan, "agents/dev.md")["model"], "anthropic/x");
 
         std::fs::write(&cfg, "model_tiers: [\n").unwrap();
         let err = OpencodeCompiler::new(Path::new(".opencode"))
-            .compile(&p, dir.path())
+            .compile(&p, dir.path(), dir.path())
             .unwrap_err()
             .to_string();
         let prefix = format!("{} does not read: ", cfg.display());

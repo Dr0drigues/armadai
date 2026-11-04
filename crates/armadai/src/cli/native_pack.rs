@@ -18,7 +18,7 @@ const IGNORED: &str = "ignored-pack-file";
 /// `project.yaml` of a pack that ships none.
 pub const DEFAULT_PROJECT: &str = "schema_version: 1\ntargets: [claude]\n";
 
-fn listed(rel: &Path) -> bool {
+pub(crate) fn listed(rel: &Path) -> bool {
     let c: Vec<&str> = rel.iter().filter_map(|s| s.to_str()).collect();
     match c.as_slice() {
         ["project.yaml"] => true,
@@ -62,7 +62,8 @@ pub fn files(pack_dir: &Path) -> anyhow::Result<PackFiles> {
                 #[cfg(not(unix))]
                 let exec = false;
                 out.push((rel, std::fs::read(&path)?, exec));
-            } else if rel.components().count() > 1 {
+            } else if rel.components().count() > 1 && rel.file_name() != Some(".gitkeep".as_ref()) {
+                // a `.gitkeep` only keeps an empty folder in git: neither installed nor reported
                 ignored.push(rel);
             }
         }
@@ -73,6 +74,67 @@ pub fn files(pack_dir: &Path) -> anyhow::Result<PackFiles> {
         files: out,
         ignored,
     })
+}
+
+/// The white-listed files of a project's `.armadai/` (`base`), as `files` reads a pack's,
+/// descending only into the folders the list names (`state/`, `.migrated/` and the
+/// like are never visited). A symbolic link on a listed path, or standing for a folder
+/// inside one of those folders, is refused when `strict` (else a link to a file
+/// is read through and the others skipped); any other link is left alone.
+pub(crate) fn read_listed(
+    base: &Path,
+    strict: bool,
+) -> anyhow::Result<Vec<(PathBuf, Vec<u8>, bool)>> {
+    const DIRS: [&str; 6] = [
+        "agents",
+        "templates",
+        "commands",
+        "skills",
+        "flows",
+        "automations",
+    ];
+    let mut out = Vec::new();
+    let mut todo: Vec<PathBuf> = DIRS.iter().map(|d| base.join(d)).collect();
+    let manifest = base.join("project.yaml");
+    if std::fs::symlink_metadata(&manifest).is_ok() {
+        todo.push(manifest);
+    }
+    while let Some(path) = todo.pop() {
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(m) => m,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        let rel = path.strip_prefix(base)?.to_path_buf();
+        if meta.file_type().is_symlink() {
+            let to_dir = std::fs::metadata(&path).is_ok_and(|m| m.is_dir());
+            if strict && (listed(&rel) || to_dir) {
+                bail!("{} is a symbolic link, refused", path.display());
+            }
+            // not strict: a link to a file is read through, to look at it only
+            if !strict
+                && listed(&rel)
+                && !to_dir
+                && let Ok(bytes) = std::fs::read(&path)
+            {
+                out.push((rel, bytes, false));
+            }
+        } else if meta.is_dir() {
+            for e in
+                std::fs::read_dir(&path).with_context(|| format!("reading {}", path.display()))?
+            {
+                todo.push(e?.path());
+            }
+        } else if meta.is_file() && listed(&rel) {
+            #[cfg(unix)]
+            let exec = std::os::unix::fs::PermissionsExt::mode(&meta.permissions()) & 0o111 != 0;
+            #[cfg(not(unix))]
+            let exec = false;
+            out.push((rel, std::fs::read(&path)?, exec));
+        }
+    }
+    out.sort();
+    Ok(out)
 }
 
 /// The pack as a scratch project (`<tmp>/.armadai/`, the default `project.yaml`
@@ -191,9 +253,20 @@ impl Created {
     }
 }
 
+/// Diagnostics of a project root, read through its effective view (a pack it references
+/// is part of it).
+fn project_diagnostics(root: &Path) -> anyhow::Result<Vec<armadai_model::Diagnostic>> {
+    Ok(crate::pack::effective::open(root, crate::pack::effective::Vars::Literal)?.validate())
+}
+
 /// Install the native pack at `pack_dir` into `root/.armadai/`. Existing files are
-/// kept (one warning each); an existing `project.yaml` wins over the pack's.
-pub fn install(root: &Path, pack_dir: &Path, name: &str) -> anyhow::Result<()> {
+/// kept (one warning each); an existing `project.yaml` wins over the pack's. Returns what
+/// it wrote (path relative to `.armadai/` -> digest of its bytes), for `pack update`.
+pub fn install(
+    root: &Path,
+    pack_dir: &Path,
+    name: &str,
+) -> anyhow::Result<std::collections::BTreeMap<PathBuf, String>> {
     let pack = files(pack_dir)?;
     let files = &pack.files;
     let w = crate::cli::style::warn();
@@ -212,7 +285,7 @@ pub fn install(root: &Path, pack_dir: &Path, name: &str) -> anyhow::Result<()> {
     let had_project = base.join("project.yaml").is_file();
     let key = |d: &armadai_model::Diagnostic| (d.code, d.file.clone());
     let before: BTreeSet<_> = if had_project {
-        armadai_model::validate(root).iter().map(key).collect()
+        project_diagnostics(root)?.iter().map(key).collect()
     } else {
         BTreeSet::new()
     };
@@ -278,7 +351,14 @@ pub fn install(root: &Path, pack_dir: &Path, name: &str) -> anyhow::Result<()> {
         created.undo();
         return Err(e);
     }
-    let introduced: Vec<_> = armadai_model::validate(root)
+    let after = match project_diagnostics(root) {
+        Ok(ds) => ds,
+        Err(e) => {
+            created.undo();
+            return Err(e);
+        }
+    };
+    let introduced: Vec<_> = after
         .into_iter()
         .filter(|d| !before.contains(&key(d)))
         .collect();
@@ -337,12 +417,33 @@ pub fn install(root: &Path, pack_dir: &Path, name: &str) -> anyhow::Result<()> {
     if kept > 0 {
         anstream::println!("{m}  {kept} existing file(s) kept{m:#}");
     }
-    Ok(())
+    Ok((files.iter())
+        .filter(|(r, ..)| installed.contains(&r.as_path()))
+        .map(|(r, bytes, _)| (r.clone(), crate::linker::manifest::digest_of(bytes)))
+        .collect())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_gitkeep_is_not_reported_as_ignored() {
+        let d = tempfile::tempdir().unwrap();
+        for f in [
+            "agents/.gitkeep",
+            "agents/a.md",
+            "agents/notes.txt",
+            "pack.yaml",
+        ] {
+            let p = d.path().join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, "x").unwrap();
+        }
+        let pack = files(d.path()).unwrap();
+        assert_eq!(pack.ignored, [PathBuf::from("agents/notes.txt")]);
+        assert_eq!(pack.files.len(), 1);
+    }
 
     #[test]
     fn the_white_list() {

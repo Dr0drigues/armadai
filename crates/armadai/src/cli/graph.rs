@@ -15,7 +15,8 @@ pub enum GraphFormat {
 
 pub fn execute(flow: Option<String>, _format: GraphFormat) -> anyhow::Result<()> {
     let root = crate::compile::find_project(&std::env::current_dir()?)?;
-    let project = match armadai_model::load_checked(&root) {
+    let view = crate::pack::effective::open(&root, crate::pack::effective::Vars::Literal)?;
+    let project = match view.load_checked() {
         Ok((p, _)) => p,
         Err(ds) => {
             for d in &ds {

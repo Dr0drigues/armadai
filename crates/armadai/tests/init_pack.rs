@@ -138,6 +138,7 @@ fn a_native_pack_is_copied_by_its_white_list() {
         "agents/lead.md",
         "automations/fmt.yaml",
         "flows/ship.yaml",
+        "link-manifest.yaml",
         "project.yaml",
         "skills/notes/SKILL.md",
         "skills/notes/scripts/n.sh",
@@ -681,7 +682,12 @@ fn link_flag_links_after_the_install_and_no_link_does_not() {
     let (ok, out, err) = env.init(&pack, &["--no-link"]);
     assert!(ok, "{out}\n{err}");
     assert!(env.root().join(".armadai/project.yaml").is_file());
-    assert!(!env.root().join(".armadai/link-manifest.yaml").exists());
+    // the manifest records the pack's origin, and no target: nothing was linked
+    let manifest = std::fs::read_to_string(env.root().join(".armadai/link-manifest.yaml")).unwrap();
+    assert!(
+        manifest.starts_with("version: 1\ntargets: {}\npacks:\n  demo:\n"),
+        "{manifest}"
+    );
     assert!(!env.root().join(".claude").exists());
     assert!(
         out.contains("  Run `armadai link` to generate the target files.\n"),

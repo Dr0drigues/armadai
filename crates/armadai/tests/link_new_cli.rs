@@ -225,7 +225,7 @@ fn link_then_unlink_gives_the_user_tree_back_and_relinking_is_idempotent() {
     );
     assert_eq!(
         std::fs::read_to_string(env.root().join(".armadai/.gitignore")).unwrap(),
-        "link-manifest.yaml\n.migrated/\nstate/\n"
+        "link-manifest.yaml\n.migrated/\nstate/\nvars.local.yaml\n"
     );
 
     let again = env.ok(&["link"]);
@@ -1334,8 +1334,8 @@ fn the_dry_run_lists_up_to_date_files_as_unchanged() {
     assert!(!unchanged.contains("agents/dev.md"), "{out}");
 }
 
-/// `link` adds `state/` (the flow records) to an existing `.armadai/.gitignore`
-/// once, and leaves one that has it byte for byte.
+/// `link` adds `state/` (the flow records) and `vars.local.yaml` to an existing
+/// `.armadai/.gitignore` once, and leaves a complete one byte for byte.
 #[test]
 fn link_adds_the_state_line_to_an_existing_gitignore_once() {
     let env = Env::new(PROJECT);
@@ -1345,9 +1345,12 @@ fn link_adds_the_state_line_to_an_existing_gitignore_once() {
     env.ok(&["link"]);
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
-        "link-manifest.yaml\n.migrated/\n# mine\nstate/\n"
+        "link-manifest.yaml\n.migrated/\n# mine\nstate/\nvars.local.yaml\n"
     );
     std::fs::write(&path, "state/\n# mine").unwrap();
     env.ok(&["link"]);
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "state/\n# mine");
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "state/\n# mine\nvars.local.yaml\n"
+    );
 }

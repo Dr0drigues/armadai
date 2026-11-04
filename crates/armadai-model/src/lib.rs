@@ -5,6 +5,8 @@ pub mod check;
 pub mod diag;
 pub mod load;
 pub mod mermaid;
+pub mod pack;
+pub mod pack_vars;
 pub mod schema;
 pub mod slots;
 pub mod templates;

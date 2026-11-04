@@ -7,7 +7,8 @@ use armadai_core::pack_validation::{Severity, validate_pack};
 
 /// New format: `.armadai/project.yaml` present. Diagnostics come from `armadai-model`.
 fn execute_new(target_path: &std::path::Path, json: bool) -> anyhow::Result<()> {
-    report(armadai_model::validate(target_path), json)
+    let view = crate::pack::effective::open(target_path, crate::pack::effective::Vars::Literal)?;
+    report(view.validate(), json)
 }
 
 /// Print `ds` (text or JSON); an error fails the command.

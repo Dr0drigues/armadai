@@ -12,7 +12,15 @@ pub fn execute(
 ) -> anyhow::Result<()> {
     let root = compile::find_project(&std::env::current_dir()?)?;
     // targets and outputs only: a project that no longer validates can still be unlinked
-    let project = armadai_model::load_project(&root).project;
+    let project = match crate::pack::effective::open(&root, crate::pack::effective::Vars::Literal) {
+        Ok(view) => view.load_project().project,
+        Err(e) => {
+            // the pack cannot be read (snapshot missing...): unlink with what the project holds
+            let w = crate::cli::style::warn();
+            anstream::eprintln!("{w}warning: {e:#}{w:#}");
+            armadai_model::load_project(&root).project
+        }
+    };
     let targets: Vec<String> = match &project {
         Some(p) => crate::cli::link::targets_of(&targets, p),
         None if !targets.is_empty() => targets.iter().map(|t| t.to_string()).collect(),
@@ -724,13 +732,21 @@ fn unlink_via_fallback(
     dry_run: bool,
     agents_filter: Option<&[String]>,
 ) -> anyhow::Result<()> {
-    let (project, _) = armadai_model::load_checked(root).map_err(|ds| {
+    // the pack, when it can be read; else the project alone, as before packs (the
+    // warning about the unreadable pack was shown once already, by `execute`)
+    let view = crate::pack::effective::open(root, crate::pack::effective::Vars::Literal).ok();
+    let checked = match &view {
+        Some(v) => v.load_checked(),
+        None => armadai_model::load_checked(root),
+    };
+    let (project, _) = checked.map_err(|ds| {
         for d in &ds {
             eprintln!("{}", d.render());
         }
         anyhow::anyhow!("no link manifest and the project is invalid: nothing to compare against")
     })?;
-    let plan = compile::compiler_for(target_name, output_dir)?.compile(&project, root)?;
+    let sources = view.as_ref().map_or(root, |v| v.sources.as_path());
+    let plan = compile::compiler_for(target_name, output_dir)?.compile(&project, root, sources)?;
     let target_root = root.join(output_dir);
     let candidates: Vec<(PathBuf, Vec<u8>)> = (plan.artifacts.into_iter())
         .filter(|a| match agents_filter {

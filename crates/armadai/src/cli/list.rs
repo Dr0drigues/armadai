@@ -6,22 +6,33 @@
 
 use armadai_model::{Project, Tier};
 
-/// The project at or above the current directory, as far as it loads; every
-/// diagnostic goes to stderr.
-pub fn load_for_reading() -> anyhow::Result<Project> {
+/// The project at or above the current directory, as far as it loads, with where each
+/// file really is, and the project root; every diagnostic goes to stderr. The view is
+/// kept for the pack name.
+pub fn load_with_origins() -> anyhow::Result<(
+    Project,
+    armadai_model::Origins,
+    crate::pack::effective::Effective,
+    std::path::PathBuf,
+)> {
     let root = crate::compile::find_project(&std::env::current_dir()?)?;
-    let loaded = armadai_model::load_project(&root);
-    let mut ds = loaded.diagnostics;
+    let view = crate::pack::effective::open(&root, crate::pack::effective::Vars::Literal)?;
+    // `check` reads the view's own files (its positions are in them); the diagnostics
+    // are put on the real files only after, all together
+    let mut loaded = armadai_model::load_project(&view.sources);
+    let mut ds = std::mem::take(&mut loaded.diagnostics);
     if let Some(p) = &loaded.project {
         ds.extend(armadai_model::check(p, &loaded.origins));
     }
-    for d in &ds {
+    view.remap_origins(&mut loaded.origins);
+    for d in &view.remap(ds) {
         let s = crate::cli::style::warn();
         anstream::eprintln!("{s}{}{s:#}", d.render());
     }
-    loaded
+    let project = loaded
         .project
-        .ok_or_else(|| anyhow::anyhow!("the project manifest could not be read"))
+        .ok_or_else(|| anyhow::anyhow!("the project manifest could not be read"))?;
+    Ok((project, loaded.origins, view, root))
 }
 
 /// `<slot>: <the skills filling it>`, or `(none)`.
@@ -44,7 +55,7 @@ pub fn tier_str(t: Option<Tier>) -> &'static str {
 }
 
 pub fn execute(tags: Option<Vec<String>>) -> anyhow::Result<()> {
-    let project = load_for_reading()?;
+    let (project, _, _, root) = load_with_origins()?;
     let agents: Vec<_> = (project.agents.iter())
         .filter(|(_, a)| {
             tags.as_ref()
@@ -110,6 +121,9 @@ pub fn execute(tags: Option<Vec<String>>) -> anyhow::Result<()> {
         for slot in slots {
             anstream::println!("  {}", slot_line(&project, slot));
         }
+    }
+    if let Some(note) = crate::cli::link::newer_pack_note(&root) {
+        eprintln!("{note}");
     }
     Ok(())
 }
