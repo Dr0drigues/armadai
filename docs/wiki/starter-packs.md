@@ -505,8 +505,15 @@ When `armadai init --pack <name>` finds no local pack of that name, it syncs the
 registries once, then retries: the top-level `starters:` list of `~/.config/armadai/registries.yaml`
 (no `registries:` wrapper there), plus the `registries.starters` of a legacy project's config. A
 migrated project has none (see [Project format](project-format.md#migrating-a-legacy-project)). A
-pack found in your own folders or sources never triggers a sync; one found only in a project
-source does, so that one of your sources not synced yet still wins.
+pack found in your own folders or sources does not trigger a sync for lack of a pack; one found only
+in a project source does, so that one of your sources not synced yet still wins.
+
+A pack of a source that lists a version for it in `armadai-packs.yaml` is installed at the commit
+of that version's tag (`<pack>-vX.Y.Z`; an archive: its digest), not at the head of the clone, as
+`pack update` would do.
+If the cache does not know that version yet (`versions.yaml` lacks it, as before a first
+`pack sync`), `init --pack` syncs the source then, even though the pack was found locally. A failed
+sync is only a warning; the pack is then installed from the clone as it stands.
 
 ```yaml
 # ~/.config/armadai/registries.yaml
