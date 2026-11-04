@@ -77,32 +77,65 @@ pub fn render(text: &str, values: &BTreeMap<String, String>) -> (String, BTreeSe
     (out, missing)
 }
 
-/// Every string of `v`, nested ones included, rendered in place; keys and every other
-/// JSON type (number, bool, null) untouched.
+/// Every string of `v`, nested ones included, rendered in place, object keys too; numbers,
+/// bools and null untouched. A value whose variable is unset is emptied and reported in
+/// `missing`. Err (the message, without file) on a key whose variable is unset or empty
+/// (a key never takes an empty value), or on two keys of one object that render the same
+/// text; `v` is then partly rendered.
 pub fn render_value(
     v: &mut Value,
     values: &BTreeMap<String, String>,
     missing: &mut BTreeSet<String>,
-) {
+) -> Result<(), String> {
     match v {
         Value::String(s) => {
             let (r, m) = render(s, values);
             *s = r;
             missing.extend(m);
         }
-        Value::Array(a) => a.iter_mut().for_each(|v| render_value(v, values, missing)),
-        Value::Object(m) => m
-            .values_mut()
-            .for_each(|v| render_value(v, values, missing)),
+        Value::Array(a) => {
+            for v in a {
+                render_value(v, values, missing)?;
+            }
+        }
+        Value::Object(m) => {
+            let mut out = serde_json::Map::new();
+            let mut origin: BTreeMap<String, String> = BTreeMap::new();
+            for (k, mut val) in std::mem::take(m) {
+                if let Some(name) = names(&k)
+                    .into_iter()
+                    .find(|n| values.get(n).is_none_or(|v| v.is_empty()))
+                {
+                    return Err(format!(
+                        "under native, the key \"{k}\" uses variable {name}, which is empty or set by none of {}, .armadai/vars.local.yaml, .armadai/vars.yaml: a key never takes an empty value",
+                        env_name(&name)
+                    ));
+                }
+                let rendered = render(&k, values).0;
+                if let Some(first) = origin.get(&rendered) {
+                    return Err(format!(
+                        "under native, the keys \"{first}\" and \"{k}\" both render as \"{rendered}\""
+                    ));
+                }
+                render_value(&mut val, values, missing)?;
+                origin.insert(rendered.clone(), k);
+                out.insert(rendered, val);
+            }
+            *m = out;
+        }
         _ => {}
     }
+    Ok(())
 }
 
 fn value_names(v: &Value, out: &mut BTreeSet<String>) {
     match v {
         Value::String(s) => out.extend(names(s)),
         Value::Array(a) => a.iter().for_each(|v| value_names(v, out)),
-        Value::Object(m) => m.values().for_each(|v| value_names(v, out)),
+        Value::Object(m) => m.iter().for_each(|(k, v)| {
+            out.extend(names(k));
+            value_names(v, out);
+        }),
         _ => {}
     }
 }
@@ -174,8 +207,8 @@ pub fn files_names(files: &BTreeMap<PathBuf, Vec<u8>>) -> Result<BTreeSet<String
     Ok(out)
 }
 
-/// Render, in place: the string values under `native` of `project.yaml` (a file with no
-/// variable keeps its bytes), and the body (after the frontmatter) of `agents/*.md`,
+/// Render, in place: the string values and the keys under `native` of `project.yaml` (a
+/// file with no variable keeps its bytes), and the body (after the frontmatter) of `agents/*.md`,
 /// `templates/*.md`, `commands/*.md` and `skills/*/SKILL.md`. Frontmatters and every
 /// other file are left as they are.
 pub fn render_files(
@@ -208,7 +241,8 @@ pub fn render_files(
                 if used.is_empty() {
                     continue;
                 }
-                render_value(native, values, &mut done.missing);
+                render_value(native, values, &mut done.missing)
+                    .map_err(|e| format!("{}: {e}", p.display()))?;
                 done.used.extend(used);
                 crate::yaml::to_string(&NativeValue(v))
                     .map_err(|e| format!("{}: {e}", p.display()))?
@@ -306,22 +340,91 @@ mod tests {
     }
 
     #[test]
-    fn render_value_touches_strings_only() {
+    fn render_value_renders_keys() {
         let mut again = json!("{{var.a}}");
         render_value(
             &mut again,
             &vals(&[("a", "{{var.b}}"), ("b", "Y")]),
             &mut BTreeSet::new(),
-        );
+        )
+        .unwrap();
         assert_eq!(again, json!("{{var.b}}"));
-        let mut v = json!({"p": ["{{var.a}}", 7, true, null, {"k": "{{var.a}}"}], "{{var.a}}": 1});
+        let mut v = json!({"p": ["{{var.a}}", 7, true, null, {"{{var.a}}/k": "{{var.a}}"}], "{{var.a}}/**": 1, "keep": 2});
         let mut missing = BTreeSet::new();
-        render_value(&mut v, &vals(&[("a", "X")]), &mut missing);
+        render_value(&mut v, &vals(&[("a", "X")]), &mut missing).unwrap();
         assert_eq!(
             v,
-            json!({"p": ["X", 7, true, null, {"k": "X"}], "{{var.a}}": 1})
+            json!({"p": ["X", 7, true, null, {"X/k": "X"}], "X/**": 1, "keep": 2})
         );
         assert!(missing.is_empty());
+    }
+
+    const E1: &str = "under native, the keys \"{{var.a}}/**\" and \"/srv/data/**\" both render as \"/srv/data/**\"";
+    const E2: &str = "under native, the key \"{{var.data-dir}}/**\" uses variable data-dir, which is empty or set by none of ARMADAI_VAR_DATA_DIR, .armadai/vars.local.yaml, .armadai/vars.yaml: a key never takes an empty value";
+
+    #[test]
+    fn two_keys_rendering_the_same_text_are_an_error() {
+        let mut v = json!({"{{var.a}}/**": "allow", "/srv/data/**": "deny"});
+        let err = render_value(&mut v, &vals(&[("a", "/srv/data")]), &mut BTreeSet::new());
+        assert_eq!(err, Err(E1.to_string()));
+    }
+
+    #[test]
+    fn an_unset_variable_in_a_key_is_an_error() {
+        let mut v = json!({"{{var.data-dir}}/**": "allow"});
+        let mut missing = BTreeSet::new();
+        assert_eq!(
+            render_value(&mut v, &BTreeMap::new(), &mut missing),
+            Err(E2.to_string())
+        );
+        assert!(missing.is_empty());
+    }
+
+    #[test]
+    fn an_empty_variable_in_a_key_is_an_error() {
+        let mut v = json!({"{{var.data-dir}}/**": "allow"});
+        assert_eq!(
+            render_value(&mut v, &vals(&[("data-dir", "")]), &mut BTreeSet::new()),
+            Err(E2.to_string())
+        );
+    }
+
+    #[test]
+    fn an_empty_variable_in_a_value_stays_accepted() {
+        let mut v = json!({"k": "{{var.a}}/x", "j": "{{var.b}}"});
+        let mut missing = BTreeSet::new();
+        render_value(&mut v, &vals(&[("a", "")]), &mut missing).unwrap();
+        assert_eq!(v, json!({"k": "/x", "j": ""}));
+        assert_eq!(missing, set(&["b"]));
+    }
+
+    const NATIVE_KEY: &str = "name: p\nnative:\n  opencode:\n    permission:\n      external_directory:\n        \"{{var.d}}/**\": allow\n";
+
+    #[test]
+    fn a_variable_only_in_a_key_is_rendered() {
+        let mut f = files(&[("project.yaml", NATIVE_KEY)]);
+        assert_eq!(files_names(&f).unwrap(), set(&["d"]));
+        let done = render_files(&mut f, &vals(&[("d", "/srv/data")])).unwrap();
+        assert_eq!(done.used, set(&["d"]));
+        let m = crate::yaml::from_str_manifest(
+            std::str::from_utf8(&f[Path::new("project.yaml")]).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            m["native"]["opencode"]["permission"]["external_directory"],
+            json!({"/srv/data/**": "allow"})
+        );
+    }
+
+    #[test]
+    fn render_files_names_the_file_of_a_key_error() {
+        let src =
+            "name: p\nnative:\n  opencode:\n    \"{{var.a}}/**\": allow\n    /srv/data/**: deny\n";
+        let mut f = files(&[("project.yaml", src)]);
+        assert_eq!(
+            render_files(&mut f, &vals(&[("a", "/srv/data")])),
+            Err(format!("project.yaml: {E1}"))
+        );
     }
 
     fn files(kv: &[(&str, &str)]) -> BTreeMap<PathBuf, Vec<u8>> {
