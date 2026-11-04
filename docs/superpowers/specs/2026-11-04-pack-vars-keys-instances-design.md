@@ -11,6 +11,7 @@ Les variables de pack (`{{var.name}}`, rendues au `link` seulement) laissent deu
 - Un `{{var.…}}` resté littéral ailleurs dans une sortie compilée : « Hors lot, issue (Recommandé) » : pas de contrôle général dans ce lot ; une issue séparée est à ouvrir après le lot.
 - Collision de clés rendues : « Erreur (Recommandé) ».
 - Variable absente dans une clé de `native` : « Erreur pour une clé (Recommandé) » : `link` refuse ; les valeurs (et les `vars:` d'instance) gardent « avertissement + vide ».
+- Variable définie mais vide dans une clé : « Refuser une clé élargie (Recommandé) » : toute variable vide dans une clé de `native` (définie à `""` dans une couche, ou absente) fait refuser `link`, avant toute écriture ; sinon `"{{var.data-dir}}/**": allow` rendrait `"/**": allow`, tout le disque.
 
 ## 2. Objectifs, non-objectifs, anti-objectifs
 
@@ -53,18 +54,18 @@ Les variables de pack (`{{var.name}}`, rendues au `link` seulement) laissent deu
 2. Une clé de `native.claude` (ex. sous `env`) portant une variable est rendue de la même façon dans `.claude/settings.json`.
 3. Un `project.yaml` dont une variable n'apparaît que dans une clé (aucune valeur n'en porte) est tout de même rendu.
 4. Deux clés d'un même objet de `native` qui rendent la même chaîne (`"{{var.a}}/**"` et `"/srv/data/**"`, `a=/srv/data`) : `armadai link` sort avec un code non nul, le message nomme `project.yaml`, les deux clés d'origine et la clé rendue, et aucune sortie compilée n'est écrite ni modifiée (`opencode.json` identique octet pour octet avant et après). (Décision : erreur.)
-5. Une variable absente des trois couches dans une **clé** : `armadai link` sort avec un code non nul, l'erreur nomme la variable et le fichier, aucune sortie compilée n'est écrite ni modifiée. La même variable absente dans une **valeur** ou un `vars:` d'instance donne toujours la valeur vide et la ligne `var <name>: approximated (…)` du rapport, `link` réussit.
+5. Une variable **vide** dans une **clé** de `native`, qu'elle soit absente des trois couches ou définie à `""` (ex. `data-dir: ""` dans `vars.yaml`, ou `ARMADAI_VAR_DATA_DIR=` vide, avec la clé `"{{var.data-dir}}/**"`) : `armadai link` sort avec un code non nul, l'erreur nomme la variable et le fichier, aucune sortie compilée n'est écrite ni modifiée. La même variable vide ou absente dans une **valeur** ou un `vars:` d'instance donne toujours la valeur vide ; absente, la ligne `var <name>: approximated (…)` du rapport la nomme ; `link` réussit.
 6. Un agent instance (`from: <template>`, `vars: { dir: "{{var.data-dir}}" }`) avec `ARMADAI_VAR_DATA_DIR=/srv/data` donne un `.claude/agents/<id>.md` qui contient `/srv/data` à la place de `{{var.data-dir}}`; `.armadai/agents/<id>.md` est inchangé octet pour octet et garde `from:`/`vars:`.
 7. Une valeur de variable contenant `: ` et `#` (ex. `a: b # c`) est insérée telle quelle dans l'agent compilé, sans erreur de YAML.
 8. Les autres clés du frontmatter d'une instance (ex. `description: "{{var.x}}"`) ne sont pas substituées, et un entier, un booléen ou une clé sans variable de `native` sortent identiques à aujourd'hui.
 9. `armadai validate` accepte un projet portant ces clés et ces `vars:` littéraux, avec le même résultat qu'avant ce lot.
-10. Essai réel avec Dimitri : le pack réel dont 6 chemins étaient en dur est variabilisé (5 clés, 1 instance), lié dans un projet isolé (`HOME` et `ARMADAI_CONFIG_DIR` isolés) : aucune des sorties compilées ne contient un chemin de machine non voulu ni un `{{var.` résiduel, et le pack ne contient plus aucun de ces chemins.
+10. Essai réel avec Dimitri : le pack réel dont 6 chemins étaient en dur est variabilisé (5 clés, 1 instance), lié dans un projet isolé (`HOME` et `ARMADAI_CONFIG_DIR` isolés) : aucune sortie ne contient un `{{var.` résiduel, et le pack ne contient plus aucun chemin de machine.
 
 ## 6. Risques
 
 | # | Risque | Parade |
 |---|---|---|
-| R1 | Une clé de règle de permission (`"{{var.x}}/**": allow`) dont la variable est absente deviendrait `"/**"` : la règle s'élargirait à tout le disque. | Décidé : erreur pour une clé (critère 5) ; test du cas absent sur une clé, muté. |
+| R1 | Une clé de règle de permission (`"{{var.x}}/**": allow`) dont la variable est absente ou définie vide deviendrait `"/**"` : la règle s'élargirait à tout le disque. | Décidé : erreur pour toute variable vide dans une clé (critère 5) ; un test par cas (absente, définie à `""`), mutés. |
 | R2 | Réécrire le frontmatter d'une instance décale les lignes des diagnostics ou casse le YAML (valeur avec `:`/`#`). | Critère 7 ; choix de la technique au plan, muté. |
 | R3 | La clé rendue de `native.<cible>` de premier niveau contient un `.` : refusée par l'adaptateur OpenCode (`native.opencode key ... contains a .`) ; le message nomme la clé rendue, pas la clé d'origine. | À vérifier au plan ; accepté si le message reste compréhensible. |
 | R4 | Un test « clés intactes » existant (`render_value_touches_strings_only`) passe encore sans protéger la nouvelle règle. | Mutation : désactiver le rendu des clés, constater le rouge de chaque test ajouté. |
