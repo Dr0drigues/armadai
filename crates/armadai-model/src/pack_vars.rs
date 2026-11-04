@@ -152,6 +152,8 @@ pub struct Rendered {
 enum Scope {
     Manifest,
     Body,
+    /// `agents/*.md`: a body, and the `vars:` of a template instance.
+    Agent,
 }
 
 /// The part of a file (path relative to `.armadai/`) that is rendered.
@@ -165,7 +167,8 @@ fn scope(path: &Path) -> Option<Scope> {
         .collect::<Option<_>>()?;
     match parts.as_slice() {
         ["project.yaml"] => Some(Scope::Manifest),
-        ["agents" | "templates" | "commands", f] if f.ends_with(".md") => Some(Scope::Body),
+        ["agents", f] if f.ends_with(".md") => Some(Scope::Agent),
+        ["templates" | "commands", f] if f.ends_with(".md") => Some(Scope::Body),
         ["skills", _, "SKILL.md"] => Some(Scope::Body),
         _ => None,
     }
@@ -178,6 +181,86 @@ fn text<'a>(path: &Path, bytes: &'a [u8]) -> Result<&'a str, String> {
 /// The byte offset where the body starts (after the frontmatter; 0 without one).
 fn body_start(text: &str) -> usize {
     crate::load::split_frontmatter(text).map_or(0, |(_, body, _)| text.len() - body.len())
+}
+
+/// The frontmatter of a template instance (`from:` and a `vars:` object) holding a pack
+/// variable in a text value of `vars`; None for anything else (the loader reports what
+/// does not parse).
+fn instance(text: &str) -> Option<serde_json::Map<String, Value>> {
+    let (yaml, _, _) = crate::load::split_frontmatter(text)?;
+    let map: serde_json::Map<String, Value> = crate::yaml::from_str(yaml).ok()?;
+    let vars = map.get("vars")?.as_object()?;
+    (map.contains_key("from")
+        && vars
+            .values()
+            .any(|v| v.as_str().is_some_and(|s| !names(s).is_empty())))
+    .then_some(map)
+}
+
+/// The `vars:` of a template instance rendered, the rest of the frontmatter untouched:
+/// the lines of the top-level `vars:` entry become `vars: <JSON object>` (a JSON string
+/// is a YAML double-quoted scalar, so a value is never re-parsed) followed by empty lines,
+/// to keep the line count (diagnostic positions below stay exact). None when nothing to
+/// render; Err when the entry cannot be rewritten.
+fn instance_vars(
+    path: &Path,
+    text: &str,
+    values: &BTreeMap<String, String>,
+    done: &mut Rendered,
+) -> Result<Option<String>, String> {
+    let Some(map) = instance(text) else {
+        return Ok(None);
+    };
+    let (yaml, _, _) = crate::load::split_frontmatter(text).expect("instance() parsed it");
+    let at = yaml.as_ptr() as usize - text.as_ptr() as usize;
+    let e3 = || {
+        format!(
+            "{}: vars holds a pack variable but is not a \"vars:\" block at the start of a frontmatter line: write it that way",
+            path.display()
+        )
+    };
+    let lines: Vec<&str> = yaml.split_inclusive('\n').collect();
+    let first = lines
+        .iter()
+        .position(|l| {
+            l.strip_prefix("vars:")
+                .is_some_and(|r| r.is_empty() || r.starts_with([' ', '\t', '\r', '\n']))
+        })
+        .ok_or_else(e3)?;
+    let len = lines[first + 1..]
+        .iter()
+        .take_while(|l| l.starts_with([' ', '\t', '#', '\r', '\n']))
+        .count()
+        + 1;
+    let mut rendered = map.clone();
+    let mut local = Rendered::default();
+    for v in rendered["vars"]
+        .as_object_mut()
+        .expect("object")
+        .values_mut()
+    {
+        if let Value::String(s) = v {
+            local.used.extend(names(s));
+            let (r, m) = render(s, values);
+            *s = r;
+            local.missing.extend(m);
+        }
+    }
+    let json = serde_json::to_string(&rendered["vars"]).expect("a JSON value serializes");
+    let mut new_yaml: String = lines[..first].concat();
+    new_yaml.push_str(&format!("vars: {json}\n{}", "\n".repeat(len - 1)));
+    new_yaml.push_str(&lines[first + len..].concat());
+    let reparsed: Option<serde_json::Map<String, Value>> = crate::yaml::from_str(&new_yaml).ok();
+    if reparsed.as_ref() != Some(&rendered) {
+        return Err(e3());
+    }
+    done.used.extend(local.used);
+    done.missing.extend(local.missing);
+    Ok(Some(format!(
+        "{}{new_yaml}{}",
+        &text[..at],
+        &text[at + yaml.len()..]
+    )))
 }
 
 fn manifest(path: &Path, text: &str) -> Result<Value, String> {
@@ -196,7 +279,17 @@ pub fn files_names(files: &BTreeMap<PathBuf, Vec<u8>>) -> Result<BTreeSet<String
         let Some(s) = scope(p) else { continue };
         let t = text(p, b)?;
         match s {
-            Scope::Body => out.extend(names(&t[body_start(t)..])),
+            Scope::Body | Scope::Agent => {
+                out.extend(names(&t[body_start(t)..]));
+                if let Some(map) = instance(t) {
+                    map["vars"]
+                        .as_object()
+                        .expect("object")
+                        .values()
+                        .filter_map(Value::as_str)
+                        .for_each(|s| out.extend(names(s)));
+                }
+            }
             Scope::Manifest => {
                 if let Some(n) = manifest(p, t)?.get("native") {
                     value_names(n, &mut out);
@@ -208,8 +301,9 @@ pub fn files_names(files: &BTreeMap<PathBuf, Vec<u8>>) -> Result<BTreeSet<String
 }
 
 /// Render, in place: the string values and the keys under `native` of `project.yaml` (a
-/// file with no variable keeps its bytes), and the body (after the frontmatter) of `agents/*.md`,
-/// `templates/*.md`, `commands/*.md` and `skills/*/SKILL.md`. Frontmatters and every
+/// file with no variable keeps its bytes), the text values of `vars:` of an `agents/*.md`
+/// template instance (`from:`), and the body (after the frontmatter) of `agents/*.md`,
+/// `templates/*.md`, `commands/*.md` and `skills/*/SKILL.md`. Other frontmatters and every
 /// other file are left as they are.
 pub fn render_files(
     files: &mut BTreeMap<PathBuf, Vec<u8>>,
@@ -220,10 +314,15 @@ pub fn render_files(
         let Some(s) = scope(p) else { continue };
         let t = text(p, b)?;
         let new = match s {
-            Scope::Body => {
+            Scope::Body | Scope::Agent => {
+                let head = match s {
+                    Scope::Agent => instance_vars(p, t, values, &mut done)?,
+                    _ => None,
+                };
+                let t = head.as_deref().unwrap_or(t);
                 let at = body_start(t);
                 let used = names(&t[at..]);
-                if used.is_empty() {
+                if used.is_empty() && head.is_none() {
                     continue;
                 }
                 let (body, missing) = render(&t[at..], values);
@@ -487,6 +586,106 @@ mod tests {
             let mut f = BTreeMap::from([(PathBuf::from(name), bytes.to_vec())]);
             assert!(render_files(&mut f, &vals(&[])).is_err(), "{bytes:?}");
             assert!(files_names(&f).is_err(), "{bytes:?}");
+        }
+    }
+
+    const E3: &str = "agents/a.md: vars holds a pack variable but is not a \"vars:\" block at the start of a frontmatter line: write it that way";
+
+    fn agent_bytes(f: &BTreeMap<PathBuf, Vec<u8>>) -> &str {
+        std::str::from_utf8(&f[Path::new("agents/a.md")]).unwrap()
+    }
+
+    #[test]
+    fn instance_vars_are_rendered_in_place() {
+        let src = "---\nfrom: t\ndescription: \"{{var.x}}\"\nvars:\n  dir: \"{{var.data-dir}}\"\n  other: plain\nmodel: m\n---\nbody\n";
+        let mut f = files(&[("agents/a.md", src)]);
+        let done = render_files(&mut f, &vals(&[("data-dir", "/srv/data")])).unwrap();
+        assert_eq!(
+            agent_bytes(&f),
+            "---\nfrom: t\ndescription: \"{{var.x}}\"\nvars: {\"dir\":\"/srv/data\",\"other\":\"plain\"}\n\n\nmodel: m\n---\nbody\n"
+        );
+        assert_eq!(done.used, set(&["data-dir"]));
+    }
+
+    #[test]
+    fn a_value_with_yaml_syntax_stays_one_string() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join(".armadai");
+        std::fs::create_dir_all(base.join("agents")).unwrap();
+        std::fs::create_dir_all(base.join("templates")).unwrap();
+        std::fs::write(base.join("project.yaml"), "schema_version: 1\n").unwrap();
+        std::fs::write(
+            base.join("templates/t.md"),
+            "---\ndescription: T\n---\nIn {{dir}}\n",
+        )
+        .unwrap();
+        let src = "---\nfrom: t\nvars:\n  dir: \"{{var.data-dir}}\"\n---\n";
+        let mut f = files(&[("agents/a.md", src)]);
+        let value = "a: b # c \"q\"";
+        render_files(&mut f, &vals(&[("data-dir", value)])).unwrap();
+        let (yaml, _, _) = crate::load::split_frontmatter(agent_bytes(&f)).unwrap();
+        let map: serde_json::Map<String, Value> = crate::yaml::from_str(yaml).unwrap();
+        assert_eq!(map["vars"]["dir"], json!(value));
+        std::fs::write(base.join("agents/a.md"), &f[Path::new("agents/a.md")]).unwrap();
+        let loaded = crate::load_project(dir.path());
+        assert_eq!(loaded.diagnostics, vec![]);
+        assert_eq!(
+            loaded.project.unwrap().agents["a"].body.trim_end(),
+            format!("In {value}")
+        );
+    }
+
+    #[test]
+    fn an_instance_without_pack_variable_keeps_its_bytes() {
+        let plain = "---\nfrom: t\nvars:\n  dir:   x\n---\nbody\n";
+        let nofrom = "---\ndescription: \"{{var.a}}\"\nvars:\n  dir: \"{{var.a}}\"\n---\nbody\n";
+        let tpl = "---\ndescription: \"{{var.a}}\"\n---\nbody\n";
+        let mut f = files(&[
+            ("agents/a.md", plain),
+            ("agents/b.md", nofrom),
+            ("templates/t.md", tpl),
+        ]);
+        let before = f.clone();
+        let done = render_files(&mut f, &vals(&[("a", "X")])).unwrap();
+        assert_eq!(f, before);
+        assert_eq!(done, Rendered::default());
+    }
+
+    #[test]
+    fn an_unset_variable_in_instance_vars_is_empty() {
+        let src = "---\nfrom: t\nvars:\n  dir: \"{{var.data-dir}}/x\"\n---\n";
+        let mut f = files(&[("agents/a.md", src)]);
+        let done = render_files(&mut f, &vals(&[])).unwrap();
+        assert_eq!(
+            agent_bytes(&f),
+            "---\nfrom: t\nvars: {\"dir\":\"/x\"}\n\n---\n"
+        );
+        assert_eq!(done.missing, set(&["data-dir"]));
+    }
+
+    #[test]
+    fn instance_vars_count_as_used_names() {
+        let f = files(&[(
+            "agents/a.md",
+            "---\nfrom: t\nvars:\n  d: \"{{var.d}}\"\n---\n",
+        )]);
+        assert_eq!(files_names(&f).unwrap(), set(&["d"]));
+    }
+
+    #[test]
+    fn unwritable_instance_vars_are_an_error() {
+        for src in [
+            "---\n{from: t, vars: {dir: \"{{var.d}}\"}}\n---\n",
+            "---\nfrom: t\n\"vars\":\n  dir: \"{{var.d}}\"\n---\n",
+            // `vars:` at column 0 inside a flow mapping: the guard refuses the rewrite
+            "---\n{from: t,\nvars: {dir: \"{{var.d}}\"}}\n---\n",
+        ] {
+            let mut f = files(&[("agents/a.md", src)]);
+            assert_eq!(
+                render_files(&mut f, &vals(&[("d", "x")])),
+                Err(E3.to_string()),
+                "{src}"
+            );
         }
     }
 
