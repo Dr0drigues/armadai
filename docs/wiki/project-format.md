@@ -62,11 +62,13 @@ value and an `approximated` line `var <name>` in the report. The files of `.arma
 rewritten. See [Starter packs](starter-packs.md#variables).
 
 `ui` holds opt-in interface keys: absent or `false`, `link` writes nothing for them. `ui.status_line`
-and `ui.subagent_status_line` (booleans; the second is a status row per subagent; any other value, and any other key under `ui`, is `invalid-yaml`) asks `link --target claude`
+(a boolean; any other value, and any other key under `ui`, is `invalid-yaml`) asks `link --target claude`
 for a `statusLine` in `.claude/settings.json` that runs `armadai __claude-statusline`, which shows the
 progress of the flow in progress. It is Claude Code only. If `.claude/settings.json` already holds a
 `statusLine` that link does not own, link keeps yours and reports `not-compiled`; setting it also in
 `native.claude.statusLine` is an error. Once compiled, it replaces the status bar you had.
+`ui.subagent_status_line` is a boolean too (any other value is `invalid-yaml`): a status line per
+subagent showing the step it holds. It is Claude Code only.
 
 ## `agents/<id>.md`
 
