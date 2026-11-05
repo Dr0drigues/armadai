@@ -521,7 +521,7 @@ Links taken more than once: build → guard (2).
 
 | Time (UTC) | From | To | State |
 |---|---|---|---|
-| 09:15:20 | design | build | done |
+| 2026-10-22 09:15:20 | design | build | done |
 ```
 
 Session sans run : `# Flow status: session s1` puis `No run of a declared flow in this session yet.` ; sans journal : la ligne actuelle `no flow activity recorded yet (...)`.

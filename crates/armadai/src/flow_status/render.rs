@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use super::record::{LOGS_DIR, log_path};
-use super::runs::{Mark, Run};
+use super::runs::{Mark, Run, StepView};
 
 /// The runs of one session: a `session <id>` heading, then each run (finished
 /// and interrupted ones first, each group in start order) with one line per step, its loops
@@ -14,31 +14,11 @@ pub fn render(runs: &[Run], session: &str) -> String {
     if runs.is_empty() {
         out += "\nno run of a declared flow in this session yet\n";
     }
-    let mut ordered: Vec<&Run> = runs.iter().collect();
-    ordered.sort_by_key(|r| !(r.finished || r.interrupted)); // stable: start order kept
-    for run in ordered {
-        let status = if run.finished {
-            "finished"
-        } else if run.interrupted {
-            "interrupted"
-        } else {
-            "in progress"
-        };
-        out += &format!("\n{}  {status}\n", run.flow);
+    for run in ordered(runs) {
+        out += &format!("\n{}  {}\n", run.flow, status_word(run));
         let w = run.steps.iter().map(|v| v.step.len()).max().unwrap_or(0);
         for v in &run.steps {
-            let sign = v.mark.sign();
-            let word = match v.mark {
-                Mark::Running => Some("running"),
-                Mark::Pending => Some("pending"),
-                _ => None,
-            };
-            let what = (v.state.as_deref().or(word).map(str::to_string))
-                .into_iter()
-                .chain(v.note.as_ref().map(|n| format!("({n})")))
-                .collect::<Vec<_>>()
-                .join(" ");
-            out += format!("  {sign} {:<w$}  {what}", v.step).trim_end();
+            out += format!("  {} {:<w$}  {}", v.mark.sign(), v.step, status_text(v)).trim_end();
             out.push('\n');
         }
         for (from, to, n) in &run.loops {
@@ -50,6 +30,89 @@ pub fn render(runs: &[Run], session: &str) -> String {
                 .map(|s| format!("  ({s})"))
                 .unwrap_or_default();
             out += &format!("  {}  {from} → {to}{state}\n", utc(*ts, "%H:%M:%S"));
+        }
+    }
+    out
+}
+
+/// Finished and interrupted runs first, each group in start order.
+fn ordered(runs: &[Run]) -> Vec<&Run> {
+    let mut ordered: Vec<&Run> = runs.iter().collect();
+    ordered.sort_by_key(|r| !(r.finished || r.interrupted));
+    ordered
+}
+
+fn status_word(run: &Run) -> &'static str {
+    if run.finished {
+        "finished"
+    } else if run.interrupted {
+        "interrupted"
+    } else {
+        "in progress"
+    }
+}
+
+/// The state (or `running`/`pending`) of a step, then its note in parentheses.
+fn status_text(v: &StepView) -> String {
+    let word = match v.mark {
+        Mark::Running => Some("running"),
+        Mark::Pending => Some("pending"),
+        _ => None,
+    };
+    (v.state.as_deref().or(word).map(str::to_string))
+        .into_iter()
+        .chain(v.note.as_ref().map(|n| format!("({n})")))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// A table cell: a `|` written by an agent (a state, say) must not end the cell.
+fn cell(text: &str) -> String {
+    text.replace('|', "\\|")
+}
+
+/// `armadai flow status --format md`: the same runs as a Markdown snapshot, to
+/// paste in a PR or an issue. Never coloured.
+pub fn render_md(runs: &[Run], session: &str, last_event_at: Option<u64>) -> String {
+    let mut out = format!("# Flow status: session {session}\n");
+    if runs.is_empty() {
+        return out + "\nNo run of a declared flow in this session yet.\n";
+    }
+    if let Some(ts) = last_event_at {
+        out += &format!(
+            "\nSnapshot at the last recorded event, {} UTC.\n",
+            utc(ts, "%Y-%m-%d %H:%M:%S")
+        );
+    }
+    for run in ordered(runs) {
+        out += &format!("\n## {}: {}\n\n", run.flow, status_word(run));
+        out += "| Step | Mark | Status |\n|---|---|---|\n";
+        for v in &run.steps {
+            let (step, status) = (cell(&v.step), cell(&status_text(v)));
+            out += &format!("| {step} | {} | {status} |\n", v.mark.sign());
+        }
+        if !run.loops.is_empty() {
+            let links: Vec<String> = (run.loops.iter())
+                .map(|(from, to, n)| format!("{from} → {to} ({n})"))
+                .collect();
+            out += &format!("\nLinks taken more than once: {}.\n", links.join(", "));
+        }
+        if !run.transitions.is_empty() {
+            out += "\n| Time (UTC) | From | To | State |\n|---|---|---|---|\n";
+            let mut day = None;
+            for (ts, from, to, state) in &run.transitions {
+                let (from, to) = (cell(from), cell(to));
+                let state = cell(state.as_deref().unwrap_or(""));
+                // the date shows on the first row and whenever the UTC day changes
+                let today = ts / 86_400;
+                let fmt = if day == Some(today) {
+                    "%H:%M:%S"
+                } else {
+                    "%Y-%m-%d %H:%M:%S"
+                };
+                day = Some(today);
+                out += &format!("| {} | {from} | {to} | {state} |\n", utc(*ts, fmt));
+            }
         }
     }
     out
@@ -197,6 +260,108 @@ mod tests {
             finished: false,
             interrupted: false,
         }
+    }
+
+    #[test]
+    fn md_is_a_snapshot_with_tables_and_no_escape() {
+        let want = "# Flow status: session s1\n\
+             \n\
+             Snapshot at the last recorded event, 2026-10-22 09:15:50 UTC.\n\
+             \n\
+             ## hotfix: finished\n\
+             \n\
+             | Step | Mark | Status |\n\
+             |---|---|---|\n\
+             | triage | ✓ | done |\n\
+             | check | ✓ | approved |\n\
+             \n\
+             | Time (UTC) | From | To | State |\n\
+             |---|---|---|---|\n\
+             | 2026-10-22 09:15:05 | triage | check | done |\n\
+             \n\
+             ## deliver: in progress\n\
+             \n\
+             | Step | Mark | Status |\n\
+             |---|---|---|\n\
+             | design | ✓ | done |\n\
+             | build | ✓ | done |\n\
+             | guard | ● | running |\n\
+             | validate | ○ | pending |\n\
+             \n\
+             Links taken more than once: build → guard (2).\n\
+             \n\
+             | Time (UTC) | From | To | State |\n\
+             |---|---|---|---|\n\
+             | 2026-10-22 09:15:20 | design | build | done |\n\
+             | 09:15:30 | build | guard | done |\n\
+             | 09:15:40 | guard | build | rejected |\n\
+             | 09:15:50 | build | guard | done |\n";
+        let got = render_md(&[looping(), finished()], "s1", Some(T0 + 50));
+        assert_eq!(got, want);
+        assert!(!got.contains('\x1b'));
+    }
+
+    #[test]
+    fn md_status_column_carries_the_note() {
+        let got = render_md(&[uncertain()], "s", None);
+        assert!(
+            got.contains("| check | ? | (no STATE line) |\n")
+                && got.contains("| verify | ✗ | scope_changed (undeclared state) |\n"),
+            "{got}"
+        );
+    }
+
+    #[test]
+    fn md_escapes_a_pipe_in_a_cell_and_text_does_not() {
+        let mut run = uncertain();
+        run.steps[2] = view("verify", Mark::Unexpected, Some("a|b"), Some("x|y"));
+        run.transitions = vec![t(T0, "frame", "verify", Some("a|b"))];
+        let got = render_md(&[run.clone()], "s", None);
+        assert!(
+            got.contains("| verify | ✗ | a\\|b (x\\|y) |\n")
+                && got.contains("| 2026-10-22 09:15:00 | frame | verify | a\\|b |\n"),
+            "{got}"
+        );
+        assert!(render(&[run], "s").contains("a|b (x|y)"));
+    }
+
+    #[test]
+    fn md_shows_the_date_on_the_first_row_and_when_the_day_changes() {
+        const DAY: u64 = 86_400;
+        let mut run = finished();
+        run.transitions = vec![
+            t(T0, "a", "b", None),
+            t(T0 + 60, "b", "c", None),
+            t(T0 + DAY, "c", "d", None),
+            t(T0 + DAY + 60, "d", "e", None),
+        ];
+        let got = render_md(&[run], "s", None);
+        let rows: Vec<&str> = got
+            .lines()
+            .filter(|l| {
+                l.contains(" | a ")
+                    || l.contains(" | b ")
+                    || l.contains(" | c ")
+                    || l.contains(" | d ")
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                "| 2026-10-22 09:15:00 | a | b |  |",
+                "| 09:16:00 | b | c |  |",
+                "| 2026-10-23 09:15:00 | c | d |  |",
+                "| 09:16:00 | d | e |  |",
+            ]
+        );
+    }
+
+    #[test]
+    fn md_of_a_session_without_run_says_so() {
+        assert_eq!(
+            render_md(&[], "s1", Some(T0)),
+            "# Flow status: session s1\n\nNo run of a declared flow in this session yet.\n"
+        );
     }
 
     #[test]

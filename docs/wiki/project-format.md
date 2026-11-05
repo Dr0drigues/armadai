@@ -303,6 +303,7 @@ nor `policy.delegation: strict` is guidance only, and `new flow` says so.
 ```bash
 armadai graph review > review.mmd     # one flow
 armadai graph                         # every flow
+armadai graph --format md > flows.md  # Markdown: a heading and a mermaid block per flow
 ```
 
 `graph` prints Mermaid, and nothing else, on stdout:
@@ -323,6 +324,8 @@ flowchart TD
   `on_failure`) are dotted.
 - Without a flow id, every flow is printed, one diagram each, separated by a blank line: Mermaid
   reads one diagram per document, so render them one at a time.
+- `--format md` prints `## <flow id>`, a blank line and a ```` ```mermaid ```` block (the same
+  Mermaid as the default format) per flow, for GitHub, GitLab or VS Code to render.
 - An unknown flow lists the flows; an invalid project prints its diagnostics on stderr and exits
   with 1.
 

@@ -24,6 +24,12 @@ pub enum ColorArg {
     Never,
 }
 
+#[derive(clap::ValueEnum, Clone, Copy, PartialEq)]
+pub enum FormatArg {
+    Text,
+    Md,
+}
+
 #[derive(clap::Subcommand)]
 pub enum FlowCommand {
     /// Show where each flow of a Claude Code session stands
@@ -39,7 +45,7 @@ pub enum FlowCommand {
             it finishes, then the sub-agents are inferred again; it is shown `interrupted` when a \
             later flow command closed it before it finished. Without --session, the latest \
             session.\n\n\
-            --json prints a snapshot for other tools; --line prints one line for \
+            --json and --format md print a snapshot for other tools; --line prints one line for \
             a status bar (Claude Code's statusLine, or a custom command in your own bar).",
         after_help = "Examples:\n  \
             armadai flow status\n  \
@@ -47,7 +53,8 @@ pub enum FlowCommand {
             armadai flow status --list\n  \
             armadai flow status --session 3f2a9c\n  \
             armadai flow status --line\n  \
-            armadai flow status --json"
+            armadai flow status --json\n  \
+            armadai flow status --format md > status.md"
     )]
     Status {
         /// Only the runs of this flow (id under .armadai/flows/)
@@ -67,6 +74,9 @@ pub enum FlowCommand {
         /// Print one line for a status bar: the flow, its current step and its progress; reads session_id and cwd from a JSON on stdin when piped; never fails
         #[arg(long, conflicts_with_all = ["watch", "list", "json"])]
         line: bool,
+        /// Output format: text, or md (a Markdown snapshot for GitHub, GitLab or VS Code)
+        #[arg(long, value_enum, default_value = "text", conflicts_with_all = ["watch", "list", "json", "line"])]
+        format: FormatArg,
         /// When to colour the output: auto (a terminal; NO_COLOR and CLICOLOR_FORCE honoured), always, never
         #[arg(long, value_enum, default_value = "auto")]
         color: ColorArg,
@@ -81,6 +91,7 @@ pub fn execute(cmd: FlowCommand) -> anyhow::Result<()> {
         list,
         json,
         line,
+        format,
         color,
     } = cmd;
     anstream::ColorChoice::write_global(match color {
@@ -162,6 +173,10 @@ pub fn execute(cmd: FlowCommand) -> anyhow::Result<()> {
         anstream::println!("{}", serde_json::to_string_pretty(&doc)?);
         return Ok(());
     }
+    if format == FormatArg::Md {
+        anstream::print!("{}", view.md());
+        return Ok(());
+    }
     if !watch {
         print_painted(&view.text());
         return Ok(());
@@ -216,6 +231,16 @@ impl View {
             found.retain(|r| r.flow.split(GROUP_SEP).any(|f| f == id));
         }
         (Some((session, events)), found)
+    }
+
+    fn md(&self) -> String {
+        let (session, found) = self.snapshot();
+        match (session, self.log().1) {
+            (Some((session, events)), Some(path)) if path.is_file() => {
+                render::render_md(&found, &session, events.last().map(|e| e.ts))
+            }
+            _ => format!("{NO_ACTIVITY}\n"),
+        }
     }
 
     fn text(&self) -> String {
