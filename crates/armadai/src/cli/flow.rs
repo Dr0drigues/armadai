@@ -326,9 +326,29 @@ pub fn statusline_main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `armadai __claude-subagent-statusline`: one JSON line per subagent row
+/// that holds a step of a run in progress; nothing, and exit 0, otherwise.
+pub fn subagent_statusline_main() -> anyhow::Result<()> {
+    anstream::ColorChoice::write_global(anstream::ColorChoice::Always);
+    let json = stdin_json();
+    let tasks = json
+        .as_ref()
+        .map(crate::claude_adapter::subagent_status::tasks)
+        .unwrap_or_default();
+    if tasks.is_empty() {
+        return Ok(());
+    }
+    if let Some((project, runs)) = session_runs(json.as_ref(), None, None, false) {
+        for row in crate::claude_adapter::subagent_status::rows(&project, &runs, &tasks) {
+            println!("{row}");
+        }
+    }
+    Ok(())
+}
+
 /// The pieces joined by single spaces, each wrapped in its style (the
 /// printing macros keep or strip the escapes as `--color` says).
-fn painted(pieces: &[(Piece, String)]) -> String {
+pub(crate) fn painted(pieces: &[(Piece, String)]) -> String {
     use crate::cli::style;
     pieces
         .iter()
@@ -357,8 +377,17 @@ fn painted(pieces: &[(Piece, String)]) -> String {
 /// project of the JSON's `cwd`, else the current directory). `None` on any failure.
 /// `strict` (the `__claude-statusline` way): only the JSON's `session_id`, never the latest log.
 fn line_runs(flow: Option<String>, session: Option<String>, strict: bool) -> Option<Vec<Run>> {
-    let json = stdin_json();
-    let field = |k: &str| json.as_ref()?.get(k)?.as_str().map(str::to_string);
+    Some(session_runs(stdin_json().as_ref(), flow, session, strict)?.1)
+}
+
+/// `line_runs` on an already read JSON, with the project it resolved.
+fn session_runs(
+    json: Option<&serde_json::Value>,
+    flow: Option<String>,
+    session: Option<String>,
+    strict: bool,
+) -> Option<(armadai_model::Project, Vec<Run>)> {
+    let field = |k: &str| json?.get(k)?.as_str().map(str::to_string);
     let cwd = field("cwd")
         .map(PathBuf::from)
         .filter(|p| p.is_dir())
@@ -385,7 +414,8 @@ fn line_runs(flow: Option<String>, session: Option<String>, strict: bool) -> Opt
         flow,
         session,
     };
-    Some(view.snapshot().1)
+    let runs = view.snapshot().1;
+    Some((view.project, runs))
 }
 
 #[cfg(test)]
