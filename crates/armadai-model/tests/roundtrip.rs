@@ -332,4 +332,9 @@ fn ui_is_written_only_when_it_is_not_the_default() {
         write("ui: { status_line: true }\n"),
         "schema_version: 1\nui:\n  status_line: true\n"
     );
+    assert_eq!(write("ui: { subagent_status_line: false }\n"), plain);
+    assert_eq!(
+        write("ui: { subagent_status_line: true }\n"),
+        "schema_version: 1\nui:\n  subagent_status_line: true\n"
+    );
 }

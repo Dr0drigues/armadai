@@ -52,6 +52,10 @@
         "status_line": {
           "description": "Compile a Claude Code statusLine that shows the flow progress.",
           "type": "boolean"
+        },
+        "subagent_status_line": {
+          "description": "Compile a Claude Code subagent status row that shows the step a subagent holds.",
+          "type": "boolean"
         }
       },
       "type": "object"

@@ -594,3 +594,21 @@ fn ui_unknown_key_is_invalid_yaml() {
     assert_eq!((d.code, d.line), ("invalid-yaml", Some(2)));
     assert!(d.message.contains("colour"), "{}", d.message);
 }
+
+#[test]
+fn ui_subagent_status_line_loads() {
+    let dir = ui_project("{ subagent_status_line: true }");
+    let l = load_project(dir.path());
+    assert!(l.diagnostics.is_empty(), "{:?}", l.diagnostics);
+    let ui = l.project.unwrap().manifest.ui;
+    assert!(ui.subagent_status_line && !ui.status_line);
+}
+
+#[test]
+fn ui_subagent_status_line_must_be_a_boolean() {
+    let dir = ui_project("{ subagent_status_line: maybe }");
+    let l = load_project(dir.path());
+    assert_eq!(l.diagnostics.len(), 1, "{:?}", l.diagnostics);
+    let d = &l.diagnostics[0];
+    assert_eq!((d.code, d.line), ("invalid-yaml", Some(2)));
+}

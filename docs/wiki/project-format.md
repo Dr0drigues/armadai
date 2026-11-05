@@ -45,6 +45,7 @@ policy:                      # optional
 native: { claude: {} }       # optional, opaque
 ui:                          # optional, opt-in interface keys
   status_line: true          # Claude Code only: a status bar with the flow progress (default false)
+  subagent_status_line: true # Claude Code only: a status row per subagent showing the step it holds (default false)
 ```
 
 With `pack:`, the project is built on a pack by reference: its files are the pack's, plus yours at
@@ -61,7 +62,7 @@ value and an `approximated` line `var <name>` in the report. The files of `.arma
 rewritten. See [Starter packs](starter-packs.md#variables).
 
 `ui` holds opt-in interface keys: absent or `false`, `link` writes nothing for them. `ui.status_line`
-(a boolean; any other value, and any other key under `ui`, is `invalid-yaml`) asks `link --target claude`
+and `ui.subagent_status_line` (booleans; the second is a status row per subagent; any other value, and any other key under `ui`, is `invalid-yaml`) asks `link --target claude`
 for a `statusLine` in `.claude/settings.json` that runs `armadai __claude-statusline`, which shows the
 progress of the flow in progress. It is Claude Code only. If `.claude/settings.json` already holds a
 `statusLine` that link does not own, link keeps yours and reports `not-compiled`; setting it also in
