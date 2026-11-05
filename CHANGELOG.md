@@ -2,8 +2,10 @@
 
 ### Added
 
+- `armadai graph --format md` prints each flow as a Markdown heading and a mermaid block, to render on GitHub, GitLab or in VS Code.
 - `armadai flow status --json` prints a session as JSON (schema `armadai.flow-status/1`, which only grows) for other tools; see [Flow status](docs/wiki/flow-status.md).
 - `armadai flow status --line` prints one line for a status bar (`deliver ● guard 2/4 (loops 1)`) and never fails; `--color auto|always|never` sets the colour of the text outputs of `flow status` (`--json` is never coloured).
+- `armadai flow status --format md` prints a session as a Markdown snapshot (headings and tables), for a pull request, an issue or VS Code; see [Flow status](docs/wiki/flow-status.md).
 
 ## v1.0.0-rc.9 (2026-11-04)
 

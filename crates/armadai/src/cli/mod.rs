@@ -95,14 +95,16 @@ pub enum Command {
     #[command(
         long_about = "Print the graph of a flow as Mermaid (flowchart TD) on stdout, and \
             nothing else: redirect it to a .mmd file or paste it into a Markdown ```mermaid \
-            block.\n\n\
+            block. With --format md, each flow is printed as a `## <flow id>` heading \
+            followed by a ```mermaid block, ready for GitHub, GitLab or VS Code.\n\n\
             Without a flow, every flow of the project is printed, one diagram each, opened by \
             a `%% flow: <id>` comment and separated by a blank line (Mermaid renders one \
             diagram per document: take them one at a time). Conditional links are labelled \
             with their state; failure paths (`when: failed`, `on_failure`) are dotted.",
         after_help = "Examples:\n  \
             armadai graph review > review.mmd\n  \
-            armadai graph"
+            armadai graph\n  \
+            armadai graph --format md > flows.md"
     )]
     Graph {
         /// Flow id (its file name under .armadai/flows/); every flow when omitted

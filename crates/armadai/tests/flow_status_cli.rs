@@ -918,3 +918,41 @@ fn line_in_auto_prints_no_escape_on_a_pipe_without_any_colour_variable() {
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&out.stdout), NEW_LINE);
 }
+
+#[test]
+fn md_prints_the_snapshot_without_colour_even_when_forced() {
+    let env = Env::new();
+    looping(&env, "s1", T0 + 100);
+    let want = "# Flow status: session s1\n\nSnapshot at the last recorded event, 2026-10-22 09:15:50 UTC.\n\n## deliver: in progress\n\n| Step | Mark | Status |\n|---|---|---|\n| design | ✓ | done |\n| build | ✓ | done |\n| guard | ● | running |\n| validate | ○ | pending |\n\nLinks taken more than once: build → guard (2).\n\n| Time (UTC) | From | To | State |\n|---|---|---|---|\n| 2026-10-22 09:15:20 | design | build | done |\n| 09:15:30 | build | guard | done |\n| 09:15:40 | guard | build | rejected |\n| 09:15:50 | build | guard | done |\n";
+    for extra in [&["--color", "always"][..], &[][..]] {
+        let mut args = vec!["flow", "status", "--format", "md"];
+        args.extend_from_slice(extra);
+        let (code, out, err) = env.run(&env.root(), &args);
+        assert_eq!((code, err.as_str(), out.as_str()), (Some(0), "", want));
+    }
+}
+
+#[test]
+fn md_without_a_log_says_there_is_no_activity_and_text_is_unchanged() {
+    let env = Env::new();
+    let (code, out, _) = env.run(&env.root(), &["flow", "status", "--format", "md"]);
+    assert_eq!(
+        (code, out.as_str()),
+        (
+            Some(0),
+            "no flow activity recorded yet (link installs the hooks; start a flow in Claude Code)\n"
+        )
+    );
+    looping(&env, "s1", T0 + 100);
+    let (_, out, _) = env.run(&env.root(), &["flow", "status", "--format", "text"]);
+    assert_eq!(out, LOOPING);
+}
+
+#[test]
+fn md_does_not_combine_with_watch_list_json_or_line() {
+    let env = Env::new();
+    for other in ["--watch", "--list", "--json", "--line"] {
+        let (code, out, _) = env.run(&env.root(), &["flow", "status", "--format", "md", other]);
+        assert_eq!((code, out.as_str()), (Some(2), ""), "{other}");
+    }
+}
