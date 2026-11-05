@@ -788,3 +788,34 @@ fn color_always_paints_and_never_does_not_even_where_stdout_is_a_pipe() {
         "flow status --color always: {text:?}"
     );
 }
+
+#[test]
+fn a_reader_that_closes_early_is_not_a_panic() {
+    use std::process::Stdio;
+    let env = Env::new(); // no log: --list and --json both print without a session
+    for args in [&["--json"][..], &["--list"][..], &["--line"][..]] {
+        for pass in 0..3 {
+            let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_armadai"))
+                .args(["flow", "status"])
+                .args(args)
+                .current_dir(env.root())
+                .env("ARMADAI_CONFIG_DIR", env.dir.path().join("config"))
+                .env("HOME", env.dir.path())
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            drop(child.stdout.take()); // the reader is gone before the first write
+            let out = child.wait_with_output().unwrap();
+            assert_eq!(
+                (
+                    out.status.code(),
+                    String::from_utf8_lossy(&out.stderr).into_owned()
+                ),
+                (Some(0), String::new()),
+                "flow status {args:?}, pass {pass}"
+            );
+        }
+    }
+}

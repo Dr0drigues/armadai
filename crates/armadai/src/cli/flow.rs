@@ -130,7 +130,7 @@ pub fn execute(cmd: FlowCommand) -> anyhow::Result<()> {
             })
             .collect();
         if rows.is_empty() {
-            println!("{NO_ACTIVITY}");
+            anstream::println!("{NO_ACTIVITY}");
         } else {
             print_painted(&render::render_sessions(&rows));
         }
@@ -158,7 +158,8 @@ pub fn execute(cmd: FlowCommand) -> anyhow::Result<()> {
                 .map(|(id, ev)| (id.as_str(), ev.as_slice())),
             &runs,
         );
-        println!("{}", serde_json::to_string_pretty(&doc)?);
+        // anstream, like every other output here: a closed reader is not a panic
+        anstream::println!("{}", serde_json::to_string_pretty(&doc)?);
         return Ok(());
     }
     if !watch {
