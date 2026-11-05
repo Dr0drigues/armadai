@@ -237,6 +237,16 @@ the folders `link` created, and takes back only the two `settings.json` entries 
 is missing, `unlink` leaves the plugin and says so
 (`.armadai/plugins/armadai-ui/ not removed: no manifest records what link wrote there`).
 
+**Clone.** The plugin is versioned, the manifest is not. On a clone, `link` finds the plugin
+already there with no record of it and owns nothing of it, neither its files nor its two
+`settings.json` entries: identical, it reports `ui.subagent_status_line` as `approximated`
+(`existing identical plugin kept, not owned: unlink leaves it`) and `unlink` leaves it whole;
+partial or edited, it writes nothing, reports `not-compiled` naming the first element that
+differs (`existing plugin differs from what link writes at <element>, not owned: link leaves
+it; remove it to let link write it`), and `--force` does not change that. To remove the plugin
+from such a clone, delete the folder and the two entries by hand, or run `unlink` on the
+machine that wrote it.
+
 `--dry-run` writes no manifest. When no usable manifest exists — a fresh clone, a deleted
 `.armadai/`, or a project linked before the manifest existed — `unlink` says so and falls back to a
 content-match guard: it recompiles the project and removes a file only when its bytes still match

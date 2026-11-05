@@ -315,10 +315,53 @@ pub fn keep_users_plugin(
     Ok(clash)
 }
 
+/// What of the plugin is already in the project when no earlier link recorded it.
+#[derive(Debug, PartialEq)]
+pub enum FoundPlugin {
+    /// None of its 3 files and 2 settings entries.
+    Absent,
+    /// All 5, byte for byte (files) and value for value (entries), as link writes them.
+    Identical,
+    /// Anything else: the first element, in a fixed order, present with other content,
+    /// else the first one missing (a file path relative to the root, or a dotted key).
+    Differs(String),
+}
+
+/// Files first ([`plugin_files`] order), then entries ([`plugin_settings_keys`] order).
+/// `settings` is the text of `.claude/settings.json`, when there is one; an invalid one
+/// is an error already raised by [`keep_users_plugin`].
+pub fn found_plugin(root: &std::path::Path, settings: Option<&str>) -> anyhow::Result<FoundPlugin> {
+    let doc = Value::Object(parse(settings)?);
+    // (element, found content equals what link writes: None when missing)
+    let mut seen: Vec<(String, Option<bool>)> = Vec::new();
+    for (rel, text) in plugin_files() {
+        let found = std::fs::read(root.join(&rel)).ok();
+        seen.push((
+            rel.display().to_string(),
+            found.map(|b| b == text.as_bytes()),
+        ));
+    }
+    for (path, wanted) in plugin_settings_keys() {
+        let cur = path.split('.').try_fold(&doc, |v, k| v.get(k));
+        seen.push((path, cur.map(|c| *c == wanted)));
+    }
+    if seen.iter().all(|(_, s)| s.is_none()) {
+        return Ok(FoundPlugin::Absent);
+    }
+    if seen.iter().all(|(_, s)| *s == Some(true)) {
+        return Ok(FoundPlugin::Identical);
+    }
+    let first = |f: fn(&Option<bool>) -> bool| seen.iter().find(|(_, s)| f(s));
+    let (element, _) = first(|s| *s == Some(false))
+        .or_else(|| first(Option::is_none))
+        .expect("a differing or a missing element exists here");
+    Ok(FoundPlugin::Differs(element.clone()))
+}
+
 /// A dotted key of `keys`: a nested plugin key, merged by [`merge_into`] instead of
 /// being a top-level key. shortcut: a top-level `native.claude` key containing `.`
 /// would be read the same way, no Claude Code setting has one.
-fn is_plugin_key(k: &str) -> bool {
+pub(crate) fn is_plugin_key(k: &str) -> bool {
     k.contains('.')
 }
 
@@ -1330,5 +1373,82 @@ mod tests {
             assert_eq!(got.as_deref(), want, "case {i}");
             assert_eq!(keys.is_empty(), want.is_some(), "case {i}");
         }
+    }
+
+    #[test]
+    fn found_plugin_tells_absent_identical_and_the_first_element_that_differs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let put = |rel: &std::path::Path, text: &str| {
+            std::fs::create_dir_all(root.join(rel).parent().unwrap()).unwrap();
+            std::fs::write(root.join(rel), text).unwrap();
+        };
+        let files = plugin_files();
+        let (m, p, s) = (&files[0], &files[1], &files[2]);
+        let entries = json!({
+            "enabledPlugins": {"armadai-ui@armadai-ui": true},
+            "extraKnownMarketplaces": {"armadai-ui": {"source": {
+                "source": "directory", "path": "./.armadai/plugins/armadai-ui"}}},
+        })
+        .to_string();
+        let name = |f: &(std::path::PathBuf, String)| f.0.display().to_string();
+        let found = |settings: Option<&str>| found_plugin(root, settings).unwrap();
+
+        assert_eq!(found(None), FoundPlugin::Absent, "absent");
+        assert_eq!(found(Some("{}")), FoundPlugin::Absent, "absent, empty file");
+        // the entries alone: the first file is the first missing element
+        assert_eq!(
+            found(Some(&entries)),
+            FoundPlugin::Differs(name(m)),
+            "entries only"
+        );
+        for f in &files {
+            put(&f.0, &f.1);
+        }
+        assert_eq!(found(Some(&entries)), FoundPlugin::Identical, "identical");
+        // a file present with other content, whichever it is
+        for f in [m, p, s] {
+            let mut other = f.1.clone();
+            other.push(' ');
+            put(&f.0, &other);
+            assert_eq!(
+                found(Some(&entries)),
+                FoundPlugin::Differs(name(f)),
+                "{}",
+                name(f)
+            );
+            put(&f.0, &f.1);
+        }
+        // the files without entries: the first entry is the first missing element
+        assert_eq!(
+            found(None),
+            FoundPlugin::Differs(PLUGIN_ENABLED_KEY.into()),
+            "no entries"
+        );
+        let only_market = json!({"extraKnownMarketplaces": serde_json::from_str::<Value>(&entries)
+            .unwrap()["extraKnownMarketplaces"]})
+        .to_string();
+        assert_eq!(
+            found(Some(&only_market)),
+            FoundPlugin::Differs(PLUGIN_ENABLED_KEY.into()),
+            "one entry missing"
+        );
+        // an entry with another value
+        let off = json!({"enabledPlugins": {"armadai-ui@armadai-ui": false}}).to_string();
+        assert_eq!(
+            found(Some(&off)),
+            FoundPlugin::Differs(PLUGIN_ENABLED_KEY.into()),
+            "entry differs"
+        );
+        // a differing element is named before a missing one
+        std::fs::remove_file(root.join(&m.0)).unwrap();
+        let mut other = p.1.clone();
+        other.push(' ');
+        put(&p.0, &other);
+        assert_eq!(
+            found(Some(&entries)),
+            FoundPlugin::Differs(name(p)),
+            "differs before missing"
+        );
     }
 }

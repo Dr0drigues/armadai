@@ -104,6 +104,15 @@ pub fn touched_paths() -> anyhow::Result<Vec<PathBuf>> {
     Ok(out.into_iter().collect())
 }
 
+/// Take the whole plugin out of the plan: its artifacts, its paths in `all_produced`
+/// and its dotted keys.
+fn drop_plugin(p: &mut Prepared, keys: &mut BTreeMap<String, serde_json::Value>) {
+    p.artifacts.retain(|a| a.kind != ArtifactKind::Plugin);
+    p.all_produced
+        .retain(|r| !r.starts_with(compile::PLUGIN_DIR));
+    keys.retain(|k, _| !claude_settings::is_plugin_key(k));
+}
+
 /// `--target`, else `targets` of project.yaml, else claude.
 pub fn targets_of(flag: &[crate::linker::LinkTarget], project: &Project) -> Vec<String> {
     if !flag.is_empty() {
@@ -220,15 +229,17 @@ fn prepare(
             let clash =
                 claude_settings::keep_users_plugin(existing.as_deref(), &mut keys, &previous)
                     .with_context(|| rel.display().to_string())?;
+            // the plugin is link's when an earlier link recorded it (a file entry, or a
+            // value of its settings entries); a plugin found without that record is not
+            let recorded = !previous.plugin.is_empty()
+                || (p.previous.iter().flat_map(|t| &t.entries)).any(|e| {
+                    e.produced_by.kind == manifest::ProducedByKind::Plugin
+                        && e.outcome == Outcome::Created
+                });
             match clash {
                 Some(path) => {
                     // a plugin the settings do not load would be a file nobody reads
-                    p.artifacts.retain(|a| a.kind != ArtifactKind::Plugin);
-                    let kept = p.all_produced.clone();
-                    p.all_produced = kept
-                        .into_iter()
-                        .filter(|r| !r.starts_with(compile::PLUGIN_DIR))
-                        .collect();
+                    drop_plugin(&mut p, &mut keys);
                     let why = format!(
                         "key {path} of .claude/settings.json already has another value; \
                          link leaves it"
@@ -240,15 +251,47 @@ fn prepare(
                         Some(&why),
                     );
                 }
-                None => p.report.push(
-                    target,
-                    "ui.subagent_status_line",
-                    Status::Compiled,
-                    Some(
-                        "plugin armadai-ui in .armadai/plugins/armadai-ui, enabled in \
-                         .claude/settings.json; Claude Code loads it once you trust the folder",
-                    ),
-                ),
+                None => {
+                    let found = if recorded {
+                        claude_settings::FoundPlugin::Absent
+                    } else {
+                        claude_settings::found_plugin(root, existing.as_deref())?
+                    };
+                    match found {
+                        claude_settings::FoundPlugin::Absent => p.report.push(
+                            target,
+                            "ui.subagent_status_line",
+                            Status::Compiled,
+                            Some(
+                                "plugin armadai-ui in .armadai/plugins/armadai-ui, enabled in \
+                                 .claude/settings.json; Claude Code loads it once you trust \
+                                 the folder",
+                            ),
+                        ),
+                        claude_settings::FoundPlugin::Identical => {
+                            drop_plugin(&mut p, &mut keys);
+                            p.report.push(
+                                target,
+                                "ui.subagent_status_line",
+                                Status::Approximated,
+                                Some("existing identical plugin kept, not owned: unlink leaves it"),
+                            );
+                        }
+                        claude_settings::FoundPlugin::Differs(element) => {
+                            drop_plugin(&mut p, &mut keys);
+                            let why = format!(
+                                "existing plugin differs from what link writes at {element}, \
+                                 not owned: link leaves it; remove it to let link write it"
+                            );
+                            p.report.push(
+                                target,
+                                "ui.subagent_status_line",
+                                Status::NotCompiled,
+                                Some(&why),
+                            );
+                        }
+                    }
+                }
             }
         }
         if project.manifest.ui.status_line {

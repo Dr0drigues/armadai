@@ -279,3 +279,179 @@ fn link_refuses_a_plugin_folder_that_is_a_symbolic_link() {
         "nothing may be written through the link"
     );
 }
+
+const APPROX: &str = "claude: ui.subagent_status_line: approximated (existing identical plugin \
+kept, not owned: unlink leaves it)";
+
+const PLUGIN_FILES: [(&str, &str); 3] = [
+    (".claude-plugin/marketplace.json", MARKETPLACE),
+    (".claude-plugin/plugin.json", PLUGIN_JSON),
+    ("settings.json", PLUGIN_SETTINGS),
+];
+
+fn differs(element: &str) -> String {
+    format!(
+        "claude: ui.subagent_status_line: not-compiled (existing plugin differs from what link \
+         writes at {element}, not owned: link leaves it; remove it to let link write it)"
+    )
+}
+
+impl Env {
+    fn put(&self, rel: &str, text: &str) {
+        let path = self.root().join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+
+    fn put_plugin_files(&self) {
+        for (name, text) in PLUGIN_FILES {
+            self.put(&format!("{PLUGIN}/{name}"), text);
+        }
+    }
+
+    fn plugin_files_are_untouched(&self) {
+        for (name, text) in PLUGIN_FILES {
+            assert_eq!(self.read(&format!("{PLUGIN}/{name}")), text, "{name}");
+        }
+    }
+}
+
+#[test]
+fn a_clone_links_without_owning_the_plugin_and_unlink_leaves_it_whole() {
+    let env = Env::new(on(), &[FLOW]);
+    env.ok(&["link", "--target", "claude"]);
+    // a clone: the manifest is git-ignored
+    std::fs::remove_file(env.root().join(".armadai/link-manifest.yaml")).unwrap();
+    let before = env.settings();
+    let report = env.ok(&["link", "--target", "claude"]);
+    assert_eq!(lines(&report), [APPROX]);
+    assert!(
+        !report.lines().any(|l| l.contains(".armadai/plugins/")
+            && (l.contains("wrote") || l.contains("up-to-date"))),
+        "{report}"
+    );
+    let manifest = env.read(".armadai/link-manifest.yaml");
+    assert!(!manifest.contains("armadai-ui"), "{manifest}");
+    env.ok(&["unlink", "--target", "claude"]);
+    env.plugin_files_are_untouched();
+    let s = env.settings();
+    assert_eq!(s["enabledPlugins"], before["enabledPlugins"]);
+    assert_eq!(
+        s["extraKnownMarketplaces"],
+        before["extraKnownMarketplaces"]
+    );
+}
+
+#[test]
+fn files_without_their_settings_entries_are_left_and_no_entry_is_added() {
+    let env = Env::new(on(), &[FLOW]);
+    env.put_plugin_files();
+    let report = env.ok(&["link", "--target", "claude"]);
+    assert_eq!(
+        lines(&report),
+        [differs("enabledPlugins.armadai-ui@armadai-ui")]
+    );
+    let s = env.settings();
+    assert!(s.get("enabledPlugins").is_none() && s.get("extraKnownMarketplaces").is_none());
+    env.plugin_files_are_untouched();
+    env.ok(&["unlink", "--target", "claude"]);
+    env.plugin_files_are_untouched();
+}
+
+#[test]
+fn an_entry_without_files_is_left_and_no_folder_is_created() {
+    let env = Env::new(on(), &[FLOW]);
+    let mine = r#"{"enabledPlugins":{"armadai-ui@armadai-ui":true}}"#;
+    env.put_settings(mine);
+    let report = env.ok(&["link", "--target", "claude"]);
+    assert_eq!(
+        lines(&report),
+        [differs(
+            ".armadai/plugins/armadai-ui/.claude-plugin/marketplace.json"
+        )]
+    );
+    assert!(!env.root().join(".armadai/plugins").exists());
+    // the hooks come, the entry is as it was
+    assert_eq!(
+        env.settings()["enabledPlugins"],
+        json!({"armadai-ui@armadai-ui": true})
+    );
+    env.ok(&["unlink", "--target", "claude"]);
+    assert_eq!(env.settings(), serde_json::from_str::<Value>(mine).unwrap());
+}
+
+#[test]
+fn a_different_file_is_left_alone_even_with_force() {
+    let env = Env::new(on(), &[FLOW]);
+    let other = "{\"name\": \"armadai-ui\", \"description\": \"mine\"}\n";
+    env.put(&format!("{PLUGIN}/.claude-plugin/plugin.json"), other);
+    for args in [
+        ["link", "--target", "claude"].as_slice(),
+        ["link", "--target", "claude", "--force"].as_slice(),
+    ] {
+        let report = env.ok(args);
+        assert_eq!(
+            lines(&report),
+            [differs(&format!("{PLUGIN}/.claude-plugin/plugin.json"))],
+            "{args:?}"
+        );
+        assert_eq!(
+            env.read(&format!("{PLUGIN}/.claude-plugin/plugin.json")),
+            other
+        );
+        assert!(
+            !env.root()
+                .join(format!("{PLUGIN}/.claude-plugin/marketplace.json"))
+                .exists()
+                && !env.root().join(format!("{PLUGIN}/settings.json")).exists(),
+            "{args:?}"
+        );
+        let s = env.settings();
+        assert!(s.get("enabledPlugins").is_none() && s.get("extraKnownMarketplaces").is_none());
+    }
+}
+
+#[test]
+fn a_plugin_an_earlier_link_wrote_is_still_updated_and_removed_by_link() {
+    let env = Env::new(on(), &[FLOW]);
+    let first = env.ok(&["link", "--target", "claude"]);
+    let second = env.ok(&["link", "--target", "claude"]);
+    assert_eq!(lines(&first), [WRITTEN]);
+    assert_eq!(lines(&second), [WRITTEN]);
+    env.ok(&["unlink", "--target", "claude"]);
+    assert!(!env.root().join(".armadai/plugins").exists());
+    assert!(!env.settings_path().exists());
+}
+
+#[test]
+fn a_conflict_after_a_first_link_removes_the_files_it_wrote() {
+    let env = Env::new(on(), &[FLOW]);
+    env.ok(&["link", "--target", "claude"]);
+    let mut s = env.settings();
+    s["enabledPlugins"]["armadai-ui@armadai-ui"] = json!(false);
+    env.put_settings(&serde_json::to_string(&s).unwrap());
+    let report = env.ok(&["link", "--target", "claude"]);
+    assert!(!env.root().join(PLUGIN).exists());
+    let mut stale: Vec<&str> = report.lines().filter(|l| l.contains("stale")).collect();
+    stale.sort();
+    let want: Vec<String> = PLUGIN_FILES
+        .iter()
+        .map(|(n, _)| format!("claude: stale {PLUGIN}/{n}: compiled (removed: no longer produced)"))
+        .collect();
+    let mut want = want;
+    want.sort();
+    assert_eq!(stale, want);
+    assert_eq!(
+        lines(&report),
+        ["claude: ui.subagent_status_line: not-compiled (key \
+          enabledPlugins.armadai-ui@armadai-ui of .claude/settings.json already has another \
+          value; link leaves it)"]
+    );
+    let s = env.settings();
+    assert!(s.get("extraKnownMarketplaces").is_none());
+    env.ok(&["unlink", "--target", "claude"]);
+    assert_eq!(
+        env.settings()["enabledPlugins"],
+        json!({"armadai-ui@armadai-ui": false})
+    );
+}
