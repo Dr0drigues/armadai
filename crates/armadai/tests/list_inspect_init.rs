@@ -371,7 +371,22 @@ fn validate_rejects_a_non_boolean_ui_status_line() {
         ".armadai/project.yaml",
         "schema_version: 1\nui: { status_line: maybe }\n",
     )]);
-    let (ok, out, err) = env.run(&["validate"]);
-    assert!(!ok, "{out}");
-    assert!(out.contains("2:20: error[invalid-yaml]"), "{out}{err}");
+    let output = Command::cargo_bin("armadai")
+        .unwrap()
+        .current_dir(env.root())
+        .env("ARMADAI_CONFIG_DIR", env.dir.path().join("config"))
+        .arg("validate")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let out = String::from_utf8_lossy(&output.stdout);
+    let mut lines = out.lines();
+    // the absolute prefix is the temp dir: compared from `.armadai/` on
+    let first = lines.next().unwrap();
+    assert_eq!(
+        first.split_once("/.armadai/").unwrap().1,
+        "project.yaml:2:20: error[invalid-yaml]: invalid boolean (strict mode expects true/false)"
+    );
+    assert_eq!(lines.next(), Some("1 error(s), 0 warning(s)"));
+    assert_eq!(lines.next(), None);
 }

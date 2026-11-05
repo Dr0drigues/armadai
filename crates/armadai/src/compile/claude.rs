@@ -128,7 +128,8 @@ impl Compiler for ClaudeCompiler {
                 ),
             );
         }
-        if !claude_settings::native_settings(project)?.is_empty() {
+        claude_settings::native_settings(project)?;
+        if !claude_settings::native_keys(project)?.is_empty() {
             plan.report.push(
                 T,
                 "project native",
