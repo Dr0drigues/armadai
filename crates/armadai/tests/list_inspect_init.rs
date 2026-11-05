@@ -364,3 +364,14 @@ fn inspect_shows_each_slot_and_the_skills_filling_it() {
          Code.\n"
     );
 }
+
+#[test]
+fn validate_rejects_a_non_boolean_ui_status_line() {
+    let env = Env::new(&[(
+        ".armadai/project.yaml",
+        "schema_version: 1\nui: { status_line: maybe }\n",
+    )]);
+    let (ok, out, err) = env.run(&["validate"]);
+    assert!(!ok, "{out}");
+    assert!(out.contains("2:20: error[invalid-yaml]"), "{out}{err}");
+}

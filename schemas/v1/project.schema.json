@@ -44,6 +44,17 @@
         }
       },
       "type": "object"
+    },
+    "Ui": {
+      "additionalProperties": false,
+      "description": "Opt-in interface keys: absent or `false`, `link` writes nothing for them.",
+      "properties": {
+        "status_line": {
+          "description": "Compile a Claude Code statusLine that shows the flow progress.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -95,6 +106,9 @@
         "type": "string"
       },
       "type": "array"
+    },
+    "ui": {
+      "$ref": "#/$defs/Ui"
     }
   },
   "required": [

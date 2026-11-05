@@ -555,3 +555,42 @@ fn agent_slots_are_loaded() {
         ["code-standards"]
     );
 }
+
+fn ui_project(ui: &str) -> TempDir {
+    project(&[(
+        ".armadai/project.yaml",
+        &format!("schema_version: 1\nui: {ui}\n"),
+    )])
+}
+
+#[test]
+fn ui_status_line_loads() {
+    let dir = ui_project("{ status_line: true }");
+    let l = load_project(dir.path());
+    assert!(l.diagnostics.is_empty(), "{:?}", l.diagnostics);
+    assert!(l.project.unwrap().manifest.ui.status_line);
+}
+
+#[test]
+fn ui_status_line_must_be_a_boolean() {
+    let dir = ui_project("{ status_line: maybe }");
+    let l = load_project(dir.path());
+    assert_eq!(l.diagnostics.len(), 1, "{:?}", l.diagnostics);
+    let shown = l.diagnostics[0]
+        .render()
+        .replace(dir.path().to_str().unwrap(), "<root>");
+    assert_eq!(
+        shown,
+        "<root>/.armadai/project.yaml:2:20: error[invalid-yaml]: invalid boolean (strict mode expects true/false)"
+    );
+}
+
+#[test]
+fn ui_unknown_key_is_invalid_yaml() {
+    let dir = ui_project("{ colour: true }");
+    let l = load_project(dir.path());
+    assert_eq!(l.diagnostics.len(), 1, "{:?}", l.diagnostics);
+    let d = &l.diagnostics[0];
+    assert_eq!((d.code, d.line), ("invalid-yaml", Some(2)));
+    assert!(d.message.contains("colour"), "{}", d.message);
+}
