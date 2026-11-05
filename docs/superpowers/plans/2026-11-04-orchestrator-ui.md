@@ -444,6 +444,105 @@ Tests :
 
 Commit : `feat(link): write the armadai-ui plugin for the sub-agent status line`
 
+### L4-T4 (`adapter-specialist`) : un plugin déjà là sans trace au manifeste n'est pas à `link` (reprise après le rejet de `review`, 2026-11-05)
+
+**Rejet (reviewer, tête `b91d465`)** : (1) sur un clone, le premier `link` d'un collègue rend `up-to-date` les 3 fichiers et les inscrit `outcome: created` (règle R6 de `manifest.rs` : un fichier identique est repris), mais ne prend pas les deux entrées de `.claude/settings.json`, déjà là et identiques (`merge_into` ne réclame pas une valeur identique), et rapporte `compiled` ; son `unlink` supprime ensuite les fichiers et laisse `enabledPlugins.armadai-ui@armadai-ui: true` et `extraKnownMarketplaces.armadai-ui` : les réglages versionnés activent un plugin disparu. (2) Le retrait de `all_produced` sur conflit (`cli/link.rs:227-230`) n'a aucun test : la mutation `.filter(|_r| true)` reste verte.
+
+**Décision de Dimitri (2026-11-05)** : « Rien du plugin (Recommandé) ». Le plugin, c'est-à-dire ses 3 fichiers et ses 2 entrées, se possède **en bloc** : tout ou rien.
+
+**Tâches à refaire** : aucune. L4-T1, L4-T2 et L4-T3 restent acquises ; L4-T4 s'ajoute sur la même branche (`feat/orchestrator-ui-l4`), puis `guard`, puis de nouveau `review` de la branche.
+
+#### Règle
+
+Le plugin est **enregistré** quand le manifeste précédent de la cible `claude` en garde une trace : une entrée `produced_by.kind: plugin` en `outcome: created`, ou une valeur dans `Owned::plugin` du `settings.json` patché. Alors rien ne change (chemin de L4-T3 : mise à jour, conflit, fichiers périmés).
+
+Non enregistré, `link` regarde les 5 éléments, dans cet ordre fixe : `.armadai/plugins/armadai-ui/.claude-plugin/marketplace.json`, `.armadai/plugins/armadai-ui/.claude-plugin/plugin.json`, `.armadai/plugins/armadai-ui/settings.json`, `enabledPlugins.armadai-ui@armadai-ui`, `extraKnownMarketplaces.armadai-ui`.
+
+```mermaid
+flowchart TD
+  K["ui.subagent_status_line: true"] --> C{"keep_users_plugin : une entrée a une autre valeur ?"}
+  C -->|"oui"| R1["rien du plugin ; not-compiled (key ... already has another value) — L4-T3, inchangé"]
+  C -->|"non"| E{"enregistré au manifeste précédent ?"}
+  E -->|"oui"| W["chemin L4-T3 : écrit, possède, met à jour"]
+  E -->|"non"| F{"found_plugin(root, settings)"}
+  F -->|"Absent : aucun des 5"| W2["écrit les 5, les possède ; compiled"]
+  F -->|"Identical : les 5, à l'octet"| A["rien écrit, rien possédé ; approximated ; unlink laisse tout"]
+  F -->|"Differs(élément) : partiel ou modifié"| N["rien écrit, rien possédé ; not-compiled (élément) ; unlink laisse tout"]
+```
+
+À regarder : dans les deux branches du bas, `link` ne possède rien du plugin, donc `unlink` ne peut jamais laisser une moitié de plugin (des entrées sans dossier, ou l'inverse). `--force` ne change rien à ces deux cas (le plugin est retiré du plan avant `write_files`) ; L4 n'est pas publiée, ce n'est pas une régression.
+
+| Présent, non enregistré | Résultat | Ligne |
+|---|---|---|
+| rien | écrit les 5, les possède | `compiled` (texte L4 écrit, inchangé) |
+| les 5 identiques (clone d'un projet versionné) | rien écrit ni possédé | `approximated` (décision Dimitri) |
+| les 3 fichiers identiques, aucune entrée | rien écrit ni possédé (aucune entrée ajoutée) | `not-compiled`, élément `enabledPlugins.armadai-ui@armadai-ui` |
+| une seule entrée identique (`enabledPlugins…`), pas de fichier | rien écrit ni possédé (aucun dossier créé) | `not-compiled`, élément `.armadai/plugins/armadai-ui/.claude-plugin/marketplace.json` |
+| `plugin.json` présent mais différent, le reste absent | rien écrit (le fichier garde ses octets) | `not-compiled`, élément `.armadai/plugins/armadai-ui/.claude-plugin/plugin.json` |
+| une entrée de valeur différente | inchangé (L4-T3) | `not-compiled` (`key … already has another value`) |
+
+Élément nommé : le premier, dans l'ordre fixe, qui est présent avec un autre contenu ; à défaut, le premier absent. Le comportement et le texte du cas partiel sont à valider (question QA en fin de plan) ; tant qu'elle n'est pas répondue, les tests 2 à 4 attendent l'option recommandée.
+
+#### Fichiers
+
+`crates/armadai/src/compile/claude_settings.rs` (`FoundPlugin`, `found_plugin`), `crates/armadai/src/cli/link.rs` (`prepare` : `recorded`, branche `found_plugin`, une fonction qui retire le plugin du plan), le fichier d'intégration des tests de L4-T3 (le trouver avec `/usr/bin/grep -l subagent_status_line crates/armadai/tests`), `docs/wiki/link.md` (paragraphe « Clone »), `CHANGELOG.md` (entrée L4 complétée). Golden `claude-ui.txt` : **inchangé** (son projet part d'un dossier vide : cas `Absent`).
+
+#### Interfaces
+
+```rust
+// compile/claude_settings.rs
+/// What of the plugin is already in the project when no earlier link recorded it.
+#[derive(Debug, PartialEq)]
+pub enum FoundPlugin {
+    /// None of its 3 files and 2 settings entries.
+    Absent,
+    /// All 5, byte for byte (files) and value for value (entries), as link writes them.
+    Identical,
+    /// Anything else: the first element, in a fixed order, present with other content,
+    /// else the first one missing (a file path relative to the root, or a dotted key).
+    Differs(String),
+}
+/// Files first (`plugin_files()` order), then entries (`plugin_settings_keys()` order).
+pub fn found_plugin(root: &Path, settings: Option<&str>) -> anyhow::Result<FoundPlugin>;
+
+// cli/link.rs
+/// Take the whole plugin out of the plan: its artifacts, its paths in `all_produced`
+/// and its dotted keys (shared by the conflict, `Identical` and `Differs` cases).
+fn drop_plugin(p: &mut Prepared, keys: &mut BTreeMap<String, Value>);
+```
+
+`settings` illisible ou non JSON : l'erreur actuelle de `keep_users_plugin` (appelée avant) reste la seule ; `found_plugin` ne la double pas.
+
+#### Étapes
+- [ ] `found_plugin` et `FoundPlugin` ; `drop_plugin` ; la branche du conflit de L4-T3 passe par `drop_plugin` (même effet, une seule écriture du retrait).
+- [ ] `prepare` : `recorded` calculé sur le manifeste précédent (entrée `kind: plugin` `created`, ou `Owned::plugin` non vide) ; après `keep_users_plugin` sans conflit et si `!recorded`, `found_plugin` décide comme le tableau ; lignes de la section 9.
+- [ ] `--dry-run` : rien à faire de plus (le retrait a lieu dans `prepare`) ; le vérifier à la main sur le cas du clone et le rapporter.
+- [ ] Doc : `link.md`, paragraphe « Clone » : le plugin versionné, le `link` d'un collègue le garde sans le posséder, son `unlink` le laisse ; pour le retirer : le dossier et les deux entrées, à la main, ou `unlink` sur la machine qui l'a écrit.
+
+#### Tests (chacun avec sa mutation vue rouge, restauration par `touch`)
+1. **Clone sans manifeste, `link`, `unlink`** (demandé par reviewer) : `link` d'un projet à `ui.subagent_status_line: true` dans un dossier temporaire, puis suppression de `.armadai/link-manifest.yaml` (un clone : le manifeste est ignoré par `.armadai/.gitignore`) ; instantané des 3 fichiers et des deux valeurs ; `link` : code 0, ligne de rapport exacte (section 9, `approximated`), aucune ligne `compiled` pour `ui.subagent_status_line`, aucune ligne `wrote` ni `up-to-date` sous `.armadai/plugins/`, le manifeste n'a aucune entrée sous `PLUGIN_DIR` et son `Owned::plugin` est vide ; `unlink` : les 3 fichiers égaux à l'instantané octet pour octet, les deux valeurs égales. Mutations : traiter `Identical` comme `Absent` (rouge : `unlink` supprime les fichiers, le défaut du rejet) ; statut `compiled` au lieu d'`approximated`.
+2. **Fichiers sans entrées** : les 3 fichiers identiques posés à la main, `settings.json` sans `enabledPlugins` ni `extraKnownMarketplaces` ; `link` : ligne `not-compiled` exacte nommant `enabledPlugins.armadai-ui@armadai-ui`, aucune des deux clés dans `settings.json`, fichiers inchangés ; `unlink` : fichiers laissés. Mutation : `drop_plugin` qui garde les clés (rouge : les entrées apparaissent et `unlink` les retire, laissant les fichiers seuls).
+3. **Une seule entrée, sans fichier** : `settings.json` avec `enabledPlugins.armadai-ui@armadai-ui: true` seulement ; `link` : ligne exacte nommant `.armadai/plugins/armadai-ui/.claude-plugin/marketplace.json`, aucun dossier `.armadai/plugins/`, `settings.json` inchangé à l'octet ; `unlink` : la valeur reste. Mutation : `drop_plugin` qui garde les artefacts (rouge : le dossier est créé).
+4. **Un fichier différent** : `plugin.json` avec une autre `description`, rien d'autre ; `link` puis `link --force` : à chaque fois `plugin.json` garde ses octets, aucun autre fichier du plugin, aucune entrée, ligne exacte nommant `plugin.json`. Mutation : nommer le premier absent avant le premier différent (rouge : la ligne nomme `marketplace.json`).
+5. **`found_plugin` unitaire** : `Absent`, `Identical`, et un `Differs` par élément (5 cas, chemins distincts, une assertion nommée par cas). Mutation : comparer un fichier par son existence seule (rouge sur le cas du fichier modifié).
+6. **Le chemin enregistré ne change pas** : `link`, `link`, `unlink` sur un projet neuf : le second `link` rapporte `compiled`, `unlink` retire les 3 fichiers, les dossiers créés et les deux entrées. Mutation : `recorded` toujours faux (rouge : le second `link` voit `Identical` et lâche le plugin, `unlink` le laisse).
+7. **Rejet 2, conflit après un premier `link`** : `link` écrit le plugin ; l'utilisateur pose `false` sur `enabledPlugins.armadai-ui@armadai-ui` ; second `link` : le dossier `.armadai/plugins/armadai-ui/` est absent, le rapport contient exactement les 3 lignes `claude stale .armadai/plugins/armadai-ui/<fichier>: compiled (removed: no longer produced)` et la ligne `not-compiled` de L4-T3 pour `enabledPlugins.armadai-ui@armadai-ui` ; `extraKnownMarketplaces.armadai-ui` est retiré ; après `unlink`, `enabledPlugins.armadai-ui@armadai-ui` vaut toujours `false`. Mutation : `.filter(|_r| true)` sur `all_produced` (rouge : le dossier reste, aucune ligne `stale`).
+
+Barrière complète, puis répétition des tests 1 et 7 (5 passes).
+
+Commit : `fix(link): leave an existing armadai-ui plugin that link did not write`
+
+### L4 : points d'essai réel (pour `validator`, avant fusion, décision « Essai réel avant fusion »)
+
+Avec `HOME` et `ARMADAI_CONFIG_DIR` isolés, le binaire de la branche en tête du `PATH` sauf au point 4 :
+1. Le plugin chargé : `claude` lancé à la racine du projet, dossier accepté au dialogue de confiance ; `/plugin` liste `armadai-ui` ; un sous-agent en cours affiche la ligne de `__claude-subagent-statusline`.
+2. **`claude` lancé depuis un sous-dossier** (`<projet>/crates`) : le marketplace `directory` de chemin relatif `./.armadai/plugins/armadai-ui` est-il résolu contre la racine du projet, contre le dossier de `settings.json` ou contre le répertoire courant ? Relever ce que montre `/plugin` et le message éventuel, mot pour mot.
+3. **Marketplace `directory` dont le dossier est absent** : `settings.json` avec les deux entrées, dossier `.armadai/plugins/armadai-ui/` retiré : `claude` démarre-t-il, quel message, à quel moment (démarrage, `/plugin`) ?
+4. **Une rc.9 dans le `PATH`** (antérieure à `__claude-statusline` et `__claude-subagent-statusline`) : ce que Claude Code affiche dans la barre et sous le sous-agent quand la commande cachée n'existe pas (erreur `clap` sur stderr, code 2).
+5. **Le cas du clone** (L4-T4) : copie du projet sans `.armadai/link-manifest.yaml`, `armadai link`, ligne `approximated`, puis `armadai unlink` : plugin et entrées intacts, `claude` le charge toujours.
+
+**Risque, non tranché** : si le chemin relatif échoue (point 2 ou point 1), replis possibles, à décider après la mesure : (a) chemin absolu écrit par `link` (marche, mais propre à la machine : contraire à « Versionné » et à la règle « aucun chemin de machine » si le fichier est commité) ; (b) source `git`/`github` du dépôt (réseau, et le plugin suit la branche distante, pas l'arbre de travail) ; (c) marketplace déclaré dans les réglages utilisateur par `claude plugin marketplace add` (hors projet, un geste par collègue) ; (d) déplacer le plugin sous `.claude/` (option B du cadre, écartée). Aucune tâche tant que l'essai n'a pas mesuré l'échec.
+
 ## 8. Livraison L5 : mod (2 tâches, PR 5)
 
 ### L5-T1 (`schema-specialist`) : `ui.panel`, `ui.documents`, code `bad-document-folder`
@@ -486,6 +585,8 @@ Rapport de `link` (format actuel `<target> <element>: <status> (<reason>)` rendu
 | L2/L4/L5 autre cible | `ui.status_line` / `ui.subagent_status_line` / `ui.panel` | `not-compiled` | `Claude Code only` |
 | L4 écrit | `ui.subagent_status_line` | `compiled` | `plugin armadai-ui in .armadai/plugins/armadai-ui, enabled in .claude/settings.json; Claude Code loads it once you trust the folder` |
 | L4 refus | `ui.subagent_status_line` | `not-compiled` | `key <path> of .claude/settings.json already has another value; link leaves it` |
+| L4-T4 plugin déjà là, identique, non enregistré (décision Dimitri 2026-11-05) | `ui.subagent_status_line` | `approximated` | `existing identical plugin kept, not owned: unlink leaves it` |
+| L4-T4 plugin déjà là en partie ou modifié, non enregistré (**à valider**, question QA) | `ui.subagent_status_line` | `not-compiled` | `existing plugin differs from what link writes at <element>, not owned: link leaves it; remove it to let link write it` |
 | L5 écrit | `ui.panel` | `approximated` | `mod in .armadai/plugins/armadai-ui: runs JavaScript and the armadai command with your permissions; needs Claude Code 2.1.287 or later, off under --safe-mode, disableAllHooks or claude -p` |
 
 Erreurs de `link` (précédent `hooks`) :
@@ -563,10 +664,17 @@ Selon les décisions de Dimitri du 2026-11-05 (plan). La commande `__claude-stat
 | L1 socle | 2 | cli, cli | `tests/golden/flow-status/v1.json` (nouveau) ; aucun golden de `link` |
 | L2 statusLine | 3 | cli, schema, adapter | `tests/golden/link/claude-ui.txt` (nouveau) |
 | L3 Markdown | 2 | cli, cli | aucun golden existant |
-| L4 plugin | 3 | schema, adapter, adapter | `claude-ui.txt` étendu |
+| L4 plugin | 4 (L4-T4 après le rejet de `review`, 2026-11-05) | schema, adapter, adapter, adapter | `claude-ui.txt` étendu (inchangé par L4-T4) |
 | L5 mod | 2 | schema, adapter | `claude-ui.txt` étendu |
 
-Total : 12 tâches. `tests/golden/link/{claude,codex,copilot,opencode}.txt` restent identiques à chaque livraison.
+Total : 13 tâches. `tests/golden/link/{claude,codex,copilot,opencode}.txt` restent identiques à chaque livraison.
+
+## Questions pour Dimitri ouvertes (L4-T4, 2026-11-05)
+
+**QA. Plugin présent en partie ou modifié, sans trace au manifeste** (diagramme de L4-T4, branche `Differs`). Cas réels : un clone dont `settings.json` n'est pas versionné, ou un clone après une version d'`armadai` qui change le contenu du plugin.
+- A. Rien du plugin, `not-compiled` avec le texte de la section 9 (`existing plugin differs from what link writes at <element>, not owned: link leaves it; remove it to let link write it`) ; `--force` n'y change rien. Prolonge « Rien du plugin » : jamais une moitié de plugin après `unlink`. Coût : le collègue retire le plugin à la main pour que `link` le réécrive. **Recommandé.**
+- B. `link` complète ce qui manque et ne possède que ce qu'il a écrit : `unlink` retire ces morceaux et laisse le reste, d'où des entrées qui activent un dossier disparu (le défaut du rejet 1, par un autre chemin).
+- C. `link` complète et possède tout, y compris l'existant : `unlink` supprime des fichiers versionnés par un autre ; contraire à la décision du 2026-11-05.
 
 ## Questions pour Dimitri (historique : toutes répondues le 2026-11-05, voir « Décisions de Dimitri (2026-11-05, plan) » en tête)
 
