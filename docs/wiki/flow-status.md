@@ -153,6 +153,22 @@ they started.
   the logs of the main checkout; a worktree with its own `.armadai/` writes and reads its own
   `state/`.
 
+## In a status bar
+
+`armadai flow status --line` prints one line for a status bar, and never fails: with no project, an invalid project, an unknown flow or session, or no run, it prints an empty line, with exit code 0 and nothing on stderr.
+
+```text
+deliver ● guard 2/4 (loops 1)
+deliver 3/4
+hotfix finished 2/2
+bugfix interrupted 1/2
+```
+
+- The run shown is the last one still open, else the last one. `●` guard is the current step (the running one, else the first `?` or `✗`, else the first pending one) with its mark; `2/4` counts done steps over the steps recorded in this session (`~` and `-` steps are left out); `(loops 1)` counts the extra times links were taken, and shows only when there is one.
+- The session is `--session`, else the `session_id` of a JSON read on stdin (the one Claude Code pipes to a status line), else the latest log of the project. The project is the `cwd` of that JSON, else the current directory. stdin is read only when it is piped, for 250 ms at most, so a terminal or a pipe that stays open never blocks the command.
+- Marks are always printed; colour comes on top. `--color auto|always|never` (default `auto`) applies to every `flow status` output: `auto` follows the terminal and honours `NO_COLOR` and `CLICOLOR_FORCE`. A status bar that runs the command through a pipe needs `--color always`: `armadai flow status --line --color always`.
+- The latest log is a guess when two sessions run at once in the same project: pass the session explicitly when you can.
+
 ## Machine-readable output
 
 `armadai flow status --json` prints the session as one JSON document on stdout, and nothing else (it does not combine with `--watch` or `--list`). The `flow` argument and `--session` apply as for the text.

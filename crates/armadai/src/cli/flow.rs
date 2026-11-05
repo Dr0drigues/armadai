@@ -9,12 +9,20 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, bail};
 use armadai_model::Project;
 
+use crate::flow_status::line::Piece;
 use crate::flow_status::record::{FlowEvent, GROUP_SEP, log_path};
 use crate::flow_status::render;
-use crate::flow_status::runs::{Run, runs};
+use crate::flow_status::runs::{Mark, Run, runs};
 
 const NO_ACTIVITY: &str =
     "no flow activity recorded yet (link installs the hooks; start a flow in Claude Code)";
+
+#[derive(clap::ValueEnum, Clone, Copy)]
+pub enum ColorArg {
+    Auto,
+    Always,
+    Never,
+}
 
 #[derive(clap::Subcommand)]
 pub enum FlowCommand {
@@ -30,12 +38,15 @@ pub enum FlowCommand {
             and the timed transitions (UTC). A run is attributed to the flow whose id is the command you typed (when the recording hook saw it) until \
             it finishes, then the sub-agents are inferred again; it is shown `interrupted` when a \
             later flow command closed it before it finished. Without --session, the latest \
-            session.",
+            session.\n\n\
+            --json and --format md print a snapshot for other tools; --line prints one line for \
+            a status bar (Claude Code's statusLine, or a custom command in your own bar).",
         after_help = "Examples:\n  \
             armadai flow status\n  \
             armadai flow status deliver --watch\n  \
             armadai flow status --list\n  \
             armadai flow status --session 3f2a9c\n  \
+            armadai flow status --line\n  \
             armadai flow status --json"
     )]
     Status {
@@ -53,6 +64,12 @@ pub enum FlowCommand {
         /// Print the session as JSON (schema armadai.flow-status/1) on stdout, and nothing else
         #[arg(long, conflicts_with_all = ["watch", "list"])]
         json: bool,
+        /// Print one line for a status bar: the flow, its current step and its progress; reads session_id and cwd from a JSON on stdin when piped; never fails
+        #[arg(long, conflicts_with_all = ["watch", "list", "json"])]
+        line: bool,
+        /// When to colour the output: auto (a terminal; NO_COLOR and CLICOLOR_FORCE honoured), always, never
+        #[arg(long, value_enum, default_value = "auto")]
+        color: ColorArg,
     },
 }
 
@@ -63,7 +80,18 @@ pub fn execute(cmd: FlowCommand) -> anyhow::Result<()> {
         watch,
         list,
         json,
+        line,
+        color,
     } = cmd;
+    anstream::ColorChoice::write_global(match color {
+        ColorArg::Auto => anstream::ColorChoice::Auto,
+        ColorArg::Always => anstream::ColorChoice::Always,
+        ColorArg::Never => anstream::ColorChoice::Never,
+    });
+    if line {
+        anstream::println!("{}", line_text(flow, session));
+        return Ok(());
+    }
     let cwd = std::env::current_dir()?;
     let Some(root) = crate::claude_adapter::policy_gate::resolve_project(&cwd) else {
         // the same advice as every project command (legacy included)
@@ -224,5 +252,148 @@ fn print_painted(text: &str) {
             _ => anstyle::Style::new(),
         };
         anstream::println!("{s}{line}{s:#}");
+    }
+}
+
+/// How long `--line` waits for a JSON on stdin before ignoring it.
+const STDIN_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// The JSON a status bar pipes in; `None` on a terminal, on a stdin that stays
+/// silent, or on anything that is not a JSON object.
+fn stdin_json() -> Option<serde_json::Value> {
+    use std::io::{IsTerminal, Read};
+    if std::io::stdin().is_terminal() {
+        return None;
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    // shortcut: the reader thread is left behind when stdin stays open; the process exits anyway
+    std::thread::spawn(move || {
+        let mut raw = String::new();
+        let _ = std::io::stdin().read_to_string(&mut raw);
+        let _ = tx.send(raw);
+    });
+    let raw = rx.recv_timeout(STDIN_WAIT).ok()?;
+    serde_json::from_str(&raw)
+        .ok()
+        .filter(serde_json::Value::is_object)
+}
+
+/// The coloured line of `--line` (empty on any failure: a status bar must
+/// never see an error).
+fn line_text(flow: Option<String>, session: Option<String>) -> String {
+    let Some(runs) = line_runs(flow, session) else {
+        return String::new();
+    };
+    painted(&crate::flow_status::line::line(&runs))
+}
+
+/// The pieces joined by single spaces, each wrapped in its style (the
+/// printing macros keep or strip the escapes as `--color` says).
+fn painted(pieces: &[(Piece, String)]) -> String {
+    use crate::cli::style;
+    pieces
+        .iter()
+        .map(|(piece, text)| {
+            let s = match piece {
+                Piece::Flow => style::accent(),
+                Piece::Progress | Piece::Status => style::muted(),
+                Piece::Loops => style::warn(),
+                Piece::Mark(m) => match m {
+                    Mark::Done => style::ok(),
+                    Mark::Running => style::running(),
+                    Mark::Pending | Mark::Relay => style::muted(),
+                    Mark::Unsure => style::warn(),
+                    Mark::Unexpected => style::err(),
+                    Mark::NotRun => anstyle::Style::new(),
+                },
+            };
+            format!("{s}{text}{s:#}")
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The runs `--line` shows: the session is `--session`, else the `session_id`
+/// of the JSON on stdin, else the latest log of the project (which is the
+/// project of the JSON's `cwd`, else the current directory). `None` on any failure.
+fn line_runs(flow: Option<String>, session: Option<String>) -> Option<Vec<Run>> {
+    let json = stdin_json();
+    let field = |k: &str| json.as_ref()?.get(k)?.as_str().map(str::to_string);
+    let cwd = field("cwd")
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir())
+        .or_else(|| std::env::current_dir().ok())?;
+    let root = crate::claude_adapter::policy_gate::resolve_project(&cwd)?;
+    let view = crate::pack::effective::open(&root, crate::pack::effective::Vars::Literal).ok()?;
+    let (project, _) = view.load_checked().ok()?;
+    if flow
+        .as_ref()
+        .is_some_and(|f| !project.flows.contains_key(f))
+    {
+        return None;
+    }
+    let session = session.or_else(|| field("session_id"));
+    if let Some(id) = &session {
+        log_path(&root, id)?;
+    }
+    let view = View {
+        root,
+        project,
+        flow,
+        session,
+    };
+    Some(view.snapshot().1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::style;
+
+    fn paint(s: anstyle::Style, t: &str) -> String {
+        format!("{s}{t}{s:#}")
+    }
+
+    #[test]
+    fn every_piece_has_its_own_style() {
+        let pieces = vec![
+            (Piece::Flow, "deliver".to_string()),
+            (Piece::Mark(Mark::Running), "●".to_string()),
+            (Piece::Mark(Mark::Running), "guard".to_string()),
+            (Piece::Progress, "2/4".to_string()),
+            (Piece::Loops, "(loops 1)".to_string()),
+            (Piece::Status, "finished".to_string()),
+        ];
+        let want = [
+            paint(style::accent(), "deliver"),
+            paint(style::running(), "●"),
+            paint(style::running(), "guard"),
+            paint(style::muted(), "2/4"),
+            paint(style::warn(), "(loops 1)"),
+            paint(style::muted(), "finished"),
+        ]
+        .join(" ");
+        assert_eq!(painted(&pieces), want);
+    }
+
+    #[test]
+    fn each_mark_has_its_style_and_a_step_not_run_has_none() {
+        let cases = [
+            (Mark::Done, style::ok()),
+            (Mark::Running, style::running()),
+            (Mark::Pending, style::muted()),
+            (Mark::Relay, style::muted()),
+            (Mark::Unsure, style::warn()),
+            (Mark::Unexpected, style::err()),
+            (Mark::NotRun, anstyle::Style::new()),
+        ];
+        for (m, s) in cases {
+            let name = m.name();
+            assert_eq!(
+                painted(&[(Piece::Mark(m), "x".to_string())]),
+                paint(s, "x"),
+                "{name}"
+            );
+        }
     }
 }
