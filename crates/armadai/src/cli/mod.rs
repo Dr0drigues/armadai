@@ -364,6 +364,11 @@ pub enum Command {
     /// `.armadai/state/claude/`. Hidden from help.
     #[command(hide = true, name = "__record-flow-event")]
     RecordFlowEvent,
+    /// Internal: called by the Claude Code statusLine that link writes for
+    /// ui.status_line. Reads the status line JSON from stdin (session_id, cwd)
+    /// and prints the line of that session, or nothing. Hidden from help.
+    #[command(hide = true, name = "__claude-statusline")]
+    ClaudeStatusline,
 }
 
 /// Names of the subcommands marked `hide = true`, taken from clap itself
@@ -484,6 +489,7 @@ pub fn handle(cli: Cli) -> anyhow::Result<()> {
         }
         Command::ClaudePolicyGate => crate::claude_adapter::policy_gate::gate_from_stdin(),
         Command::RecordFlowEvent => crate::flow_status::record::record_from_stdin(),
+        Command::ClaudeStatusline => flow::statusline_main(),
     }
 }
 
@@ -527,7 +533,11 @@ mod tests {
     fn there_are_hidden_subcommands_to_strip() {
         // If this ever empties, the filter below stops proving anything.
         let hidden = hidden_subcommand_names();
-        for name in ["__claude-policy-gate", "__record-flow-event"] {
+        for name in [
+            "__claude-policy-gate",
+            "__record-flow-event",
+            "__claude-statusline",
+        ] {
             assert!(
                 hidden.iter().any(|n| n == name),
                 "expected {name} among hidden subcommands: {hidden:?}"

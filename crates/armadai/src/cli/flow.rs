@@ -282,10 +282,23 @@ fn stdin_json() -> Option<serde_json::Value> {
 /// The coloured line of `--line` (empty on any failure: a status bar must
 /// never see an error).
 fn line_text(flow: Option<String>, session: Option<String>) -> String {
-    let Some(runs) = line_runs(flow, session) else {
+    let Some(runs) = line_runs(flow, session, false) else {
         return String::new();
     };
     painted(&crate::flow_status::line::line(&runs))
+}
+
+/// `armadai __claude-statusline`: the line of the session Claude Code names in
+/// its JSON, always coloured; nothing (0 bytes) when there is nothing to show.
+pub fn statusline_main() -> anyhow::Result<()> {
+    anstream::ColorChoice::write_global(anstream::ColorChoice::Always);
+    if let Some(runs) = line_runs(None, None, true) {
+        let pieces = crate::flow_status::line::line(&runs);
+        if !pieces.is_empty() {
+            anstream::println!("{}", painted(&pieces));
+        }
+    }
+    Ok(())
 }
 
 /// The pieces joined by single spaces, each wrapped in its style (the
@@ -317,7 +330,8 @@ fn painted(pieces: &[(Piece, String)]) -> String {
 /// The runs `--line` shows: the session is `--session`, else the `session_id`
 /// of the JSON on stdin, else the latest log of the project (which is the
 /// project of the JSON's `cwd`, else the current directory). `None` on any failure.
-fn line_runs(flow: Option<String>, session: Option<String>) -> Option<Vec<Run>> {
+/// `strict` (the `__claude-statusline` way): only the JSON's `session_id`, never the latest log.
+fn line_runs(flow: Option<String>, session: Option<String>, strict: bool) -> Option<Vec<Run>> {
     let json = stdin_json();
     let field = |k: &str| json.as_ref()?.get(k)?.as_str().map(str::to_string);
     let cwd = field("cwd")
@@ -334,6 +348,9 @@ fn line_runs(flow: Option<String>, session: Option<String>) -> Option<Vec<Run>> 
         return None;
     }
     let session = session.or_else(|| field("session_id"));
+    if strict && session.is_none() {
+        return None;
+    }
     if let Some(id) = &session {
         log_path(&root, id)?;
     }

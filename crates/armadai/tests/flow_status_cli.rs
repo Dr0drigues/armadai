@@ -736,6 +736,116 @@ fn line_does_not_wait_for_a_stdin_that_stays_open() {
     }
 }
 
+impl Env {
+    /// `armadai __claude-statusline` with `stdin` piped, `NO_COLOR` set (it must colour anyway).
+    fn statusline(&self, cwd: &Path, stdin: &str) -> (Option<i32>, String, String) {
+        let out = Command::cargo_bin("armadai")
+            .unwrap()
+            .current_dir(cwd)
+            .env("ARMADAI_CONFIG_DIR", self.dir.path().join("config"))
+            .env("HOME", self.dir.path())
+            .env("NO_COLOR", "1")
+            .arg("__claude-statusline")
+            .write_stdin(stdin)
+            .timeout(std::time::Duration::from_secs(20))
+            .output()
+            .unwrap();
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+}
+
+#[test]
+fn statusline_prints_the_coloured_line_of_the_session_asked_for() {
+    let env = Env::new();
+    env.three_logs();
+    let root = env.root();
+    let stdin = format!(r#"{{"session_id":"S","cwd":"{}"}}"#, root.display());
+    let (code, out, err) = env.statusline(env.dir.path(), &stdin);
+    // the same pieces as `--line --color always` (the oldest session, not the latest)
+    let (_, want, _) = env.line(&root, &["--color", "always", "--session", "S"], "");
+    assert!(want.contains('\x1b'), "{want:?}");
+    assert_eq!(
+        (code, out.as_str(), err.as_str()),
+        (Some(0), want.as_str(), "")
+    );
+    assert_eq!(strip_sgr(&out), S_LINE);
+}
+
+#[test]
+fn statusline_prints_nothing_when_the_session_is_not_named_or_unknown() {
+    let env = Env::new();
+    env.three_logs();
+    let root = env.root();
+    let c = root.display();
+    let cases = [
+        ("no session_id", format!(r#"{{"cwd":"{c}"}}"#)),
+        (
+            "unknown session",
+            format!(r#"{{"session_id":"inconnue","cwd":"{c}"}}"#),
+        ),
+        (
+            "session leaving the directory",
+            format!(r#"{{"session_id":"../x","cwd":"{c}"}}"#),
+        ),
+        ("invalid json", "not json".to_string()),
+        ("empty stdin", String::new()),
+    ];
+    for (name, stdin) in cases {
+        let got = env.statusline(&root, &stdin);
+        assert_eq!(got, (Some(0), String::new(), String::new()), "{name}");
+    }
+}
+
+#[test]
+fn statusline_prints_nothing_for_a_log_without_a_run() {
+    let env = Env::new();
+    env.three_logs();
+    env.raw_log("empty", "", T0 + 400);
+    let root = env.root();
+    let got = env.statusline(&root, r#"{"session_id":"empty"}"#);
+    assert_eq!(got, (Some(0), String::new(), String::new()));
+}
+
+#[test]
+fn statusline_does_not_wait_for_a_stdin_that_stays_open() {
+    use std::process::Stdio;
+    let env = Env::new();
+    env.three_logs();
+    for pass in 0..5 {
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_armadai"))
+            .arg("__claude-statusline")
+            .current_dir(env.root())
+            .env("ARMADAI_CONFIG_DIR", env.dir.path().join("config"))
+            .env("HOME", env.dir.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let _open = child.stdin.take();
+        let start = std::time::Instant::now();
+        let done = loop {
+            if child.try_wait().unwrap().is_some() {
+                break true;
+            }
+            if start.elapsed() > std::time::Duration::from_secs(5) {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                break false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        assert!(
+            done,
+            "pass {pass}: __claude-statusline was still waiting for stdin after 5 s"
+        );
+    }
+}
+
 /// Remove the SGR escapes of `s`.
 fn strip_sgr(s: &str) -> String {
     let mut out = String::new();
