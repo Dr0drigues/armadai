@@ -481,7 +481,7 @@ flowchart TD
 | `plugin.json` présent mais différent, le reste absent | rien écrit (le fichier garde ses octets) | `not-compiled`, élément `.armadai/plugins/armadai-ui/.claude-plugin/plugin.json` |
 | une entrée de valeur différente | inchangé (L4-T3) | `not-compiled` (`key … already has another value`) |
 
-Élément nommé : le premier, dans l'ordre fixe, qui est présent avec un autre contenu ; à défaut, le premier absent. Le comportement et le texte du cas partiel sont à valider (question QA en fin de plan) ; tant qu'elle n'est pas répondue, les tests 2 à 4 attendent l'option recommandée.
+Élément nommé : le premier, dans l'ordre fixe, qui est présent avec un autre contenu ; à défaut, le premier absent. Comportement et texte du cas partiel : décision Dimitri 2026-11-05, « Rien du plugin, not-compiled (Recommandé) » (option A de QA).
 
 #### Fichiers
 
@@ -586,7 +586,7 @@ Rapport de `link` (format actuel `<target> <element>: <status> (<reason>)` rendu
 | L4 écrit | `ui.subagent_status_line` | `compiled` | `plugin armadai-ui in .armadai/plugins/armadai-ui, enabled in .claude/settings.json; Claude Code loads it once you trust the folder` |
 | L4 refus | `ui.subagent_status_line` | `not-compiled` | `key <path> of .claude/settings.json already has another value; link leaves it` |
 | L4-T4 plugin déjà là, identique, non enregistré (décision Dimitri 2026-11-05) | `ui.subagent_status_line` | `approximated` | `existing identical plugin kept, not owned: unlink leaves it` |
-| L4-T4 plugin déjà là en partie ou modifié, non enregistré (**à valider**, question QA) | `ui.subagent_status_line` | `not-compiled` | `existing plugin differs from what link writes at <element>, not owned: link leaves it; remove it to let link write it` |
+| L4-T4 plugin déjà là en partie ou modifié, non enregistré (décision Dimitri 2026-11-05, « Rien du plugin, not-compiled (Recommandé) ») | `ui.subagent_status_line` | `not-compiled` | `existing plugin differs from what link writes at <element>, not owned: link leaves it; remove it to let link write it` |
 | L5 écrit | `ui.panel` | `approximated` | `mod in .armadai/plugins/armadai-ui: runs JavaScript and the armadai command with your permissions; needs Claude Code 2.1.287 or later, off under --safe-mode, disableAllHooks or claude -p` |
 
 Erreurs de `link` (précédent `hooks`) :
@@ -669,9 +669,9 @@ Selon les décisions de Dimitri du 2026-11-05 (plan). La commande `__claude-stat
 
 Total : 13 tâches. `tests/golden/link/{claude,codex,copilot,opencode}.txt` restent identiques à chaque livraison.
 
-## Questions pour Dimitri ouvertes (L4-T4, 2026-11-05)
+## Questions pour Dimitri (L4-T4, 2026-11-05)
 
-**QA. Plugin présent en partie ou modifié, sans trace au manifeste** (diagramme de L4-T4, branche `Differs`). Cas réels : un clone dont `settings.json` n'est pas versionné, ou un clone après une version d'`armadai` qui change le contenu du plugin.
+**QA (tranchée le 2026-11-05 : « Rien du plugin, not-compiled (Recommandé) »). Plugin présent en partie ou modifié, sans trace au manifeste** (diagramme de L4-T4, branche `Differs`). Cas réels : un clone dont `settings.json` n'est pas versionné, ou un clone après une version d'`armadai` qui change le contenu du plugin.
 - A. Rien du plugin, `not-compiled` avec le texte de la section 9 (`existing plugin differs from what link writes at <element>, not owned: link leaves it; remove it to let link write it`) ; `--force` n'y change rien. Prolonge « Rien du plugin » : jamais une moitié de plugin après `unlink`. Coût : le collègue retire le plugin à la main pour que `link` le réécrive. **Recommandé.**
 - B. `link` complète ce qui manque et ne possède que ce qu'il a écrit : `unlink` retire ces morceaux et laisse le reste, d'où des entrées qui activent un dossier disparu (le défaut du rejet 1, par un autre chemin).
 - C. `link` complète et possède tout, y compris l'existant : `unlink` supprime des fichiers versionnés par un autre ; contraire à la décision du 2026-11-05.
