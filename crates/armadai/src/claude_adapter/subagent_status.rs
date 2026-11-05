@@ -196,14 +196,19 @@ mod tests {
             interrupted: false,
         };
         let got = lines(&project(), &[run(false), other], &[task("t", "qa")]);
-        let [(id, content)] = got.as_slice() else {
-            panic!("{got:?}")
-        };
-        assert_eq!(id, "t");
-        assert!(
-            content.contains("other") && !content.contains("deliver"),
-            "{content:?}"
-        );
+        let want = crate::cli::flow::painted(&[
+            (crate::flow_status::line::Piece::Flow, "other".into()),
+            (
+                crate::flow_status::line::Piece::Mark(Mark::Running),
+                "●".into(),
+            ),
+            (
+                crate::flow_status::line::Piece::Mark(Mark::Running),
+                "x".into(),
+            ),
+            (crate::flow_status::line::Piece::Progress, "0/1".into()),
+        ]);
+        assert_eq!(got, vec![("t".to_string(), want)]);
     }
 
     #[test]

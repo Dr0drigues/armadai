@@ -264,10 +264,8 @@ pub fn check_destination(root: &Path, trust: &Path, rel: &Path) -> anyhow::Resul
 
 /// The destination of a file of the `armadai-ui` plugin: the one place under `.armadai/`
 /// link may write. `rel` must sit lexically under [`PLUGIN_DIR`] and no component on
-/// the way (`.armadai` included) may be a symbolic link; the resolved path must stay
-/// under the resolved plugin folder and the project.
+/// the way (`.armadai` included) may be a symbolic link, so the path resolves to itself.
 pub fn check_plugin_destination(root: &Path, rel: &Path) -> anyhow::Result<()> {
-    use crate::linker::manifest::resolve_real;
     let plain = rel
         .components()
         .all(|c| matches!(c, std::path::Component::Normal(_)));
@@ -283,12 +281,6 @@ pub fn check_plugin_destination(root: &Path, rel: &Path) -> anyhow::Result<()> {
                 at.display()
             );
         }
-    }
-    let real = resolve_real(root, rel);
-    if !real.starts_with(resolve_real(root, Path::new(PLUGIN_DIR)))
-        || !real.starts_with(resolve_real(root, Path::new(".")))
-    {
-        bail!("{} resolves outside {PLUGIN_DIR}", rel.display());
     }
     Ok(())
 }

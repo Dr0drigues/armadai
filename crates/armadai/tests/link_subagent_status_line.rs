@@ -270,6 +270,10 @@ fn link_refuses_a_plugin_folder_that_is_a_symbolic_link() {
     std::os::unix::fs::symlink(&outside, env.root().join(".armadai/plugins")).unwrap();
     let out = env.run(&["link", "--target", "claude"]);
     assert!(!out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        "Error: .armadai/plugins is a symbolic link; link does not write through it\n"
+    );
     assert!(
         std::fs::read_dir(&outside).unwrap().next().is_none(),
         "nothing may be written through the link"
