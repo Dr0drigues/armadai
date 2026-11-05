@@ -45,7 +45,7 @@ impl Prepared {
     /// Where an artifact lands, relative to the project root.
     fn rel(&self, a: &Artifact) -> PathBuf {
         match a.kind {
-            ArtifactKind::Native => a.path.clone(),
+            ArtifactKind::Native | ArtifactKind::Plugin => a.path.clone(),
             _ => self.output_dir.join(&a.path),
         }
     }
@@ -211,6 +211,46 @@ fn prepare(
         let rel = p.output_dir.join("settings.json");
         let hooks = claude_settings::hook_entries(project)?;
         let mut keys = claude_settings::native_settings(project)?;
+        if project.manifest.ui.subagent_status_line {
+            let existing = std::fs::read_to_string(root.join(&rel)).ok();
+            let previous = match p.previous_patch(&rel).map(|f| &f.kind) {
+                Some(PatchKind::SettingsHooks(o)) => o.clone(),
+                _ => Default::default(),
+            };
+            let clash =
+                claude_settings::keep_users_plugin(existing.as_deref(), &mut keys, &previous)
+                    .with_context(|| rel.display().to_string())?;
+            match clash {
+                Some(path) => {
+                    // a plugin the settings do not load would be a file nobody reads
+                    p.artifacts.retain(|a| a.kind != ArtifactKind::Plugin);
+                    let kept = p.all_produced.clone();
+                    p.all_produced = kept
+                        .into_iter()
+                        .filter(|r| !r.starts_with(compile::PLUGIN_DIR))
+                        .collect();
+                    let why = format!(
+                        "key {path} of .claude/settings.json already has another value; \
+                         link leaves it"
+                    );
+                    p.report.push(
+                        target,
+                        "ui.subagent_status_line",
+                        Status::NotCompiled,
+                        Some(&why),
+                    );
+                }
+                None => p.report.push(
+                    target,
+                    "ui.subagent_status_line",
+                    Status::Compiled,
+                    Some(
+                        "plugin armadai-ui in .armadai/plugins/armadai-ui, enabled in \
+                         .claude/settings.json; Claude Code loads it once you trust the folder",
+                    ),
+                ),
+            }
+        }
         if project.manifest.ui.status_line {
             let existing = std::fs::read_to_string(root.join(&rel)).ok();
             let previous = match p.previous_patch(&rel).map(|f| &f.kind) {
@@ -315,6 +355,10 @@ fn prepare(
         PathBuf::from(".")
     };
     for a in &p.artifacts {
+        if a.kind == ArtifactKind::Plugin {
+            compile::check_plugin_destination(root, &p.rel(a))?;
+            continue;
+        }
         let t = if a.kind == ArtifactKind::Native {
             Path::new(".")
         } else {
@@ -367,6 +411,9 @@ fn remove_stale(root: &Path, p: &mut Prepared, produced: &BTreeSet<PathBuf>, dry
         }
         let trust_root = match e.produced_by.kind {
             manifest::ProducedByKind::Native => Path::new("."),
+            manifest::ProducedByKind::Plugin if e.path.starts_with(compile::PLUGIN_DIR) => {
+                Path::new(".")
+            }
             _ => prev.root.as_path(),
         };
         let path = manifest::resolve_real(root, &e.path);
@@ -384,6 +431,14 @@ fn remove_stale(root: &Path, p: &mut Prepared, produced: &BTreeSet<PathBuf>, dry
                 "would be removed: no longer produced",
             ));
         } else if own && std::fs::remove_file(&path).is_ok() {
+            if e.produced_by.kind == manifest::ProducedByKind::Plugin
+                && let Some(parent) = path.parent()
+            {
+                super::unlink::remove_empty_ancestors(
+                    parent,
+                    &manifest::resolve_real(root, Path::new(".armadai")),
+                );
+            }
             lines.push((element, Status::Compiled, "removed: no longer produced"));
         } else {
             lines.push((
@@ -438,6 +493,7 @@ fn not_written(p: &mut Prepared, root: &Path, path: &Path) {
         manifest::ProducedByKind::Skill => format!("skill {}", a.produced_by.name),
         manifest::ProducedByKind::Command => format!("command {}", a.produced_by.name),
         manifest::ProducedByKind::Native => format!("native {}", a.produced_by.name),
+        manifest::ProducedByKind::Plugin => "ui.subagent_status_line".to_string(),
         _ => format!("agent {}", a.produced_by.name),
     };
     let rel = p.rel(a);

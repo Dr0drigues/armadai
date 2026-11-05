@@ -45,7 +45,7 @@ policy:                      # optional
 native: { claude: {} }       # optional, opaque
 ui:                          # optional, opt-in interface keys
   status_line: true          # Claude Code only: a status bar with the flow progress (default false)
-  subagent_status_line: true # Claude Code only: a status row per subagent showing the step it holds (default false)
+  subagent_status_line: true # Claude Code only: a status row per subagent (default false)
 ```
 
 With `pack:`, the project is built on a pack by reference: its files are the pack's, plus yours at

@@ -53,6 +53,17 @@ End your reply with exactly one line `STATE: <state>`, where <state> is one of: 
     "command": "armadai __claude-statusline",
     "refreshInterval": 5
   },
+  "enabledPlugins": {
+    "armadai-ui@armadai-ui": true
+  },
+  "extraKnownMarketplaces": {
+    "armadai-ui": {
+      "source": {
+        "source": "directory",
+        "path": "./.armadai/plugins/armadai-ui"
+      }
+    }
+  },
   "hooks": {
     "PostToolUse": [
       {
@@ -129,6 +140,35 @@ description: Review checklist
 ---
 REVIEW_MARKER
 
+=== .armadai/plugins/armadai-ui/.claude-plugin/marketplace.json ===
+{
+  "name": "armadai-ui",
+  "owner": {
+    "name": "ArmadAI"
+  },
+  "plugins": [
+    {
+      "name": "armadai-ui",
+      "source": ".",
+      "description": "Flow progress from ArmadAI, in Claude Code"
+    }
+  ]
+}
+
+=== .armadai/plugins/armadai-ui/.claude-plugin/plugin.json ===
+{
+  "name": "armadai-ui",
+  "description": "Flow progress from ArmadAI, in Claude Code"
+}
+
+=== .armadai/plugins/armadai-ui/settings.json ===
+{
+  "subagentStatusLine": {
+    "type": "command",
+    "command": "armadai __claude-subagent-statusline"
+  }
+}
+
 === report ===
 claude: agent dev: compiled
 claude: agent dev capability shell=ask: approximated (Claude Code asks per project/session permission, not per agent)
@@ -145,3 +185,4 @@ claude: flow ship step build: approximated (states and on_failure rendered as gu
 claude: policy delegation=strict: compiled (enforced: delegation topology, by the PreToolUse gate)
 claude: skill review: compiled
 claude: ui.status_line: compiled (statusLine in .claude/settings.json, running armadai __claude-statusline; it hides the statusLine of your user settings)
+claude: ui.subagent_status_line: compiled (plugin armadai-ui in .armadai/plugins/armadai-ui, enabled in .claude/settings.json; Claude Code loads it once you trust the folder)

@@ -94,6 +94,18 @@ impl Compiler for ClaudeCompiler {
                 .push(T, format!("command {id}"), Status::Compiled, None);
         }
         plan.artifacts.sort_by(|a, b| a.path.cmp(&b.path));
+        // the plugin sits under `.armadai/plugins/`, outside the output folder; whether
+        // it is written (the user may hold its keys) is decided by `link`
+        if project.manifest.ui.subagent_status_line {
+            for (path, text) in claude_settings::plugin_files() {
+                plan.artifacts.push(Artifact {
+                    produced_by: ProducedBy::plugin(path.display().to_string()),
+                    path,
+                    content: text.into_bytes(),
+                    kind: ArtifactKind::Plugin,
+                });
+            }
+        }
 
         // computed here so a native collision fails the compilation, before any write
         claude_settings::hook_entries(project)?;

@@ -77,6 +77,13 @@ impl ProducedBy {
         }
     }
 
+    pub fn plugin(path: impl Into<String>) -> Self {
+        Self {
+            kind: ProducedByKind::Plugin,
+            name: path.into(),
+        }
+    }
+
     pub fn native(path: impl Into<String>) -> Self {
         Self {
             kind: ProducedByKind::Native,
@@ -99,6 +106,10 @@ pub enum ProducedByKind {
     /// project root (not the target's root). An older binary reads a manifest
     /// holding this value as unusable (`Lookup::Fallback`).
     Native,
+    /// A file of the `armadai-ui` plugin (`ui.subagent_status_line`), relative to the
+    /// project root, under `compile::PLUGIN_DIR`. An older binary reads a manifest
+    /// holding this value as unusable (`Lookup::Fallback`).
+    Plugin,
 }
 
 /// `Created`: `link` wrote this path, **or** found it already present with
