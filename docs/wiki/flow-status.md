@@ -211,6 +211,31 @@ bugfix interrupted 1/2
 | `coordinator` | `~` | The coordinator holds the step; it is not recorded |
 | `not-run` | `-` | Before the step the run opened at in this session |
 
+## Markdown snapshot
+
+`armadai flow status --format md` prints the same runs as Markdown, for a pull request, an issue or a file VS Code previews (it does not combine with `--watch`, `--list`, `--json` or `--line`, and is never coloured). `flow` and `--session` apply as for the text.
+
+```markdown
+# Flow status: session s1
+
+Snapshot at the last recorded event, 2026-10-22 09:15:50 UTC.
+
+## deliver: in progress
+
+| Step | Mark | Status |
+|---|---|---|
+| design | ✓ | done |
+| guard | ● | running |
+
+Links taken more than once: build → guard (2).
+
+| Time (UTC) | From | To | State |
+|---|---|---|---|
+| 09:15:20 | design | build | done |
+```
+
+The Status column is the text of the plain output (the state, or `running`/`pending`, then the note in parentheses). A session with no run says `No run of a declared flow in this session yet.`; with no log at all, the usual `no flow activity recorded yet` line.
+
 ## Limits
 
 - Claude Code only.
