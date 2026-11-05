@@ -91,6 +91,35 @@ fn every_flow_is_one_block_each_in_flow_order() {
     assert_eq!(out, format!("{REVIEW}\n{SHIP}"));
 }
 
+fn md_block(id: &str, mermaid: &str) -> String {
+    format!("## {id}\n\n```mermaid\n{mermaid}```\n")
+}
+
+#[test]
+fn md_format_wraps_each_flow_in_a_heading_and_a_mermaid_block() {
+    let env = Env::new(PROJECT);
+    let (code, out, _) = env.run(&env.root(), &["graph", "--format", "md"]);
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        out,
+        format!("{}\n{}", md_block("review", REVIEW), md_block("ship", SHIP))
+    );
+    let (_, one, _) = env.run(&env.root(), &["graph", "review", "--format", "md"]);
+    assert_eq!(one, md_block("review", REVIEW));
+}
+
+#[test]
+fn md_format_of_an_unknown_flow_is_the_same_error() {
+    let env = Env::new(PROJECT);
+    let (code, out, err) = env.run(&env.root(), &["graph", "shipp", "--format", "md"]);
+    assert_eq!(code, Some(1));
+    assert!(out.is_empty(), "{out}");
+    assert!(
+        err.contains("unknown flow `shipp`") && err.contains("review, ship"),
+        "{err}"
+    );
+}
+
 #[test]
 fn an_unknown_flow_lists_the_flows() {
     let env = Env::new(PROJECT);

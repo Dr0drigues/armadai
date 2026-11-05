@@ -102,7 +102,8 @@ pub enum Command {
             with their state; failure paths (`when: failed`, `on_failure`) are dotted.",
         after_help = "Examples:\n  \
             armadai graph review > review.mmd\n  \
-            armadai graph"
+            armadai graph\n  \
+            armadai graph --format md > flows.md"
     )]
     Graph {
         /// Flow id (its file name under .armadai/flows/); every flow when omitted

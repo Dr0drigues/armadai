@@ -11,9 +11,15 @@ use anyhow::bail;
 pub enum GraphFormat {
     #[default]
     Mermaid,
+    /// Markdown: a heading and a mermaid block per flow
+    Md,
 }
 
-pub fn execute(flow: Option<String>, _format: GraphFormat) -> anyhow::Result<()> {
+fn markdown_block(id: &str, mermaid: &str) -> String {
+    format!("## {id}\n\n```mermaid\n{mermaid}```\n")
+}
+
+pub fn execute(flow: Option<String>, format: GraphFormat) -> anyhow::Result<()> {
     let root = crate::compile::find_project(&std::env::current_dir()?)?;
     let view = crate::pack::effective::open(&root, crate::pack::effective::Vars::Literal)?;
     let project = match view.load_checked() {
@@ -25,9 +31,9 @@ pub fn execute(flow: Option<String>, _format: GraphFormat) -> anyhow::Result<()>
             bail!("the project is invalid; run `armadai validate`")
         }
     };
-    let blocks: Vec<String> = match flow {
+    let pairs: Vec<(String, String)> = match flow {
         Some(id) => match project.flows.get(&id) {
-            Some(f) => vec![armadai_model::flow_to_mermaid(&id, f)],
+            Some(f) => vec![(id.clone(), armadai_model::flow_to_mermaid(&id, f))],
             None if project.flows.is_empty() => {
                 bail!("unknown flow `{id}`: the project has no flow")
             }
@@ -37,9 +43,15 @@ pub fn execute(flow: Option<String>, _format: GraphFormat) -> anyhow::Result<()>
             ),
         },
         None => (project.flows.iter())
-            .map(|(id, f)| armadai_model::flow_to_mermaid(id, f))
+            .map(|(id, f)| (id.clone(), armadai_model::flow_to_mermaid(id, f)))
             .collect(),
     };
+    let blocks: Vec<String> = (pairs.iter())
+        .map(|(id, m)| match format {
+            GraphFormat::Mermaid => m.clone(),
+            GraphFormat::Md => markdown_block(id, m),
+        })
+        .collect();
     if blocks.is_empty() {
         bail!("the project has no flow (.armadai/flows/ is empty)");
     }
