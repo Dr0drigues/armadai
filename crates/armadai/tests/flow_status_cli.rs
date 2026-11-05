@@ -819,3 +819,102 @@ fn a_reader_that_closes_early_is_not_a_panic() {
         }
     }
 }
+
+/// Three runs: `ship` (finished), a `deliver` closed by a second `/deliver`
+/// (interrupted), and that second `deliver`, with a loop, still running.
+fn three_runs_log(env: &Env) {
+    let cmd = |ts: u64, name: &str| {
+        format!("{{\"ts\":{ts},\"event\":\"command\",\"command\":\"{name}\"}}\n")
+    };
+    let ev = |events: &[Ev]| event_lines(events);
+    let text = cmd(T0, "ship")
+        + &ev(&[
+            (T0 + 1, true, "c1", "rel", None),
+            (T0 + 2, false, "c1", "rel", None),
+        ])
+        + &cmd(T0 + 10, "deliver")
+        + &ev(&[
+            (T0 + 11, true, "a1", "architect", None),
+            (T0 + 12, false, "a1", "architect", None),
+        ])
+        + &cmd(T0 + 20, "deliver")
+        + &ev(&[
+            (T0 + 21, true, "b1", "architect", None),
+            (T0 + 22, false, "b1", "architect", None),
+            (T0 + 23, true, "b2", "dev", None),
+            (T0 + 24, false, "b2", "dev", None),
+            (T0 + 25, true, "b3", "qa", None),
+            (T0 + 26, false, "b3", "qa", Some("rejected")),
+            (T0 + 27, true, "b4", "dev", None),
+            (T0 + 28, false, "b4", "dev", None),
+            (T0 + 40, true, "b5", "qa", None),
+        ]);
+    env.raw_log("s1", &text, T0 + 100);
+}
+
+#[test]
+fn json_goes_through_the_same_runs_as_the_text() {
+    let env = Env::new();
+    three_runs_log(&env);
+    let (code, out, err) = env.run(&env.root(), &["flow", "status", "--json"]);
+    assert_eq!((code, err.as_str()), (Some(0), ""));
+    let got: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let runs = got["runs"].as_array().unwrap();
+    let summary: Vec<(&str, &str)> = runs
+        .iter()
+        .map(|r| (r["flow"].as_str().unwrap(), r["status"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            ("ship", "finished"),
+            ("deliver", "interrupted"),
+            ("deliver", "in-progress")
+        ],
+        "{out}"
+    );
+    assert_eq!(
+        runs[2]["loops"],
+        serde_json::json!([{"from": "build", "to": "guard", "times": 2}])
+    );
+    assert_eq!(runs[1]["loops"], serde_json::json!([]));
+    // the same runs, as the text shows them
+    let (_, text, _) = env.run(&env.root(), &["flow", "status"]);
+    let heads: Vec<&str> = text
+        .lines()
+        .filter(|l| {
+            l.ends_with("  in progress")
+                || l.ends_with("  finished")
+                || l.ends_with("  interrupted")
+        })
+        .collect();
+    assert_eq!(
+        heads,
+        [
+            "ship  finished",
+            "deliver  interrupted",
+            "deliver  in progress"
+        ]
+    );
+}
+
+/// What a status bar really runs: `--line` with stdout a pipe and no colour
+/// variable at all (the host's own are removed too).
+#[test]
+fn line_in_auto_prints_no_escape_on_a_pipe_without_any_colour_variable() {
+    let env = Env::new();
+    env.three_logs();
+    let out = Command::cargo_bin("armadai")
+        .unwrap()
+        .current_dir(env.root())
+        .env("ARMADAI_CONFIG_DIR", env.dir.path().join("config"))
+        .env("HOME", env.dir.path())
+        .env_remove("NO_COLOR")
+        .env_remove("CLICOLOR_FORCE")
+        .env_remove("CLICOLOR")
+        .args(["flow", "status", "--line"])
+        .write_stdin("")
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), NEW_LINE);
+}
