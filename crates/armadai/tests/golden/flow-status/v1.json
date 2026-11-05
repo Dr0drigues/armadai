@@ -1,0 +1,130 @@
+{
+  "schema": "armadai.flow-status/1",
+  "session": {
+    "id": "s1",
+    "started_at": "2026-10-22T09:15:00Z",
+    "last_event_at": "2026-10-22T09:15:50Z"
+  },
+  "runs": [
+    {
+      "flow": "deliver",
+      "status": "in-progress",
+      "steps": [
+        {
+          "step": "design",
+          "mark": "done",
+          "sign": "✓",
+          "state": "done",
+          "note": null
+        },
+        {
+          "step": "build",
+          "mark": "done",
+          "sign": "✓",
+          "state": "done",
+          "note": null
+        },
+        {
+          "step": "guard",
+          "mark": "running",
+          "sign": "●",
+          "state": null,
+          "note": null
+        },
+        {
+          "step": "validate",
+          "mark": "pending",
+          "sign": "○",
+          "state": null,
+          "note": null
+        }
+      ],
+      "loops": [
+        {
+          "from": "build",
+          "to": "guard",
+          "times": 2
+        }
+      ],
+      "transitions": [
+        {
+          "at": "2026-10-22T09:15:20Z",
+          "from": "design",
+          "to": "build",
+          "state": "done"
+        },
+        {
+          "at": "2026-10-22T09:15:40Z",
+          "from": "guard",
+          "to": "build",
+          "state": "rejected"
+        }
+      ]
+    },
+    {
+      "flow": "hotfix",
+      "status": "finished",
+      "steps": [
+        {
+          "step": "triage",
+          "mark": "done",
+          "sign": "✓",
+          "state": "done",
+          "note": null
+        },
+        {
+          "step": "check",
+          "mark": "done",
+          "sign": "✓",
+          "state": "approved",
+          "note": null
+        }
+      ],
+      "loops": [],
+      "transitions": [
+        {
+          "at": "2026-10-22T09:15:05Z",
+          "from": "triage",
+          "to": "check",
+          "state": null
+        }
+      ]
+    },
+    {
+      "flow": "bugfix",
+      "status": "interrupted",
+      "steps": [
+        {
+          "step": "frame",
+          "mark": "coordinator",
+          "sign": "~",
+          "state": null,
+          "note": "coordinator, not recorded"
+        },
+        {
+          "step": "check",
+          "mark": "unsure",
+          "sign": "?",
+          "state": null,
+          "note": "no STATE line"
+        },
+        {
+          "step": "verify",
+          "mark": "unexpected",
+          "sign": "✗",
+          "state": "scope_changed",
+          "note": "undeclared state"
+        },
+        {
+          "step": "ship",
+          "mark": "not-run",
+          "sign": "-",
+          "state": null,
+          "note": null
+        }
+      ],
+      "loops": [],
+      "transitions": []
+    }
+  ]
+}

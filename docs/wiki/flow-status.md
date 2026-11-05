@@ -153,6 +153,64 @@ they started.
   the logs of the main checkout; a worktree with its own `.armadai/` writes and reads its own
   `state/`.
 
+## In a status bar
+
+`armadai flow status --line` prints one line for a status bar, and never fails: with no project, an invalid project, an unknown flow or session, or no run, it prints an empty line, with exit code 0 and nothing on stderr.
+
+```text
+deliver ● guard 2/4 (loops 1)
+deliver 3/4
+hotfix finished 2/2
+bugfix interrupted 1/2
+```
+
+- The run shown is the last one still open, else the last one. `●` guard is the current step (the running one, else the first `?` or `✗`, else the first pending one) with its mark; `2/4` counts done steps over the steps recorded in this session (`~` and `-` steps are left out); `(loops 1)` counts the extra times links were taken, and shows only when there is one.
+- The session is `--session`, else the `session_id` of a JSON read on stdin (the one Claude Code pipes to a status line), else the latest log of the project. The project is the `cwd` of that JSON, else the current directory. stdin is read only when it is piped, for 250 ms at most, so a terminal or a pipe that stays open never blocks the command.
+- Marks are always printed; colour comes on top. `--color auto|always|never` (default `auto`) applies to every `flow status` output: `auto` follows the terminal and honours `NO_COLOR` and `CLICOLOR_FORCE`. A status bar that runs the command through a pipe needs `--color always`: `armadai flow status --line --color always`.
+- In [ccstatusline](https://github.com/sirmalloc/ccstatusline), add a **Custom Command** widget, give it `armadai flow status --line --color always` and turn on its **preserve colors** option (without it the widget drops the colour). Read in the code of ccstatusline (the `render` method of the Custom Command widget; its page does not say so): the widget passes the whole JSON of Claude Code on stdin (`session_id`, `cwd`, ...) plus `terminal_width`, so the line follows the session and the project of Claude Code. Measured with ccstatusline run in an isolated `HOME`: the bar shows the same line as `flow status --line --session <id>`, an unknown session leaves the widget empty, and a JSON without `session_id` shows the latest log. The widget waits 1000 ms by default (`timeoutMs`, set per widget); its page also announces an optional cache of up to 60 s, so the line can lag behind a flow by that much.
+- The latest log is a guess when two sessions run at once in the same project: pass the session explicitly when you can.
+
+## Machine-readable output
+
+`armadai flow status --json` prints the session as one JSON document on stdout, and nothing else (it does not combine with `--watch` or `--list`). The `flow` argument and `--session` apply as for the text.
+
+```json
+{
+  "schema": "armadai.flow-status/1",
+  "session": { "id": "s1", "started_at": "2026-10-22T09:15:00Z", "last_event_at": "2026-10-22T09:15:50Z" },
+  "runs": [
+    {
+      "flow": "deliver",
+      "status": "in-progress",
+      "steps": [ { "step": "guard", "mark": "running", "sign": "●", "state": null, "note": null } ],
+      "loops": [ { "from": "build", "to": "guard", "times": 2 } ],
+      "transitions": [ { "at": "2026-10-22T09:15:20Z", "from": "design", "to": "build", "state": "done" } ]
+    }
+  ]
+}
+```
+
+- The schema only grows: a key is never renamed, retyped or removed, a new key is added. A change that breaks a reader gets a new `schema` value (`armadai.flow-status/2`). Read the keys you need and ignore the others.
+- `runs` come in the order the runs started (the text shows finished and interrupted runs first).
+- `started_at` and `last_event_at` are the first and last event of the log, UTC, to the second; `null` when the log is empty.
+- No log at all: `"session": null, "runs": []`, exit code 0. `--session S` with no log for `S`: the session with its dates `null` and no run, exit code 0.
+
+| `status` | Meaning |
+|---|---|
+| `in-progress` | The run has not finished and no later flow command closed it |
+| `finished` | The run reached the end of its flow |
+| `interrupted` | A later flow command closed it before it finished |
+
+| `mark` | `sign` | Meaning |
+|---|---|---|
+| `done` | `✓` | The step finished, `state` says how |
+| `running` | `●` | The step is running |
+| `pending` | `○` | The step has not started |
+| `unsure` | `?` | The log does not say; `note` gives the reason |
+| `unexpected` | `✗` | The step ended in a state it does not declare |
+| `coordinator` | `~` | The coordinator holds the step; it is not recorded |
+| `not-run` | `-` | Before the step the run opened at in this session |
+
 ## Limits
 
 - Claude Code only.
