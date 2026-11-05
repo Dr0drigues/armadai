@@ -66,6 +66,11 @@ fn status_text(v: &StepView) -> String {
         .join(" ")
 }
 
+/// A table cell: a `|` written by an agent (a state, say) must not end the cell.
+fn cell(text: &str) -> String {
+    text.replace('|', "\\|")
+}
+
 /// `armadai flow status --format md`: the same runs as a Markdown snapshot, to
 /// paste in a PR or an issue. Never coloured.
 pub fn render_md(runs: &[Run], session: &str, last_event_at: Option<u64>) -> String {
@@ -83,8 +88,8 @@ pub fn render_md(runs: &[Run], session: &str, last_event_at: Option<u64>) -> Str
         out += &format!("\n## {}: {}\n\n", run.flow, status_word(run));
         out += "| Step | Mark | Status |\n|---|---|---|\n";
         for v in &run.steps {
-            out += format!("| {} | {} | {} |", v.step, v.mark.sign(), status_text(v)).as_str();
-            out.push('\n');
+            let (step, status) = (cell(&v.step), cell(&status_text(v)));
+            out += &format!("| {step} | {} | {status} |\n", v.mark.sign());
         }
         if !run.loops.is_empty() {
             let links: Vec<String> = (run.loops.iter())
@@ -95,7 +100,8 @@ pub fn render_md(runs: &[Run], session: &str, last_event_at: Option<u64>) -> Str
         if !run.transitions.is_empty() {
             out += "\n| Time (UTC) | From | To | State |\n|---|---|---|---|\n";
             for (ts, from, to, state) in &run.transitions {
-                let state = state.as_deref().unwrap_or("");
+                let (from, to) = (cell(from), cell(to));
+                let state = cell(state.as_deref().unwrap_or(""));
                 out += &format!("| {} | {from} | {to} | {state} |\n", utc(*ts, "%H:%M:%S"));
             }
         }
@@ -294,6 +300,20 @@ mod tests {
                 && got.contains("| verify | ✗ | scope_changed (undeclared state) |\n"),
             "{got}"
         );
+    }
+
+    #[test]
+    fn md_escapes_a_pipe_in_a_cell_and_text_does_not() {
+        let mut run = uncertain();
+        run.steps[2] = view("verify", Mark::Unexpected, Some("a|b"), Some("x|y"));
+        run.transitions = vec![t(T0, "frame", "verify", Some("a|b"))];
+        let got = render_md(&[run.clone()], "s", None);
+        assert!(
+            got.contains("| verify | ✗ | a\\|b (x\\|y) |\n")
+                && got.contains("| 09:15:00 | frame | verify | a\\|b |\n"),
+            "{got}"
+        );
+        assert!(render(&[run], "s").contains("a|b (x|y)"));
     }
 
     #[test]
