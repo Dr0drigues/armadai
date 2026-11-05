@@ -95,6 +95,11 @@ mod tests {
             "steps:\n  design: { agent: architect }\n  build: { agent: dev }\n  guard: { agent: qa }\n  validate: { agent: ops }\nlinks:\n  - { from: design, to: build }\n  - { from: build, to: guard }\n  - { from: guard, to: validate }\n",
         )
         .unwrap();
+        std::fs::write(
+            a.join("flows/other.yaml"),
+            "steps:\n  x: { agent: qa }\nlinks: []\n",
+        )
+        .unwrap();
         armadai_model::load_checked(dir.path()).unwrap().0
     }
 
@@ -171,6 +176,34 @@ mod tests {
     #[test]
     fn a_finished_run_gives_no_row() {
         assert!(lines(&project(), &[run(true)], &[task("t", "qa")]).is_empty());
+    }
+
+    #[test]
+    fn an_interrupted_run_gives_no_row() {
+        let mut r = run(false);
+        r.interrupted = true;
+        assert!(lines(&project(), &[r], &[task("t", "qa")]).is_empty());
+    }
+
+    #[test]
+    fn with_two_open_runs_the_latest_one_wins() {
+        let other = Run {
+            flow: "other".into(),
+            steps: vec![view("x", Mark::Running)],
+            loops: vec![],
+            transitions: vec![],
+            finished: false,
+            interrupted: false,
+        };
+        let got = lines(&project(), &[run(false), other], &[task("t", "qa")]);
+        let [(id, content)] = got.as_slice() else {
+            panic!("{got:?}")
+        };
+        assert_eq!(id, "t");
+        assert!(
+            content.contains("other") && !content.contains("deliver"),
+            "{content:?}"
+        );
     }
 
     #[test]

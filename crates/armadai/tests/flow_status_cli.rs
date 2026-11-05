@@ -1142,3 +1142,55 @@ fn subagent_statusline_prints_nothing_on_bad_input() {
         assert_eq!(got, (Some(0), String::new(), String::new()), "{name}");
     }
 }
+
+#[test]
+fn subagent_statusline_without_a_session_id_falls_back_to_the_latest_log() {
+    let env = Env::new();
+    env.three_logs();
+    let root = env.root();
+    let stdin = format!(
+        r#"{{"cwd":"{}","tasks":[{{"id":"t1","agentType":"qa"}}]}}"#,
+        root.display()
+    );
+    let (code, out, err) = env.subagent_statusline(env.dir.path(), &stdin);
+    assert_eq!((code, err.as_str()), (Some(0), ""));
+    let row: serde_json::Value = serde_json::from_str(out.trim_end_matches('\n')).unwrap();
+    assert_eq!(row["id"], "t1");
+    assert_eq!(
+        strip_sgr(row["content"].as_str().unwrap()),
+        NEW_LINE.trim_end_matches('\n')
+    );
+}
+
+#[test]
+fn subagent_statusline_does_not_wait_for_a_stdin_that_stays_open() {
+    use std::process::Stdio;
+    let env = Env::new();
+    env.three_logs();
+    for pass in 0..5 {
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_armadai"))
+            .arg("__claude-subagent-statusline")
+            .current_dir(env.root())
+            .env("ARMADAI_CONFIG_DIR", env.dir.path().join("config"))
+            .env("HOME", env.dir.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let _open = child.stdin.take();
+        let start = std::time::Instant::now();
+        let done = loop {
+            if child.try_wait().unwrap().is_some() {
+                break true;
+            }
+            if start.elapsed() > std::time::Duration::from_secs(5) {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                break false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        assert!(done, "pass {pass}: still waiting for stdin after 5 s");
+    }
+}
