@@ -231,10 +231,10 @@ Links taken more than once: build → guard (2).
 
 | Time (UTC) | From | To | State |
 |---|---|---|---|
-| 09:15:20 | design | build | done |
+| 2026-10-22 09:15:20 | design | build | done |
 ```
 
-The Status column is the text of the plain output (the state, or `running`/`pending`, then the note in parentheses). A session with no run says `No run of a declared flow in this session yet.`; with no log at all, the usual `no flow activity recorded yet` line.
+The Time column shows the time only, with the date added on the first row of a table and whenever the UTC day changes. The Status column is the text of the plain output (the state, or `running`/`pending`, then the note in parentheses). A session with no run says `No run of a declared flow in this session yet.`; with no log at all, the usual `no flow activity recorded yet` line.
 
 ## Limits
 

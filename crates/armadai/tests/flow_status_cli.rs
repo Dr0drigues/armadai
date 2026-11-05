@@ -923,7 +923,7 @@ fn line_in_auto_prints_no_escape_on_a_pipe_without_any_colour_variable() {
 fn md_prints_the_snapshot_without_colour_even_when_forced() {
     let env = Env::new();
     looping(&env, "s1", T0 + 100);
-    let want = "# Flow status: session s1\n\nSnapshot at the last recorded event, 2026-10-22 09:15:50 UTC.\n\n## deliver: in progress\n\n| Step | Mark | Status |\n|---|---|---|\n| design | ✓ | done |\n| build | ✓ | done |\n| guard | ● | running |\n| validate | ○ | pending |\n\nLinks taken more than once: build → guard (2).\n\n| Time (UTC) | From | To | State |\n|---|---|---|---|\n| 09:15:20 | design | build | done |\n| 09:15:30 | build | guard | done |\n| 09:15:40 | guard | build | rejected |\n| 09:15:50 | build | guard | done |\n";
+    let want = "# Flow status: session s1\n\nSnapshot at the last recorded event, 2026-10-22 09:15:50 UTC.\n\n## deliver: in progress\n\n| Step | Mark | Status |\n|---|---|---|\n| design | ✓ | done |\n| build | ✓ | done |\n| guard | ● | running |\n| validate | ○ | pending |\n\nLinks taken more than once: build → guard (2).\n\n| Time (UTC) | From | To | State |\n|---|---|---|---|\n| 2026-10-22 09:15:20 | design | build | done |\n| 09:15:30 | build | guard | done |\n| 09:15:40 | guard | build | rejected |\n| 09:15:50 | build | guard | done |\n";
     for extra in [&["--color", "always"][..], &[][..]] {
         let mut args = vec!["flow", "status", "--format", "md"];
         args.extend_from_slice(extra);

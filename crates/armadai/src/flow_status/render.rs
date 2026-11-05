@@ -99,10 +99,19 @@ pub fn render_md(runs: &[Run], session: &str, last_event_at: Option<u64>) -> Str
         }
         if !run.transitions.is_empty() {
             out += "\n| Time (UTC) | From | To | State |\n|---|---|---|---|\n";
+            let mut day = None;
             for (ts, from, to, state) in &run.transitions {
                 let (from, to) = (cell(from), cell(to));
                 let state = cell(state.as_deref().unwrap_or(""));
-                out += &format!("| {} | {from} | {to} | {state} |\n", utc(*ts, "%H:%M:%S"));
+                // the date shows on the first row and whenever the UTC day changes
+                let today = ts / 86_400;
+                let fmt = if day == Some(today) {
+                    "%H:%M:%S"
+                } else {
+                    "%Y-%m-%d %H:%M:%S"
+                };
+                day = Some(today);
+                out += &format!("| {} | {from} | {to} | {state} |\n", utc(*ts, fmt));
             }
         }
     }
@@ -268,7 +277,7 @@ mod tests {
              \n\
              | Time (UTC) | From | To | State |\n\
              |---|---|---|---|\n\
-             | 09:15:05 | triage | check | done |\n\
+             | 2026-10-22 09:15:05 | triage | check | done |\n\
              \n\
              ## deliver: in progress\n\
              \n\
@@ -283,7 +292,7 @@ mod tests {
              \n\
              | Time (UTC) | From | To | State |\n\
              |---|---|---|---|\n\
-             | 09:15:20 | design | build | done |\n\
+             | 2026-10-22 09:15:20 | design | build | done |\n\
              | 09:15:30 | build | guard | done |\n\
              | 09:15:40 | guard | build | rejected |\n\
              | 09:15:50 | build | guard | done |\n";
@@ -310,10 +319,41 @@ mod tests {
         let got = render_md(&[run.clone()], "s", None);
         assert!(
             got.contains("| verify | ✗ | a\\|b (x\\|y) |\n")
-                && got.contains("| 09:15:00 | frame | verify | a\\|b |\n"),
+                && got.contains("| 2026-10-22 09:15:00 | frame | verify | a\\|b |\n"),
             "{got}"
         );
         assert!(render(&[run], "s").contains("a|b (x|y)"));
+    }
+
+    #[test]
+    fn md_shows_the_date_on_the_first_row_and_when_the_day_changes() {
+        const DAY: u64 = 86_400;
+        let mut run = finished();
+        run.transitions = vec![
+            t(T0, "a", "b", None),
+            t(T0 + 60, "b", "c", None),
+            t(T0 + DAY, "c", "d", None),
+            t(T0 + DAY + 60, "d", "e", None),
+        ];
+        let got = render_md(&[run], "s", None);
+        let rows: Vec<&str> = got
+            .lines()
+            .filter(|l| {
+                l.contains(" | a ")
+                    || l.contains(" | b ")
+                    || l.contains(" | c ")
+                    || l.contains(" | d ")
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                "| 2026-10-22 09:15:00 | a | b |  |",
+                "| 09:16:00 | b | c |  |",
+                "| 2026-10-23 09:15:00 | c | d |  |",
+                "| 09:16:00 | d | e |  |",
+            ]
+        );
     }
 
     #[test]
