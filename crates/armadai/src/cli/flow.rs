@@ -39,7 +39,7 @@ pub enum FlowCommand {
             it finishes, then the sub-agents are inferred again; it is shown `interrupted` when a \
             later flow command closed it before it finished. Without --session, the latest \
             session.\n\n\
-            --json and --format md print a snapshot for other tools; --line prints one line for \
+            --json prints a snapshot for other tools; --line prints one line for \
             a status bar (Claude Code's statusLine, or a custom command in your own bar).",
         after_help = "Examples:\n  \
             armadai flow status\n  \

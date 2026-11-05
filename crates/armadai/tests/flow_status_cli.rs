@@ -762,8 +762,23 @@ fn color_always_paints_and_never_does_not_even_where_stdout_is_a_pipe() {
     let (_, always, _) = env.line(&root, &["--color", "always"], "");
     assert!(always.contains('\x1b'), "always: {always:?}");
     assert_eq!(strip_sgr(&always), NEW_LINE);
-    let (_, never, _) = env.line(&root, &["--color", "never"], "");
-    assert_eq!(never, NEW_LINE);
+    // `never` must beat a forced colour: CLICOLOR_FORCE makes `auto` paint on a pipe
+    let forced = |color: &str| {
+        let out = Command::cargo_bin("armadai")
+            .unwrap()
+            .current_dir(&root)
+            .env("ARMADAI_CONFIG_DIR", env.dir.path().join("config"))
+            .env("HOME", env.dir.path())
+            .env_remove("NO_COLOR")
+            .env("CLICOLOR_FORCE", "1")
+            .args(["flow", "status", "--line", "--color", color])
+            .write_stdin("")
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    assert!(forced("auto").contains('\x1b'), "auto with CLICOLOR_FORCE");
+    assert_eq!(forced("never"), NEW_LINE);
     let (_, auto, _) = env.line(&root, &[], "");
     assert_eq!(auto, NEW_LINE, "auto on a pipe with NO_COLOR");
     // the table and the text of `flow status` follow --color too
