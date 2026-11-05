@@ -188,10 +188,9 @@ fn a_native_status_line_with_the_key_is_an_error_and_nothing_is_written() {
     );
     let out = env.run(&["link", "--target", "claude"]);
     assert!(!out.status.success());
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        err.contains("project.yaml: native.claude key `statusLine` collides with ui.status_line"),
-        "{err}"
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        "Error: project.yaml: native.claude key `statusLine` collides with ui.status_line\n"
     );
     assert!(!env.root().join(".claude").exists());
 }
@@ -209,4 +208,40 @@ fn other_targets_say_claude_code_only_and_only_with_the_key() {
             "{target}"
         );
     }
+}
+
+#[test]
+fn a_user_bar_equal_to_ours_is_reported_compiled_but_not_owned() {
+    let ours = r#"{"statusLine":{"type":"command","command":"armadai __claude-statusline","refreshInterval":5}}"#;
+    let env = Env::new(on(), &[FLOW]);
+    env.put_settings(ours);
+    let report = env.ok(&["link", "--target", "claude"]);
+    assert_eq!(ui_lines(&report), [BAR_LINE]);
+    env.ok(&["unlink", "--target", "claude"]);
+    // never recorded as ours: unlink leaves it
+    assert_eq!(env.settings(), serde_json::from_str::<Value>(ours).unwrap());
+}
+
+#[test]
+fn a_second_link_replaces_an_older_value_of_its_own_bar() {
+    let env = Env::new(on(), &[FLOW]);
+    env.ok(&["link", "--target", "claude"]);
+    // as if an earlier version had linked with another refresh interval
+    let manifest = env.root().join(".armadai/link-manifest.yaml");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    assert!(text.contains("refreshInterval: 5"));
+    std::fs::write(
+        &manifest,
+        text.replace("refreshInterval: 5", "refreshInterval: 9"),
+    )
+    .unwrap();
+    let old = std::fs::read_to_string(env.settings_path()).unwrap();
+    std::fs::write(
+        env.settings_path(),
+        old.replace("\"refreshInterval\": 5", "\"refreshInterval\": 9"),
+    )
+    .unwrap();
+    let report = env.ok(&["link", "--target", "claude"]);
+    assert_eq!(env.settings()["statusLine"]["refreshInterval"], json!(5));
+    assert_eq!(ui_lines(&report), [BAR_LINE]);
 }
