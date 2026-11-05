@@ -20,6 +20,34 @@ pub enum Mark {
     NotRun,
 }
 
+impl Mark {
+    /// The glyph `flow status`, `--json` and the watch view share.
+    pub fn sign(&self) -> &'static str {
+        match self {
+            Mark::Done => "✓",
+            Mark::Running => "●",
+            Mark::Pending => "○",
+            Mark::Unsure => "?",
+            Mark::Unexpected => "✗",
+            Mark::Relay => "~",
+            Mark::NotRun => "-",
+        }
+    }
+
+    /// The machine name `--json` prints.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Mark::Done => "done",
+            Mark::Running => "running",
+            Mark::Pending => "pending",
+            Mark::Unsure => "unsure",
+            Mark::Unexpected => "unexpected",
+            Mark::Relay => "coordinator",
+            Mark::NotRun => "not-run",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepView {
     pub step: String,

@@ -153,6 +153,47 @@ they started.
   the logs of the main checkout; a worktree with its own `.armadai/` writes and reads its own
   `state/`.
 
+## Machine-readable output
+
+`armadai flow status --json` prints the session as one JSON document on stdout, and nothing else (it does not combine with `--watch` or `--list`). The `flow` argument and `--session` apply as for the text.
+
+```json
+{
+  "schema": "armadai.flow-status/1",
+  "session": { "id": "s1", "started_at": "2026-10-22T09:15:00Z", "last_event_at": "2026-10-22T09:15:50Z" },
+  "runs": [
+    {
+      "flow": "deliver",
+      "status": "in-progress",
+      "steps": [ { "step": "guard", "mark": "running", "sign": "●", "state": null, "note": null } ],
+      "loops": [ { "from": "build", "to": "guard", "times": 2 } ],
+      "transitions": [ { "at": "2026-10-22T09:15:20Z", "from": "design", "to": "build", "state": "done" } ]
+    }
+  ]
+}
+```
+
+- The schema only grows: a key is never renamed, retyped or removed, a new key is added. A change that breaks a reader gets a new `schema` value (`armadai.flow-status/2`). Read the keys you need and ignore the others.
+- `runs` come in the order the runs started (the text shows finished and interrupted runs first).
+- `started_at` and `last_event_at` are the first and last event of the log, UTC, to the second; `null` when the log is empty.
+- No log at all: `"session": null, "runs": []`, exit code 0. `--session S` with no log for `S`: the session with its dates `null` and no run, exit code 0.
+
+| `status` | Meaning |
+|---|---|
+| `in-progress` | The run has not finished and no later flow command closed it |
+| `finished` | The run reached the end of its flow |
+| `interrupted` | A later flow command closed it before it finished |
+
+| `mark` | `sign` | Meaning |
+|---|---|---|
+| `done` | `✓` | The step finished, `state` says how |
+| `running` | `●` | The step is running |
+| `pending` | `○` | The step has not started |
+| `unsure` | `?` | The log does not say; `note` gives the reason |
+| `unexpected` | `✗` | The step ended in a state it does not declare |
+| `coordinator` | `~` | The coordinator holds the step; it is not recorded |
+| `not-run` | `-` | Before the step the run opened at in this session |
+
 ## Limits
 
 - Claude Code only.

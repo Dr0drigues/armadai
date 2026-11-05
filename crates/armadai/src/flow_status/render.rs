@@ -27,14 +27,11 @@ pub fn render(runs: &[Run], session: &str) -> String {
         out += &format!("\n{}  {status}\n", run.flow);
         let w = run.steps.iter().map(|v| v.step.len()).max().unwrap_or(0);
         for v in &run.steps {
-            let (sign, word) = match v.mark {
-                Mark::Done => ("✓", None),
-                Mark::Running => ("●", Some("running")),
-                Mark::Pending => ("○", Some("pending")),
-                Mark::Unsure => ("?", None),
-                Mark::Unexpected => ("✗", None),
-                Mark::Relay => ("~", None),
-                Mark::NotRun => ("-", None),
+            let sign = v.mark.sign();
+            let word = match v.mark {
+                Mark::Running => Some("running"),
+                Mark::Pending => Some("pending"),
+                _ => None,
             };
             let what = (v.state.as_deref().or(word).map(str::to_string))
                 .into_iter()

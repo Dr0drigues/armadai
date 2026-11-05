@@ -1,3 +1,9 @@
+## Unreleased
+
+### Added
+
+- `armadai flow status --json` prints a session as JSON (schema `armadai.flow-status/1`, which only grows) for other tools; see [Flow status](docs/wiki/flow-status.md).
+
 ## v1.0.0-rc.9 (2026-11-04)
 
 Ninth release candidate. Packs can now be managed, not only copied: a project references a pack of a registry (`pack:` in `project.yaml`, locked in `.armadai/pack.lock`) and the new `armadai pack add|sync|status|update|new` commands keep it up to date, with machine-local pack variables (`{{var.name}}`). Moving from rc.8: the `pack` commands are new, `link` adds `vars.local.yaml` to `.armadai/.gitignore`, and `link` itself still never touches the network.

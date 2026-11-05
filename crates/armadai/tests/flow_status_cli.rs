@@ -508,3 +508,88 @@ fn the_hook_command_decides_between_two_flows_the_events_fit() {
         "session s3 (UTC)\n\nbugfix  finished\n  ✓ analyse   done\n  ✓ test      done\n  ✓ fix-ui    done\n  ✓ review    done\n  ✓ validate  done\n  09:15:21  analyse → test  (done)\n  09:15:40  test → fix-ui  (done)\n  09:16:00  fix-ui → review  (done)\n  09:16:20  review → validate  (done)\n"
     );
 }
+
+#[test]
+fn json_prints_the_session_as_the_schema_says() {
+    let env = Env::new();
+    looping(&env, "s1", T0 + 100);
+    let (code, out, err) = env.run(&env.root(), &["flow", "status", "--json"]);
+    assert_eq!((code, err.as_str()), (Some(0), ""));
+    assert!(out.ends_with("}\n"), "one document and a newline: {out:?}");
+    let got: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let step = |s: &str, mark: &str, sign: &str, state: Option<&str>| serde_json::json!({"step": s, "mark": mark, "sign": sign, "state": state, "note": null});
+    let tr = |at: &str, from: &str, to: &str, state: &str| serde_json::json!({"at": at, "from": from, "to": to, "state": state});
+    assert_eq!(
+        got,
+        serde_json::json!({
+            "schema": "armadai.flow-status/1",
+            "session": {
+                "id": "s1",
+                "started_at": "2026-10-22T09:15:10Z",
+                "last_event_at": "2026-10-22T09:15:50Z"
+            },
+            "runs": [{
+                "flow": "deliver",
+                "status": "in-progress",
+                "steps": [
+                    step("design", "done", "✓", Some("done")),
+                    step("build", "done", "✓", Some("done")),
+                    step("guard", "running", "●", None),
+                    step("validate", "pending", "○", None),
+                ],
+                "loops": [{"from": "build", "to": "guard", "times": 2}],
+                "transitions": [
+                    tr("2026-10-22T09:15:20Z", "design", "build", "done"),
+                    tr("2026-10-22T09:15:30Z", "build", "guard", "done"),
+                    tr("2026-10-22T09:15:40Z", "guard", "build", "rejected"),
+                    tr("2026-10-22T09:15:50Z", "build", "guard", "done"),
+                ]
+            }]
+        })
+    );
+}
+
+#[test]
+fn json_without_any_log_or_with_an_unknown_session_still_succeeds() {
+    let env = Env::new();
+    let (code, out, err) = env.run(&env.root(), &["flow", "status", "--json"]);
+    let got: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(
+        (code, err.as_str(), got),
+        (
+            Some(0),
+            "",
+            serde_json::json!({"schema": "armadai.flow-status/1", "session": null, "runs": []})
+        )
+    );
+    let (code, out, err) = env.run(
+        &env.root(),
+        &["flow", "status", "--json", "--session", "inconnue"],
+    );
+    let got: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(
+        (code, err.as_str(), got),
+        (
+            Some(0),
+            "",
+            serde_json::json!({
+                "schema": "armadai.flow-status/1",
+                "session": {"id": "inconnue", "started_at": null, "last_event_at": null},
+                "runs": []
+            })
+        )
+    );
+}
+
+#[test]
+fn json_does_not_combine_with_watch_or_list() {
+    let env = Env::new();
+    for other in ["--watch", "--list"] {
+        let (code, out, err) = env.run(&env.root(), &["flow", "status", "--json", other]);
+        assert_eq!(
+            (code, out.as_str(), err.contains("cannot be used with")),
+            (Some(2), "", true),
+            "--json {other}: {err}"
+        );
+    }
+}

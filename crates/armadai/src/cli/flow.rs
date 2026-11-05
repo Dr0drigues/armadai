@@ -11,7 +11,7 @@ use armadai_model::Project;
 
 use crate::flow_status::record::{FlowEvent, GROUP_SEP, log_path};
 use crate::flow_status::render;
-use crate::flow_status::runs::runs;
+use crate::flow_status::runs::{Run, runs};
 
 const NO_ACTIVITY: &str =
     "no flow activity recorded yet (link installs the hooks; start a flow in Claude Code)";
@@ -35,7 +35,8 @@ pub enum FlowCommand {
             armadai flow status\n  \
             armadai flow status deliver --watch\n  \
             armadai flow status --list\n  \
-            armadai flow status --session 3f2a9c"
+            armadai flow status --session 3f2a9c\n  \
+            armadai flow status --json"
     )]
     Status {
         /// Only the runs of this flow (id under .armadai/flows/)
@@ -49,6 +50,9 @@ pub enum FlowCommand {
         /// List the recorded sessions instead
         #[arg(long, conflicts_with_all = ["flow", "session"])]
         list: bool,
+        /// Print the session as JSON (schema armadai.flow-status/1) on stdout, and nothing else
+        #[arg(long, conflicts_with_all = ["watch", "list"])]
+        json: bool,
     },
 }
 
@@ -58,6 +62,7 @@ pub fn execute(cmd: FlowCommand) -> anyhow::Result<()> {
         session,
         watch,
         list,
+        json,
     } = cmd;
     let cwd = std::env::current_dir()?;
     let Some(root) = crate::claude_adapter::policy_gate::resolve_project(&cwd) else {
@@ -107,7 +112,7 @@ pub fn execute(cmd: FlowCommand) -> anyhow::Result<()> {
         let path = log_path(&root, id).with_context(|| {
             format!("`{id}` is not a session id; see `armadai flow status --list`")
         })?;
-        if !watch && !path.is_file() {
+        if !watch && !json && !path.is_file() {
             bail!("no session `{id}` recorded; see `armadai flow status --list`");
         }
     }
@@ -117,6 +122,17 @@ pub fn execute(cmd: FlowCommand) -> anyhow::Result<()> {
         flow,
         session,
     };
+    if json {
+        let (session, runs) = view.snapshot();
+        let doc = crate::flow_status::json::document(
+            session
+                .as_ref()
+                .map(|(id, ev)| (id.as_str(), ev.as_slice())),
+            &runs,
+        );
+        println!("{}", serde_json::to_string_pretty(&doc)?);
+        return Ok(());
+    }
     if !watch {
         print_painted(&view.text());
         return Ok(());
@@ -156,19 +172,30 @@ impl View {
         (session, path)
     }
 
-    fn text(&self) -> String {
-        let (Some(session), Some(path)) = self.log() else {
-            return format!("{NO_ACTIVITY}\n");
+    /// The session shown with the events of its log (none when it has no
+    /// file) and its runs, filtered by the flow id; the one reading of the
+    /// log `text` and `--json` share.
+    fn snapshot(&self) -> (Option<(String, Vec<FlowEvent>)>, Vec<Run>) {
+        let (Some(session), path) = self.log() else {
+            return (None, Vec::new());
         };
-        if !path.is_file() {
-            // --watch on a session not written yet
-            return format!("{NO_ACTIVITY}\n");
-        }
-        let mut found = runs(&self.project, &read_log(&path));
+        let events = (path.filter(|p| p.is_file()))
+            .map(|p| read_log(&p))
+            .unwrap_or_default();
+        let mut found = runs(&self.project, &events);
         if let Some(id) = &self.flow {
             found.retain(|r| r.flow.split(GROUP_SEP).any(|f| f == id));
         }
-        render::render(&found, &session)
+        (Some((session, events)), found)
+    }
+
+    fn text(&self) -> String {
+        let (session, found) = self.snapshot();
+        // no session, or one whose file is not written yet (--watch)
+        match (session, self.log().1) {
+            (Some((session, _)), Some(path)) if path.is_file() => render::render(&found, &session),
+            _ => format!("{NO_ACTIVITY}\n"),
+        }
     }
 }
 
