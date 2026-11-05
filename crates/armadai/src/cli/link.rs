@@ -45,7 +45,7 @@ impl Prepared {
     /// Where an artifact lands, relative to the project root.
     fn rel(&self, a: &Artifact) -> PathBuf {
         match a.kind {
-            ArtifactKind::Native => a.path.clone(),
+            ArtifactKind::Native | ArtifactKind::Plugin => a.path.clone(),
             _ => self.output_dir.join(&a.path),
         }
     }
@@ -102,6 +102,15 @@ pub fn touched_paths() -> anyhow::Result<Vec<PathBuf>> {
             .all(|c| matches!(c, std::path::Component::Normal(_)))
     });
     Ok(out.into_iter().collect())
+}
+
+/// Take the whole plugin out of the plan: its artifacts, its paths in `all_produced`
+/// and its dotted keys.
+fn drop_plugin(p: &mut Prepared, keys: &mut BTreeMap<String, serde_json::Value>) {
+    p.artifacts.retain(|a| a.kind != ArtifactKind::Plugin);
+    p.all_produced
+        .retain(|r| !r.starts_with(compile::PLUGIN_DIR));
+    keys.retain(|k, _| !claude_settings::is_plugin_key(k));
 }
 
 /// `--target`, else `targets` of project.yaml, else claude.
@@ -211,6 +220,80 @@ fn prepare(
         let rel = p.output_dir.join("settings.json");
         let hooks = claude_settings::hook_entries(project)?;
         let mut keys = claude_settings::native_settings(project)?;
+        if project.manifest.ui.subagent_status_line {
+            let existing = std::fs::read_to_string(root.join(&rel)).ok();
+            let previous = match p.previous_patch(&rel).map(|f| &f.kind) {
+                Some(PatchKind::SettingsHooks(o)) => o.clone(),
+                _ => Default::default(),
+            };
+            let clash =
+                claude_settings::keep_users_plugin(existing.as_deref(), &mut keys, &previous)
+                    .with_context(|| rel.display().to_string())?;
+            // the plugin is link's when an earlier link recorded it (a file entry, or a
+            // value of its settings entries); a plugin found without that record is not
+            let recorded = !previous.plugin.is_empty()
+                || (p.previous.iter().flat_map(|t| &t.entries)).any(|e| {
+                    e.produced_by.kind == manifest::ProducedByKind::Plugin
+                        && e.outcome == Outcome::Created
+                });
+            match clash {
+                Some(path) => {
+                    // a plugin the settings do not load would be a file nobody reads
+                    drop_plugin(&mut p, &mut keys);
+                    let why = format!(
+                        "key {path} of .claude/settings.json already has another value; \
+                         link leaves it"
+                    );
+                    p.report.push(
+                        target,
+                        "ui.subagent_status_line",
+                        Status::NotCompiled,
+                        Some(&why),
+                    );
+                }
+                None => {
+                    let found = if recorded {
+                        claude_settings::FoundPlugin::Absent
+                    } else {
+                        claude_settings::found_plugin(root, existing.as_deref())?
+                    };
+                    match found {
+                        claude_settings::FoundPlugin::Absent => p.report.push(
+                            target,
+                            "ui.subagent_status_line",
+                            Status::Compiled,
+                            Some(
+                                "plugin armadai-ui in .armadai/plugins/armadai-ui, enabled in \
+                                 .claude/settings.json; Claude Code loads it once you trust \
+                                 the folder",
+                            ),
+                        ),
+                        claude_settings::FoundPlugin::Identical => {
+                            drop_plugin(&mut p, &mut keys);
+                            p.report.push(
+                                target,
+                                "ui.subagent_status_line",
+                                Status::Approximated,
+                                Some("existing identical plugin kept, not owned: unlink leaves it"),
+                            );
+                        }
+                        claude_settings::FoundPlugin::Differs(element) => {
+                            drop_plugin(&mut p, &mut keys);
+                            let why = format!(
+                                "existing plugin differs from what link writes at {element}, \
+                                 not owned: link leaves it; remove it to let link write it"
+                            );
+                            p.report.push(
+                                target,
+                                "ui.subagent_status_line",
+                                Status::NotCompiled,
+                                Some(&why),
+                            );
+                        }
+                    }
+                }
+            }
+        }
         if project.manifest.ui.status_line {
             let existing = std::fs::read_to_string(root.join(&rel)).ok();
             let previous = match p.previous_patch(&rel).map(|f| &f.kind) {
@@ -315,6 +398,10 @@ fn prepare(
         PathBuf::from(".")
     };
     for a in &p.artifacts {
+        if a.kind == ArtifactKind::Plugin {
+            compile::check_plugin_destination(root, &p.rel(a))?;
+            continue;
+        }
         let t = if a.kind == ArtifactKind::Native {
             Path::new(".")
         } else {
@@ -367,6 +454,9 @@ fn remove_stale(root: &Path, p: &mut Prepared, produced: &BTreeSet<PathBuf>, dry
         }
         let trust_root = match e.produced_by.kind {
             manifest::ProducedByKind::Native => Path::new("."),
+            manifest::ProducedByKind::Plugin if e.path.starts_with(compile::PLUGIN_DIR) => {
+                Path::new(".")
+            }
             _ => prev.root.as_path(),
         };
         let path = manifest::resolve_real(root, &e.path);
@@ -384,6 +474,14 @@ fn remove_stale(root: &Path, p: &mut Prepared, produced: &BTreeSet<PathBuf>, dry
                 "would be removed: no longer produced",
             ));
         } else if own && std::fs::remove_file(&path).is_ok() {
+            if e.produced_by.kind == manifest::ProducedByKind::Plugin
+                && let Some(parent) = path.parent()
+            {
+                super::unlink::remove_empty_ancestors(
+                    parent,
+                    &manifest::resolve_real(root, Path::new(".armadai")),
+                );
+            }
             lines.push((element, Status::Compiled, "removed: no longer produced"));
         } else {
             lines.push((
@@ -438,6 +536,7 @@ fn not_written(p: &mut Prepared, root: &Path, path: &Path) {
         manifest::ProducedByKind::Skill => format!("skill {}", a.produced_by.name),
         manifest::ProducedByKind::Command => format!("command {}", a.produced_by.name),
         manifest::ProducedByKind::Native => format!("native {}", a.produced_by.name),
+        manifest::ProducedByKind::Plugin => "ui.subagent_status_line".to_string(),
         _ => format!("agent {}", a.produced_by.name),
     };
     let rel = p.rel(a);

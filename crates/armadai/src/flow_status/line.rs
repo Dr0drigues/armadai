@@ -23,6 +23,16 @@ pub fn line(runs: &[Run]) -> Vec<(Piece, String)> {
     else {
         return Vec::new();
     };
+    pieces(run, current(run))
+}
+
+/// The line of an open run naming `step` instead of the run's current step
+/// (the subagent row of the agent that holds it).
+pub fn line_at(run: &Run, step: &super::runs::StepView) -> Vec<(Piece, String)> {
+    pieces(run, Some(step))
+}
+
+fn pieces(run: &Run, cur: Option<&super::runs::StepView>) -> Vec<(Piece, String)> {
     let mut out = vec![(Piece::Flow, run.flow.clone())];
     if run.finished || run.interrupted {
         let word = if run.finished {
@@ -31,7 +41,7 @@ pub fn line(runs: &[Run]) -> Vec<(Piece, String)> {
             "interrupted"
         };
         out.push((Piece::Status, word.into()));
-    } else if let Some(v) = current(run) {
+    } else if let Some(v) = cur {
         out.push((Piece::Mark(v.mark.clone()), v.mark.sign().into()));
         out.push((Piece::Mark(v.mark.clone()), v.step.clone()));
     }

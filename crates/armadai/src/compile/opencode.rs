@@ -269,6 +269,14 @@ fn compile_with(
             Some(super::report::UI_CLAUDE_ONLY),
         );
     }
+    if project.manifest.ui.subagent_status_line {
+        plan.report.push(
+            T,
+            "ui.subagent_status_line",
+            Status::NotCompiled,
+            Some(super::report::UI_CLAUDE_ONLY),
+        );
+    }
     if strict {
         plan.report.push(
             T,

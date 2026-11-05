@@ -259,6 +259,15 @@ fn unlink_from_manifest(
                         let m = crate::cli::style::muted();
                         anstream::println!("{m}  deleted {}{m:#}", path.display());
                         deleted += 1;
+                        // the plugin folders link created go with their last file
+                        if entry.produced_by.kind == linker::manifest::ProducedByKind::Plugin
+                            && let Some(parent) = path.parent()
+                        {
+                            remove_empty_ancestors(
+                                parent,
+                                &linker::manifest::resolve_real(root, Path::new(".armadai")),
+                            );
+                        }
                     }
                     Some(linker::manifest::DigestCheck::Differs) => {
                         let w = crate::cli::style::warn();
@@ -702,8 +711,10 @@ fn print_manifest_dry_run(
 /// Where a manifest entry must resolve: native files live anywhere in the project
 /// (outside `.armadai/`), everything else under the target's own root.
 fn trust_root<'a>(entry: &linker::manifest::ManifestEntry, target_root: &'a Path) -> &'a Path {
-    if entry.produced_by.kind == linker::manifest::ProducedByKind::Native
-        && !entry.path.starts_with(".armadai")
+    let kind = entry.produced_by.kind;
+    if (kind == linker::manifest::ProducedByKind::Native && !entry.path.starts_with(".armadai"))
+        || (kind == linker::manifest::ProducedByKind::Plugin
+            && entry.path.starts_with(compile::PLUGIN_DIR))
     {
         Path::new(".")
     } else {
@@ -749,6 +760,7 @@ fn unlink_via_fallback(
     let plan = compile::compiler_for(target_name, output_dir)?.compile(&project, root, sources)?;
     let target_root = root.join(output_dir);
     let candidates: Vec<(PathBuf, Vec<u8>)> = (plan.artifacts.into_iter())
+        .filter(|a| a.kind != compile::ArtifactKind::Plugin)
         .filter(|a| match agents_filter {
             Some(f) => a.kind != compile::ArtifactKind::Agent || f.contains(&a.produced_by.name),
             None => true,
@@ -792,6 +804,12 @@ fn unlink_via_fallback(
         }
         deleted += 1;
     }
+    if target_name == "claude" && root.join(compile::PLUGIN_DIR).exists() {
+        anstream::eprintln!(
+            "{w}  {}/ not removed: no manifest records what link wrote there{w:#}",
+            compile::PLUGIN_DIR
+        );
+    }
     if !plan.blocks.is_empty() || target_name == "claude" {
         anstream::eprintln!(
             "{w}  hooks/CLAUDE.md block not removed: no manifest records what link added{w:#}"
@@ -826,7 +844,7 @@ fn content_matches(path: &Path, expected: &[u8]) -> bool {
 /// is). Callers pass the boundary that must survive — the target's root
 /// directory for linker-generated paths, the project root for the config
 /// file — so this function has no target-specific knowledge of its own.
-fn remove_empty_ancestors(path: &Path, stop_at: &Path) {
+pub(crate) fn remove_empty_ancestors(path: &Path, stop_at: &Path) {
     let mut current = path.to_path_buf();
     while current.starts_with(stop_at) && current != stop_at {
         if std::fs::read_dir(&current)

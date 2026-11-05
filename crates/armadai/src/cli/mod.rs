@@ -1,5 +1,5 @@
 mod config;
-mod flow;
+pub(crate) mod flow;
 mod graph;
 pub mod init;
 mod inspect;
@@ -371,6 +371,12 @@ pub enum Command {
     /// and prints the line of that session, or nothing. Hidden from help.
     #[command(hide = true, name = "__claude-statusline")]
     ClaudeStatusline,
+    /// Internal: called by the Claude Code subagentStatusLine of the armadai-ui
+    /// plugin. Reads the subagent status line JSON from stdin and prints one
+    /// JSON line per subagent row that holds a step of a run in progress, or
+    /// nothing. Hidden from help.
+    #[command(hide = true, name = "__claude-subagent-statusline")]
+    ClaudeSubagentStatusline,
 }
 
 /// Names of the subcommands marked `hide = true`, taken from clap itself
@@ -492,6 +498,7 @@ pub fn handle(cli: Cli) -> anyhow::Result<()> {
         Command::ClaudePolicyGate => crate::claude_adapter::policy_gate::gate_from_stdin(),
         Command::RecordFlowEvent => crate::flow_status::record::record_from_stdin(),
         Command::ClaudeStatusline => flow::statusline_main(),
+        Command::ClaudeSubagentStatusline => flow::subagent_statusline_main(),
     }
 }
 
@@ -539,6 +546,7 @@ mod tests {
             "__claude-policy-gate",
             "__record-flow-event",
             "__claude-statusline",
+            "__claude-subagent-statusline",
         ] {
             assert!(
                 hidden.iter().any(|n| n == name),

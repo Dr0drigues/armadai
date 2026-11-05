@@ -121,6 +121,9 @@ pub struct Ui {
     /// Compile a Claude Code statusLine that shows the flow progress.
     #[serde(default, skip_serializing_if = "is_false")]
     pub status_line: bool,
+    /// Compile a Claude Code subagent status row that shows the step a subagent holds.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub subagent_status_line: bool,
 }
 
 fn is_false(b: &bool) -> bool {

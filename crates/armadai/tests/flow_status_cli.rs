@@ -1066,3 +1066,131 @@ fn md_does_not_combine_with_watch_list_json_or_line() {
         assert_eq!((code, out.as_str()), (Some(2), ""), "{other}");
     }
 }
+
+impl Env {
+    /// `armadai __claude-subagent-statusline` with `stdin` piped, `NO_COLOR` set.
+    fn subagent_statusline(&self, cwd: &Path, stdin: &str) -> (Option<i32>, String, String) {
+        let out = Command::cargo_bin("armadai")
+            .unwrap()
+            .current_dir(cwd)
+            .env("ARMADAI_CONFIG_DIR", self.dir.path().join("config"))
+            .env("HOME", self.dir.path())
+            .env("NO_COLOR", "1")
+            .arg("__claude-subagent-statusline")
+            .write_stdin(stdin)
+            .timeout(std::time::Duration::from_secs(20))
+            .output()
+            .unwrap();
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+}
+
+#[test]
+fn subagent_statusline_prints_one_json_line_per_row_it_overrides() {
+    let env = Env::new();
+    env.three_logs();
+    let root = env.root();
+    let stdin = format!(
+        r#"{{"session_id":"S","cwd":"{}","columns":80,"tasks":[{{"id":"t1","agentType":"architect","status":"running","tokenCount":12}},{{"id":"t2","agentType":"Explore"}}]}}"#,
+        root.display()
+    );
+    let (code, out, err) = env.subagent_statusline(env.dir.path(), &stdin);
+    let (_, line, _) = env.line(&root, &["--color", "always", "--session", "S"], "");
+    assert_eq!((code, err.as_str()), (Some(0), ""));
+    let row: serde_json::Value = serde_json::from_str(out.trim_end_matches('\n')).unwrap();
+    assert_eq!(out.matches('\n').count(), 1, "{out:?}");
+    assert_eq!(
+        row,
+        serde_json::json!({"id": "t1", "content": line.trim_end_matches('\n')})
+    );
+    assert_eq!(
+        strip_sgr(row["content"].as_str().unwrap()),
+        "deliver ● design 0/4"
+    );
+}
+
+#[test]
+fn subagent_statusline_prints_nothing_on_bad_input() {
+    let env = Env::new();
+    env.three_logs();
+    let root = env.root();
+    let c = root.display();
+    let cases = [
+        ("empty stdin", String::new()),
+        (
+            "invalid json",
+            r#"{"session_id":"S","tasks":[{"id":"t1""#.to_string(),
+        ),
+        (
+            "tasks not an array",
+            format!(r#"{{"session_id":"S","cwd":"{c}","tasks":"x"}}"#),
+        ),
+        ("no tasks", format!(r#"{{"session_id":"S","cwd":"{c}"}}"#)),
+        (
+            "unknown session",
+            format!(
+                r#"{{"session_id":"nope","cwd":"{c}","tasks":[{{"id":"t1","agentType":"architect"}}]}}"#
+            ),
+        ),
+    ];
+    for (name, stdin) in cases {
+        let got = env.subagent_statusline(&root, &stdin);
+        assert_eq!(got, (Some(0), String::new(), String::new()), "{name}");
+    }
+}
+
+#[test]
+fn subagent_statusline_without_a_session_id_falls_back_to_the_latest_log() {
+    let env = Env::new();
+    env.three_logs();
+    let root = env.root();
+    let stdin = format!(
+        r#"{{"cwd":"{}","tasks":[{{"id":"t1","agentType":"qa"}}]}}"#,
+        root.display()
+    );
+    let (code, out, err) = env.subagent_statusline(env.dir.path(), &stdin);
+    assert_eq!((code, err.as_str()), (Some(0), ""));
+    let row: serde_json::Value = serde_json::from_str(out.trim_end_matches('\n')).unwrap();
+    assert_eq!(row["id"], "t1");
+    assert_eq!(
+        strip_sgr(row["content"].as_str().unwrap()),
+        NEW_LINE.trim_end_matches('\n')
+    );
+}
+
+#[test]
+fn subagent_statusline_does_not_wait_for_a_stdin_that_stays_open() {
+    use std::process::Stdio;
+    let env = Env::new();
+    env.three_logs();
+    for pass in 0..5 {
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_armadai"))
+            .arg("__claude-subagent-statusline")
+            .current_dir(env.root())
+            .env("ARMADAI_CONFIG_DIR", env.dir.path().join("config"))
+            .env("HOME", env.dir.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let _open = child.stdin.take();
+        let start = std::time::Instant::now();
+        let done = loop {
+            if child.try_wait().unwrap().is_some() {
+                break true;
+            }
+            if start.elapsed() > std::time::Duration::from_secs(5) {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                break false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        assert!(done, "pass {pass}: still waiting for stdin after 5 s");
+    }
+}

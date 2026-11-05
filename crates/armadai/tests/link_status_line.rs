@@ -105,6 +105,7 @@ fn nothing_is_written_without_the_opt_in() {
         "schema_version: 1\ncoordinator: lead\n",
         "schema_version: 1\ncoordinator: lead\nui: {}\n",
         "schema_version: 1\ncoordinator: lead\nui:\n  status_line: false\n",
+        "schema_version: 1\ncoordinator: lead\nui:\n  subagent_status_line: false\n",
     ] {
         let env = Env::new(yaml, &[FLOW]);
         let report = env.ok(&["link", "--target", "claude"]);

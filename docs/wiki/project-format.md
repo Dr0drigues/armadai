@@ -45,6 +45,7 @@ policy:                      # optional
 native: { claude: {} }       # optional, opaque
 ui:                          # optional, opt-in interface keys
   status_line: true          # Claude Code only: a status bar with the flow progress (default false)
+  subagent_status_line: true # Claude Code only: a status row per subagent (default false)
 ```
 
 With `pack:`, the project is built on a pack by reference: its files are the pack's, plus yours at
@@ -66,6 +67,8 @@ for a `statusLine` in `.claude/settings.json` that runs `armadai __claude-status
 progress of the flow in progress. It is Claude Code only. If `.claude/settings.json` already holds a
 `statusLine` that link does not own, link keeps yours and reports `not-compiled`; setting it also in
 `native.claude.statusLine` is an error. Once compiled, it replaces the status bar you had.
+`ui.subagent_status_line` is a boolean too (any other value is `invalid-yaml`): a status line per
+subagent showing the step it holds. It is Claude Code only.
 
 ## `agents/<id>.md`
 
