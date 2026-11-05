@@ -110,6 +110,27 @@ pub struct Manifest {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[schemars(with = "BTreeMap<String, serde_json::Value>")]
     pub native: Native,
+    #[serde(default, skip_serializing_if = "Ui::is_default")]
+    pub ui: Ui,
+}
+
+/// Opt-in interface keys: absent or `false`, `link` writes nothing for them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Ui {
+    /// Compile a Claude Code statusLine that shows the flow progress.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub status_line: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+impl Ui {
+    fn is_default(&self) -> bool {
+        *self == Ui::default()
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]

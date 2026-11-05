@@ -262,15 +262,17 @@ Fin de L1 : la PR répond aux critères 1 à 5 de la spec (critère 4 réécrit,
 
 ### L2-T0 (`cli-specialist`) : commande cachée `__claude-statusline`
 
-Fichiers : `crates/armadai/src/flow_status/line.rs` (fonction partagée), `cli/flow.rs` (lecture bornée de stdin et résolution du projet sorties dans des fonctions appelables des deux commandes), `cli/mod.rs` (variante `#[command(hide = true, name = "__claude-statusline")] ClaudeStatusline`, `handle`, liste du test `there_are_hidden_subcommands_to_strip`), `docs/wiki/flow-status.md`.
+Fichiers : `crates/armadai/src/flow_status/line.rs` (fonction partagée), `cli/flow.rs` (`statusline_main` et `line_runs`, appelables des deux commandes : lecture bornée de stdin et résolution du projet), `cli/mod.rs` (variante `#[command(hide = true, name = "__claude-statusline")] ClaudeStatusline`, `handle`, liste du test `there_are_hidden_subcommands_to_strip`), `docs/wiki/flow-status.md`.
 
 Interface :
 
 ```rust
-// flow_status/line.rs
-/// The line of `__claude-statusline` (3.6): `None` when it must print nothing.
-pub fn statusline_from_stdin(raw: Option<&str>, cwd: &Path) -> Option<String>;
-// cli/mod.rs : Command::ClaudeStatusline => crate::flow_status::line::statusline_main()
+// cli/flow.rs
+/// `__claude-statusline` (3.6): the coloured line of the session named by the JSON on stdin; prints nothing otherwise.
+pub fn statusline_main() -> anyhow::Result<()>;
+/// The runs shown by `--line` and `__claude-statusline`; `strict` (the latter): only the JSON's `session_id`, never the latest log.
+fn line_runs(flow: Option<String>, session: Option<String>, strict: bool) -> Option<Vec<Run>>;
+// cli/mod.rs : Command::ClaudeStatusline => flow::statusline_main()
 ```
 
 Étapes :

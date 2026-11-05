@@ -188,6 +188,14 @@ impl Compiler for LegacyCompiler {
                 Some(super::report::RECORDING_CLAUDE_ONLY),
             );
         }
+        if project.manifest.ui.status_line {
+            r.push(
+                t,
+                "ui.status_line",
+                Status::NotCompiled,
+                Some(super::report::UI_CLAUDE_ONLY),
+            );
+        }
         for id in project.automations.keys() {
             r.push(
                 t,

@@ -176,12 +176,55 @@ pub fn gate_entry() -> HookEntry {
 }
 
 /// Top-level settings keys from the manifest's `native.claude` (`hooks` is generated).
-pub fn native_settings(project: &Project) -> anyhow::Result<BTreeMap<String, Value>> {
+pub fn native_keys(project: &Project) -> anyhow::Result<BTreeMap<String, Value>> {
     let m = native_map(project.manifest.native.get("claude"), "project.yaml")?;
     if m.contains_key("hooks") {
         bail!("project.yaml: native.claude key `hooks` collides with the generated hooks");
     }
     Ok(m.into_iter().collect())
+}
+
+/// What Claude Code runs for `ui.status_line`. Format read on
+/// code.claude.com/docs/en/statusline (2026-11-05): `type: command`, `command`, optional
+/// `padding` (not written) and `refreshInterval` in seconds, minimum 1.
+pub const STATUS_LINE_COMMAND: &str = "armadai __claude-statusline";
+
+/// `{"type":"command","command":STATUS_LINE_COMMAND,"refreshInterval":5}`
+pub fn status_line_value() -> Value {
+    serde_json::json!({"type": "command", "command": STATUS_LINE_COMMAND, "refreshInterval": 5})
+}
+
+/// The keys link wants: [`native_keys`] plus the `statusLine` of `ui.status_line`;
+/// both together are an error.
+pub fn native_settings(project: &Project) -> anyhow::Result<BTreeMap<String, Value>> {
+    let mut keys = native_keys(project)?;
+    if project.manifest.ui.status_line {
+        if keys.contains_key("statusLine") {
+            bail!("project.yaml: native.claude key `statusLine` collides with ui.status_line");
+        }
+        keys.insert("statusLine".into(), status_line_value());
+    }
+    Ok(keys)
+}
+
+/// When `existing` already holds a `statusLine` that is neither the wanted one nor the
+/// one `previous` wrote: the key leaves `keys` (the user's bar stays) and this says so.
+pub fn keep_users_status_line(
+    existing: Option<&str>,
+    keys: &mut BTreeMap<String, Value>,
+    previous: &Owned,
+) -> anyhow::Result<bool> {
+    let (Some(wanted), Some(text)) = (keys.get("statusLine"), existing) else {
+        return Ok(false);
+    };
+    let doc = parse(Some(text))?;
+    let kept = doc
+        .get("statusLine")
+        .is_some_and(|cur| cur != wanted && previous.keys.get("statusLine") != Some(cur));
+    if kept {
+        keys.remove("statusLine");
+    }
+    Ok(kept)
 }
 
 fn parse(existing: Option<&str>) -> anyhow::Result<Map<String, Value>> {
@@ -512,6 +555,39 @@ mod tests {
 
     fn none() -> BTreeMap<String, Value> {
         BTreeMap::new()
+    }
+
+    fn bar_keys() -> BTreeMap<String, Value> {
+        BTreeMap::from([("statusLine".to_string(), status_line_value())])
+    }
+
+    #[test]
+    fn a_status_line_is_kept_unless_it_is_ours_or_the_wanted_one() {
+        let theirs = r#"{"statusLine":{"type":"command","command":"mine"}}"#;
+        let old = json!({"type":"command","command":"armadai old"});
+        let owns_old = Owned {
+            keys: BTreeMap::from([("statusLine".to_string(), old.clone())]),
+            ..Owned::default()
+        };
+        let old_text = json!({ "statusLine": old }).to_string();
+        let wanted_text = json!({ "statusLine": status_line_value() }).to_string();
+        let cases: [(Option<&str>, &Owned, bool); 5] = [
+            (None, &Owned::default(), false),
+            (Some(r#"{"a":1}"#), &Owned::default(), false),
+            (Some(theirs), &Owned::default(), true),
+            // written by an earlier link: ours to update
+            (Some(&old_text), &owns_old, false),
+            (Some(&wanted_text), &Owned::default(), false),
+        ];
+        for (i, (existing, prev, want)) in cases.into_iter().enumerate() {
+            let mut keys = bar_keys();
+            assert_eq!(
+                keep_users_status_line(existing, &mut keys, prev).unwrap(),
+                want,
+                "case {i}"
+            );
+            assert_eq!(keys.contains_key("statusLine"), !want, "case {i}");
+        }
     }
 
     #[test]

@@ -210,7 +210,31 @@ fn prepare(
     if target == "claude" {
         let rel = p.output_dir.join("settings.json");
         let hooks = claude_settings::hook_entries(project)?;
-        let keys = claude_settings::native_settings(project)?;
+        let mut keys = claude_settings::native_settings(project)?;
+        if project.manifest.ui.status_line {
+            let existing = std::fs::read_to_string(root.join(&rel)).ok();
+            let previous = match p.previous_patch(&rel).map(|f| &f.kind) {
+                Some(PatchKind::SettingsHooks(o)) => o.clone(),
+                _ => Default::default(),
+            };
+            let kept =
+                claude_settings::keep_users_status_line(existing.as_deref(), &mut keys, &previous)
+                    .with_context(|| rel.display().to_string())?;
+            let (status, why) = if kept {
+                (
+                    Status::NotCompiled,
+                    ".claude/settings.json already has a statusLine; link leaves it \
+                     (add armadai flow status --line to your own bar instead)",
+                )
+            } else {
+                (
+                    Status::Compiled,
+                    "statusLine in .claude/settings.json, running armadai __claude-statusline; \
+                     it hides the statusLine of your user settings",
+                )
+            };
+            p.report.push(target, "ui.status_line", status, Some(why));
+        }
         patch::preflight_settings(
             root,
             &rel,

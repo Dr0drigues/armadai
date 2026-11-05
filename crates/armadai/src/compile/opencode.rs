@@ -261,6 +261,14 @@ fn compile_with(
             Some(super::report::RECORDING_CLAUDE_ONLY),
         );
     }
+    if project.manifest.ui.status_line {
+        plan.report.push(
+            T,
+            "ui.status_line",
+            Status::NotCompiled,
+            Some(super::report::UI_CLAUDE_ONLY),
+        );
+    }
     if strict {
         plan.report.push(
             T,
