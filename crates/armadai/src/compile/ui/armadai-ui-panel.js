@@ -50,7 +50,8 @@ async function documents($) {
 }
 
 async function status($) {
-  const { stdout } = await $.process.run(['armadai', 'flow', 'status', '--json'])
+  const { exitCode, stdout, stderr } = await $.process.run(['armadai', 'flow', 'status', '--json'])
+  if (exitCode !== 0) throw new Error(stderr.trim() || 'exit code ' + exitCode)
   const json = JSON.parse(stdout)
   if (json.schema !== SCHEMA) {
     return {
@@ -66,20 +67,29 @@ async function status($) {
   return { message: null, runs: json.runs }
 }
 
+// True while a refresh runs, so a slow `armadai` is not launched again every 2 seconds.
+let isRefreshing = false
+
 async function refresh($) {
-  let next
+  if (isRefreshing) return
+  isRefreshing = true
   try {
-    next = await status($)
-  } catch (error) {
-    next = { message: 'armadai flow status --json failed: ' + error.message, runs: [] }
+    let next
+    try {
+      next = await status($)
+    } catch (error) {
+      next = { message: 'armadai flow status --json failed: ' + error.message, runs: [] }
+    }
+    try {
+      next.documents = await documents($)
+    } catch {
+      next.documents = []
+    }
+    view = next
+    $.ui.invalidate('ui.render')
+  } finally {
+    isRefreshing = false
   }
-  try {
-    next.documents = await documents($)
-  } catch {
-    next.documents = []
-  }
-  view = next
-  $.ui.invalidate('ui.render')
 }
 
 export function register(on) {

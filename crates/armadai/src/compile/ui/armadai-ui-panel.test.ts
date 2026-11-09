@@ -39,13 +39,20 @@ const STATUS = (schema: string) =>
 const SINCE = 1_000_000
 const file = (name: string, mtimeMs: number) => ({ name, kind: 'file', size: 1, mtimeMs, isLink: false })
 
-async function start($: any, on: any, schema: string, documents: string[] | null) {
+async function start(
+  $: any,
+  on: any,
+  schema: string,
+  documents: string[] | null,
+  run: any = null,
+) {
   const clock = mock.clock(on)
   on('command.register', () => ({ value: undefined }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('session.start', (_: any, e: any) => ({ cwd: e.cwd }))
-  on('process.run', (_: any, e: any) => {
+  on('process.run', async (_: any, e: any) => {
     expect(e.argv).toEqual(['armadai', 'flow', 'status', '--json'])
+    if (run) return await run(clock)
     return { value: { exitCode: 0, stdout: STATUS(schema), stderr: '' } }
   })
   on('fs.read', (_: any, e: any) => {
@@ -97,4 +104,31 @@ test('another schema is refused with the message, and no run is drawn', async ($
   ).toBeDefined()
   expect(await ui.find({ type: 'Text', text: 'deliver (in-progress)' })).toBeUndefined()
   await ui.unmount()
+})
+
+test('a failing armadai shows its stderr, not the JSON error', async ($, on) => {
+  const ui = await start($, on, 'armadai.flow-status/1', ['docs'], async () => ({
+    value: { exitCode: 2, stdout: '', stderr: 'error: unrecognized subcommand\n' },
+  }))
+  expect(
+    await ui.find({
+      type: 'Text',
+      text: 'armadai flow status --json failed: error: unrecognized subcommand',
+    }),
+  ).toBeDefined()
+  await ui.unmount()
+})
+
+test('a slow armadai is not launched again while it runs', async ($, on) => {
+  let calls = 0
+  let time: any
+  await start($, on, 'armadai.flow-status/1', ['docs'], async (clock: any) => {
+    time = clock
+    calls += 1
+    await clock.sleep(5000)
+    return { value: { exitCode: 0, stdout: STATUS('armadai.flow-status/1'), stderr: '' } }
+  })
+  // two more periods of 2 s pass while the first call still runs
+  await time.advance(4000)
+  expect(calls).toBe(1)
 })
