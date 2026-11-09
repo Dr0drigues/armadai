@@ -95,35 +95,6 @@ armadai flow status --watch            # follow the session until Ctrl-C (in a t
 armadai flow status --list             # the recorded sessions (no flow or --session with it)
 ```
 
-In a terminal, `--watch` draws the run in progress in boxes (the drawing of `armadai graph --format ascii`), each step with its mark, and a spinner (`| / - \`) after the running step. The last run still open is drawn (the one `--line` names), and the other runs are listed under it as above. The view is redrawn within 250 ms of a new event, without clearing the screen, and stays still while no step runs. When the drawing does not fit the terminal (`COLUMNS` and `LINES`, else the terminal's size, else 80×24), that run is listed instead of drawn. A flow shown as `a | b` is listed too. The cursor is hidden while watching and shown again on exit, Ctrl-C included. Outside a terminal (a pipe, a file), `--watch` prints the list again on each new event, with no cursor or erase sequence, even with `--color always`.
-
-Under the drawing, after a blank line, comes the block of the run as listed below (its steps, the links taken more than once, its transitions):
-
-```
-session s1 (UTC)
-
-deliver  in progress
-      [✓ ▶ design (architect)  ]
-                  ┌┘
-                  ↓
-          [✓ build (dev)  ]
-                  └┐
-                   ↓
-           [● guard (qa) |]
-                   │
-              "approved"
-                   ↓
-        [○ validate (ops) ■  ]
-
-links not drawn:
-  guard → build (rejected)
-
-  ✓ design
-  ✓ build
-  ● guard     running
-  ○ validate  pending
-```
-
 ```
 session s1 (UTC)
 
@@ -156,6 +127,35 @@ Other lines: `a → b : n` is a link taken `n` times (shown from twice on); the 
 follow. All times
 are UTC. A finished run stays listed, finished and interrupted runs first, each group in the order
 they started.
+
+In a terminal, `--watch` draws the run in progress in boxes (the drawing of `armadai graph --format ascii`), each step with its mark, and a spinner (`| / - \`) after the running step. The last run still open is drawn (the one `--line` names), and the other runs are counted on one line under it (`+ 2 other runs: armadai flow status`). The view is redrawn within 250 ms of a new event, without clearing the screen, and stays still while no step runs and the terminal keeps its size. When the drawing does not fit the terminal (`COLUMNS` and `LINES`, else the terminal's size, else 80×24), that run is listed instead of drawn, with the same count line. A flow shown as `a | b` is listed too. The cursor is hidden while watching and shown again on exit, Ctrl-C included. Outside a terminal (a pipe, a file), `--watch` prints the list again on each new event, with no cursor or erase sequence, even with `--color always`.
+
+Under the drawing, after a blank line, comes the block of the run as listed above (its steps, the links taken more than once, its transitions):
+
+```
+session s1 (UTC)
+
+deliver  in progress
+      [✓ ▶ design (architect)  ]
+                  ┌┘
+                  ↓
+          [✓ build (dev)  ]
+                  └┐
+                   ↓
+           [● guard (qa) |]
+                   │
+              "approved"
+                   ↓
+        [○ validate (ops) ■  ]
+
+links not drawn:
+  guard → build (rejected)
+
+  ✓ design
+  ✓ build
+  ● guard     running
+  ○ validate  pending
+```
 
 - Without a recorded command, two flows whose entry step is shared are shown as `a | b` until
   their steps diverge. With one, the run is the flow the command names.
@@ -302,4 +302,4 @@ The Time column shows the time only, with the date added on the first row of a t
   in mid-flow with no run open, or a step that no link allows while a run of its flow is open
   (stuck included: a `?`/`✗` step leads nowhere, only that step or the entry step starts
   again).
-- `--watch` on Windows is not tested: it draws without hiding the cursor. A terminal that shows `●` or `✓` two columns wide shifts the boxes. A list taller than the terminal scrolls, and the view is then redrawn from the top of the screen.
+- `--watch` on Windows is not tested: it draws without hiding the cursor. A terminal that shows `●` or `✓` two columns wide shifts the boxes. A run longer than the terminal is cut, its last line saying how many lines are left out.
