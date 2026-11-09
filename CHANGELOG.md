@@ -1,3 +1,9 @@
+## Unreleased
+
+### Added
+
+- `armadai graph` draws more: `--format dot|json|ascii` next to Mermaid, `--view team` for who may delegate to whom (the policy gate's own rule, `allowed_targets`, now lives in `armadai-model`), and `--open` to see the Mermaid in mermaid.live (step and agent names leave this machine). The nodes follow the flow from its start and the start and end steps are marked. `--format md` works with every view, the team view included (`## team`), and `--open` takes Mermaid only. In ASCII, `--view team` is a list that fits 80 columns (the main thread, then one entry per agent with its flows and the agents it delegates to), not boxes.
+
 ## v1.0.0-rc.10 (2026-11-05)
 
 Tenth release candidate. The state of a flow is now readable by a machine (`flow status --json`) and by a status bar (`--line`), flows and sessions have Markdown views, and Claude Code gets an opt-in status bar and one status row per subagent. Moving from rc.9: after adding the `ui` keys to `project.yaml`, run `armadai link --target claude` again; without them `link` writes nothing new.

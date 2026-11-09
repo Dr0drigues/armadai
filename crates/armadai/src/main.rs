@@ -1,3 +1,4 @@
+mod ascii_graph;
 mod claude_adapter;
 mod cli;
 mod compile;

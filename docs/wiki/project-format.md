@@ -301,36 +301,149 @@ diagnostics are marked "(rolled back)". Ids are refused, never rewritten, when t
 templates: see [Templates](templates.md). A flow created in a project with neither a coordinator
 nor `policy.delegation: strict` is guidance only, and `new flow` says so.
 
-## Seeing a flow: `armadai graph`
+## Seeing the project: `armadai graph`
 
 ```bash
-armadai graph review > review.mmd     # one flow
-armadai graph                         # every flow
-armadai graph --format md > flows.md  # Markdown: a heading and a mermaid block per flow
+armadai graph review > review.mmd               # one flow, as Mermaid
+armadai graph                                   # every flow
+armadai graph review --format dot | dot -Tsvg > review.svg
+armadai graph review --format ascii             # boxes for the terminal
+armadai graph --format md > flows.md            # Markdown: a heading and a mermaid block per flow
+armadai graph --view team                       # who may delegate to whom
+armadai graph review --open                     # in your browser, on mermaid.live
 ```
 
-`graph` prints Mermaid, and nothing else, on stdout:
+`graph` prints the drawing, and nothing else, on stdout; diagnostics and errors go to stderr.
+`--view` chooses what is drawn (`flows`, the default, or `team`); `--format` chooses how
+(`mermaid`, the default, `dot`, `json`, `ascii` or `md`). All five formats work in both views.
+
+### A flow
 
 ```
 %% flow: review
 flowchart TD
-  n_dev["dev"]
+  n_dev(["dev"])
   n_reviewer["reviewer"]
+  n_release[["release"]]
   n_dev --> n_reviewer
   n_reviewer -->|"rejected"| n_dev
-  n_reviewer -.->|"failed"| n_dev
+  n_reviewer -->|"approved"| n_release
+  classDef startStep stroke-width:3px
+  classDef endStep stroke-width:3px,stroke-dasharray:4 2
+  class n_dev startStep
+  class n_release endStep
 ```
 
 - One node per step, `n_` followed by the step id (other characters than `[A-Za-z0-9_]` become
   `_`); its label is the agent, or `step (agent)` when they differ.
+- **Order.** The nodes follow the flow, not the alphabet: the entry steps first, then a
+  breadth-first walk along the links, then any step that is not reached, alphabetically. The
+  edges are the links in the order written, then each step's `on_failure`.
+- **Start and end.** A start step is drawn as a stadium (Mermaid) or `rounded,bold` (DOT), an
+  end step (no link leaves it) as a subroutine box (Mermaid) or with a double outline (DOT);
+  in ASCII the label gets `▶ ` before a start and ` ■` after an end. The marks never depend on
+  colour alone.
 - `done` links are plain arrows, other states are labelled, failure paths (`when: failed`,
-  `on_failure`) are dotted.
-- Without a flow id, every flow is printed, one diagram each, separated by a blank line: Mermaid
-  reads one diagram per document, so render them one at a time.
-- `--format md` prints `## <flow id>`, a blank line and a ```` ```mermaid ```` block (the same
-  Mermaid as the default format) per flow, for GitHub, GitLab or VS Code to render.
+  `on_failure`) are dotted in Mermaid and dashed in DOT.
+- `--format md` prints `## <flow id>` (`## team` for the team view), a blank line and a ```` ```mermaid ```` block (the same Mermaid as the default format) per drawing, for GitHub, GitLab or VS Code to render. `--open` takes Mermaid only.
+- Without a flow id, every flow is drawn, one diagram each, opened by a `%% flow: <id>` comment
+  (`// flow: <id>` in DOT, `flow: <id>` in ASCII) and separated by a blank line: Mermaid and
+  Graphviz read one diagram per document, so render them one at a time.
 - An unknown flow lists the flows; an invalid project prints its diagnostics on stderr and exits
   with 1.
+
+### ASCII
+
+```
+flow: review
+        [▶ dev]
+           │
+           ↓
+      [reviewer]
+           │
+      "approved"
+           ↓
+      [release ■]
+
+links not drawn:
+  reviewer → dev (rejected)
+```
+
+The drawing has no colour and no escape sequence, whether stdout is a terminal or not. Only the
+links that go forward in the order above are drawn, one arrow per pair of steps; every other link
+(a `rejected` loop, an `on_failure`, a second link between the same two steps, a link to a step
+that does not exist) is listed under `links not drawn:`, so every link appears once.
+
+### The team
+
+`--view team` draws the delegations of the whole team, as the policy gate reads them (it uses the
+same function, `allowed_targets`): the main thread, each agent and the agents it may delegate to.
+It takes no flow id (`--view team draws the whole team: drop the flow id <id>`).
+
+```
+%% team (delegation: off, not enforced)
+flowchart TD
+  main(["main thread"])
+  n_dev["dev · review"]
+  n_release["release · review"]
+  n_reviewer["reviewer · review"]
+  main --> n_dev
+  n_dev --> n_reviewer
+  n_reviewer --> n_dev
+  n_reviewer --> n_release
+```
+
+- In ASCII, the team is a list that fits 80 columns, not boxes: the main thread and the agents
+  it may delegate to, then one entry per agent (`id  flows: a, b`, the agents it may delegate to
+  under it, `→ x, y`), a blank line between two entries. A line that is too long wraps, indented;
+  a word longer than the line is cut at the margin. An id longer than 24 characters is alone on
+  its line, its flows under it. Every delegation is shown, a delegation to oneself included.
+- The first line says whether the gate enforces the drawing (`delegation: strict, enforced by
+  the gate`) or not (`delegation: off, not enforced`).
+- A node is `agent · flows`, the flows where the agent runs a step. With a coordinator, the main
+  thread node is `main thread (<coordinator>)`.
+- `policy.free_agents` are drawn as a group, `free agents, callable from anywhere`, without
+  edges to them; in ASCII they are one line, `free agents, callable from anywhere: a, b`. A free
+  agent that is also an agent of the project is drawn once, in this group, with its own outgoing
+  edges (in ASCII, as an entry under that line).
+
+### JSON
+
+`--view flows` prints `{"flows": [...]}`, always, even for one flow. Each flow:
+
+| Field | Meaning |
+|---|---|
+| `id` | the flow id |
+| `nodes[].id`, `nodes[].agent` | the step id and its agent |
+| `nodes[].states` | the states the step may end in (`[]` when it declares none) |
+| `nodes[].start`, `nodes[].end` | an entry step; no link or `on_failure` leaves the step |
+| `edges[].from`, `edges[].to` | step ids |
+| `edges[].when` | the state labelling the link, or `null` |
+| `edges[].kind` | `link`, or `on_failure` |
+
+`--view team` prints the team object:
+
+| Field | Meaning |
+|---|---|
+| `delegation` | `off` or `strict`, from `policy.delegation` |
+| `coordinator` | the coordinator id, or `null` |
+| `agents[]` | the project agents but the coordinator and the free agents: `{id, flows}` |
+| `edges[]` | `{from, to}`; `from` is `null` for the main thread |
+| `free_agents[]` | `policy.free_agents`, sorted: `{id, flows}` (`flows` is `[]` for a built-in such as `Explore`) |
+
+The output is the same bytes on every run.
+
+### Opening in a browser
+
+`--open` opens the Mermaid diagram in mermaid.live, in your browser, instead of printing it. It
+is an opt-in: **the step and agent names leave this machine** (they travel in the link, to your
+browser and to mermaid.live). Nothing else in `armadai graph` uses the network.
+
+- It draws Mermaid only: with another `--format`, `--open draws Mermaid only; drop --format <format>`.
+- It draws one diagram: without a flow id and with several flows, `--open draws one diagram: name a
+  flow (flows: <a>, <b>)`. With a single flow the id can be omitted; `--view team --open` works.
+- On success it prints nothing. If the browser cannot be launched, the error prints the link to
+  open yourself. The command is `open` (macOS), `cmd /C start` (Windows) or `xdg-open`.
 
 ## Validation
 
