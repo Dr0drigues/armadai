@@ -44,13 +44,26 @@ fn draw(labels: &[String], drawn: &[Edge<'_>], not_drawn: &[String]) -> String {
 }
 
 pub fn flow_to_ascii(g: &armadai_model::FlowGraph) -> String {
+    flow_to_ascii_marked(g, &|_| (String::new(), String::new()))
+}
+
+/// `flow_to_ascii` with each node's label written `{before}{label}{after}`,
+/// `(before, after) = wrap(step id)`; the label keeps its `▶ ` / ` ■`.
+pub fn flow_to_ascii_marked(
+    g: &armadai_model::FlowGraph,
+    wrap: &dyn Fn(&str) -> (String, String),
+) -> String {
     let labels: Vec<String> = g
         .nodes
         .iter()
-        .map(|n| match (n.start, n.end) {
-            (true, _) => format!("▶ {}", n.label()),
-            (false, true) => format!("{} ■", n.label()),
-            _ => n.label(),
+        .map(|n| {
+            let label = match (n.start, n.end) {
+                (true, _) => format!("▶ {}", n.label()),
+                (false, true) => format!("{} ■", n.label()),
+                _ => n.label(),
+            };
+            let (before, after) = wrap(&n.id);
+            format!("{before}{label}{after}")
         })
         .collect();
     let index = |id: &str| g.nodes.iter().position(|n| n.id == id);
@@ -269,6 +282,24 @@ links not drawn:
         for (got, want) in all() {
             assert_eq!(got, want);
         }
+    }
+
+    #[test]
+    fn a_marked_drawing_wraps_each_label() {
+        let agents: Vec<String> = ["a", "b", "c"].map(String::from).into();
+        let flow =
+            armadai_model::flow_from_template(FlowTemplate::Pipeline, &agents, None).unwrap();
+        let g = armadai_model::flow_graph("pipeline", &flow);
+        let out = flow_to_ascii_marked(&g, &|id| match id {
+            "a" => ("✓ ".into(), "  ".into()),
+            "b" => ("● ".into(), " |".into()),
+            _ => ("○ ".into(), "  ".into()),
+        });
+        // trailing spaces are kept inside the box: the cell of the spinner is reserved
+        assert_eq!(
+            out,
+            "flow: pipeline\n  [✓ ▶ a  ]\n      │\n      ↓\n   [● b |]\n      │\n      ↓\n  [○ c ■  ]\n"
+        );
     }
 
     #[test]
