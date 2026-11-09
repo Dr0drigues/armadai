@@ -487,6 +487,22 @@ impl<'a> Out<'a> {
     }
 }
 
+/// A folder `link` or the panel may use: relative, inside the project, never the root,
+/// never `.armadai/` nor `.git/` (any case: a case-insensitive file system aliases them).
+fn bad_folder(out: &str) -> bool {
+    use std::path::Component;
+    let p = Path::new(out);
+    let first = p.components().next();
+    p.is_absolute()
+        || p.components()
+            .any(|c| !matches!(c, Component::Normal(_) | Component::CurDir))
+        || p.components().all(|c| matches!(c, Component::CurDir))
+        || first.is_some_and(|c| {
+            c.as_os_str().eq_ignore_ascii_case(".armadai")
+                || c.as_os_str().eq_ignore_ascii_case(".git")
+        })
+}
+
 pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
     let mut o = Out {
         origins,
@@ -522,14 +538,7 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
     // an output is written and unlinked by link: inside the project, never into its
     // sources (`.armadai/`) nor `.git/`, never the project root itself
     for out in m.outputs.values() {
-        use std::path::Component;
-        let p = Path::new(out);
-        let first = p.components().next();
-        let bad = p.is_absolute()
-            || p.components()
-                .any(|c| !matches!(c, Component::Normal(_) | Component::CurDir))
-            || p.components().all(|c| matches!(c, Component::CurDir))
-            || first.is_some_and(|c| c.as_os_str() == ".armadai" || c.as_os_str() == ".git");
+        let bad = bad_folder(out);
         if bad {
             o.err(
                 man,
@@ -542,6 +551,20 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
     }
     for t in m.outputs.keys().filter(|t| !TARGETS.contains(&t.as_str())) {
         o.unknown_target(man, t);
+    }
+    for d in m.ui.documents.iter().flatten().filter(|d| bad_folder(d)) {
+        o.err(
+            man,
+            "bad-document-folder",
+            // an empty entry has no token to find: sit on the `documents` key
+            Some(if d.is_empty() {
+                ("documents", true)
+            } else {
+                (d.as_str(), false)
+            }),
+            format!("ui.documents entry `{d}` must be a folder inside the project, outside .armadai/ and .git/"),
+            Some("name a folder of the project such as `docs`".into()),
+        );
     }
     if let Some(p) = &m.pack {
         // positioned inside the `pack:` block, so a top-level `name:` is not matched

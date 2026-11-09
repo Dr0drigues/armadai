@@ -216,9 +216,15 @@ pub const PLUGIN_MARKETPLACE_KEY: &str = "extraKnownMarketplaces.armadai-ui";
 /// (`marketplace.json`: `name`, `owner.name`, `plugins[]` with `name` and `source`; a
 /// relative `source` is a path from the marketplace root, `"."` being the root itself)
 /// and statusline (`subagentStatusLine`: `type: command`, `command`).
-pub fn plugin_files() -> Vec<(std::path::PathBuf, String)> {
+///
+/// `settings.json` comes with `ui.subagent_status_line`, the mod (`hooks/hooks.json`,
+/// `hooks/register.js`, `panel.json`) with `ui.panel`; the two manifests are always there.
+/// The mod's layout was read 2026-11-09 on code.claude.com/docs/en/plugins/mods/overview
+/// and mods/reference ("Files": `hooks/hooks.json` with `modules: ["./register.js"]`,
+/// an ES module, `.js` accepted).
+pub fn plugin_files(ui: &armadai_model::types::Ui) -> Vec<(std::path::PathBuf, String)> {
     let desc = "Flow progress from ArmadAI, in Claude Code";
-    let files = [
+    let mut files = vec![
         (
             ".claude-plugin/marketplace.json",
             serde_json::json!({
@@ -231,22 +237,53 @@ pub fn plugin_files() -> Vec<(std::path::PathBuf, String)> {
             ".claude-plugin/plugin.json",
             serde_json::json!({"name": PLUGIN_NAME, "description": desc}),
         ),
-        (
+    ];
+    if ui.subagent_status_line {
+        files.push((
             "settings.json",
             serde_json::json!({"subagentStatusLine": {
                 "type": "command",
                 "command": SUBAGENT_STATUS_LINE_COMMAND,
             }}),
-        ),
-    ];
-    files
+        ));
+    }
+    let mut out: Vec<_> = files
         .into_iter()
         .map(|(name, v)| {
             let text = serde_json::to_string_pretty(&v).expect("JSON value serializes") + "\n";
             (std::path::Path::new(super::PLUGIN_DIR).join(name), text)
         })
-        .collect()
+        .collect();
+    if ui.panel {
+        let documents = ui.documents.clone().unwrap_or_else(|| vec!["docs".into()]);
+        let panel = serde_json::json!({ "documents": documents });
+        let modules = serde_json::json!({ "modules": ["./register.js"] });
+        for (name, text) in [
+            (
+                "hooks/hooks.json",
+                serde_json::to_string_pretty(&modules).expect("JSON value serializes") + "\n",
+            ),
+            ("hooks/register.js", PANEL_MOD.to_string()),
+            (
+                "panel.json",
+                serde_json::to_string_pretty(&panel).expect("JSON value serializes") + "\n",
+            ),
+        ] {
+            out.push((std::path::Path::new(super::PLUGIN_DIR).join(name), text));
+        }
+    }
+    out
 }
+
+/// The paths (relative to the project root) of the files only `ui.panel` writes.
+pub fn is_mod_file(rel: &str) -> bool {
+    ["hooks/hooks.json", "hooks/register.js", "panel.json"]
+        .iter()
+        .any(|f| std::path::Path::new(super::PLUGIN_DIR).join(f) == std::path::Path::new(rel))
+}
+
+/// The JavaScript of the panel mod, written as is.
+pub const PANEL_MOD: &str = include_str!("ui/armadai-ui-panel.js");
 
 /// What Claude Code runs for the plugin's `subagentStatusLine`.
 pub const SUBAGENT_STATUS_LINE_COMMAND: &str = "armadai __claude-subagent-statusline";
@@ -272,12 +309,16 @@ pub fn plugin_settings_keys() -> BTreeMap<String, Value> {
 /// key of `native.claude` is an error.
 pub fn native_settings(project: &Project) -> anyhow::Result<BTreeMap<String, Value>> {
     let mut keys = native_keys(project)?;
-    if project.manifest.ui.subagent_status_line {
+    let ui = &project.manifest.ui;
+    if ui.subagent_status_line || ui.panel {
+        let key = if ui.subagent_status_line {
+            "ui.subagent_status_line"
+        } else {
+            "ui.panel"
+        };
         for k in ["enabledPlugins", "extraKnownMarketplaces"] {
             if keys.contains_key(k) {
-                bail!(
-                    "project.yaml: native.claude key `{k}` collides with ui.subagent_status_line"
-                );
+                bail!("project.yaml: native.claude key `{k}` collides with {key}");
             }
         }
         keys.extend(plugin_settings_keys());
@@ -318,9 +359,9 @@ pub fn keep_users_plugin(
 /// What of the plugin is already in the project when no earlier link recorded it.
 #[derive(Debug, PartialEq)]
 pub enum FoundPlugin {
-    /// None of its 3 files and 2 settings entries.
+    /// None of its files and 2 settings entries.
     Absent,
-    /// All 5, byte for byte (files) and value for value (entries), as link writes them.
+    /// All of them, byte for byte (files) and value for value (entries), as link writes them.
     Identical,
     /// Anything else: the first element, in a fixed order, present with other content,
     /// else the first one missing (a file path relative to the root, or a dotted key).
@@ -330,11 +371,15 @@ pub enum FoundPlugin {
 /// Files first ([`plugin_files`] order), then entries ([`plugin_settings_keys`] order).
 /// `settings` is the text of `.claude/settings.json`, when there is one; an invalid one
 /// is an error already raised by [`keep_users_plugin`].
-pub fn found_plugin(root: &std::path::Path, settings: Option<&str>) -> anyhow::Result<FoundPlugin> {
+pub fn found_plugin(
+    root: &std::path::Path,
+    settings: Option<&str>,
+    ui: &armadai_model::types::Ui,
+) -> anyhow::Result<FoundPlugin> {
     let doc = Value::Object(parse(settings)?);
     // (element, found content equals what link writes: None when missing)
     let mut seen: Vec<(String, Option<bool>)> = Vec::new();
-    for (rel, text) in plugin_files() {
+    for (rel, text) in plugin_files(ui) {
         let found = std::fs::read(root.join(&rel)).ok();
         seen.push((
             rel.display().to_string(),
@@ -1376,6 +1421,25 @@ mod tests {
     }
 
     #[test]
+    fn only_the_three_exact_paths_are_mod_files() {
+        let p = super::super::PLUGIN_DIR;
+        for f in ["hooks/hooks.json", "hooks/register.js", "panel.json"] {
+            assert!(is_mod_file(&format!("{p}/{f}")), "{f}");
+        }
+        // same endings, other places or other names
+        for rel in [
+            format!("{p}/.claude-plugin/panel.json"),
+            format!("{p}/settings.json"),
+            format!("{p}/.claude-plugin/plugin.json"),
+            "other/hooks/register.js".to_string(),
+            format!("{p}/hooks/register.js.bak"),
+            "panel.json".to_string(),
+        ] {
+            assert!(!is_mod_file(&rel), "{rel}");
+        }
+    }
+
+    #[test]
     fn found_plugin_tells_absent_identical_and_the_first_element_that_differs() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -1383,7 +1447,11 @@ mod tests {
             std::fs::create_dir_all(root.join(rel).parent().unwrap()).unwrap();
             std::fs::write(root.join(rel), text).unwrap();
         };
-        let files = plugin_files();
+        let ui = armadai_model::types::Ui {
+            subagent_status_line: true,
+            ..Default::default()
+        };
+        let files = plugin_files(&ui);
         let (m, p, s) = (&files[0], &files[1], &files[2]);
         let entries = json!({
             "enabledPlugins": {"armadai-ui@armadai-ui": true},
@@ -1392,7 +1460,7 @@ mod tests {
         })
         .to_string();
         let name = |f: &(std::path::PathBuf, String)| f.0.display().to_string();
-        let found = |settings: Option<&str>| found_plugin(root, settings).unwrap();
+        let found = |settings: Option<&str>| found_plugin(root, settings, &ui).unwrap();
 
         assert_eq!(found(None), FoundPlugin::Absent, "absent");
         assert_eq!(found(Some("{}")), FoundPlugin::Absent, "absent, empty file");

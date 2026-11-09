@@ -172,3 +172,27 @@ fn a_skill_path_missing_from_its_folder_is_one_warning() {
         "<root>/.armadai/skills/s/SKILL.md:5:25: warning[skill-missing-path]: `scripts/missing.sh` is named here but is not in the skill folder\n  hint: add it to .armadai/skills/s/, or correct the path\n0 error(s), 1 warning(s)\n"
     );
 }
+
+#[test]
+fn a_bad_ui_document_folder_exits_1_with_the_exact_line() {
+    let dir = project(&[(
+        ".armadai/project.yaml",
+        "schema_version: 1\nui: { panel: true, documents: [docs, .armadai/x] }\n",
+    )]);
+    let out = validate(&dir, &[])
+        .failure()
+        .code(1)
+        .get_output()
+        .stdout
+        .clone();
+    let out = String::from_utf8_lossy(&out);
+    let line = format!(
+        "{}/.armadai/project.yaml:2:38: error[bad-document-folder]: ui.documents entry `.armadai/x` must be a folder inside the project, outside .armadai/ and .git/",
+        dir.path().display()
+    );
+    assert!(out.lines().any(|l| l == line), "{out}");
+    assert!(
+        out.lines().any(|l| l == "1 error(s), 0 warning(s)"),
+        "{out}"
+    );
+}

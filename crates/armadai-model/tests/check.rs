@@ -742,6 +742,8 @@ fn an_output_outside_the_project_or_into_its_sources_is_an_error() {
         "../elsewhere",
         ".armadai/out",
         ".git/hooks",
+        ".GIT/hooks",
+        ".Armadai/out",
         ".",
     ] {
         let ds = diags(&[(

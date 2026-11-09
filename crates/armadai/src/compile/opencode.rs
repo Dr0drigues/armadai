@@ -277,6 +277,14 @@ fn compile_with(
             Some(super::report::UI_CLAUDE_ONLY),
         );
     }
+    if project.manifest.ui.panel {
+        plan.report.push(
+            T,
+            "ui.panel",
+            Status::NotCompiled,
+            Some(super::report::UI_CLAUDE_ONLY),
+        );
+    }
     if strict {
         plan.report.push(
             T,

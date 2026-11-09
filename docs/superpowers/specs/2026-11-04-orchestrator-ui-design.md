@@ -54,7 +54,7 @@ Aujourd'hui l'avancement d'un flow ne se lit que dans un second terminal (`armad
 ### 4.3 Piste 2 : panneau Claude Code
 - Étape A (déclaratif) : un plugin avec `settings.json` portant `subagentStatusLine`, commande cachée qui reçoit `tasks[]` et rend `{"id","content"}` (V). Installation projet par `extraKnownMarketplaces` + `enabledPlugins` dans `.claude/settings.json`, plugin chargé en chemin relatif ; actif seulement après le dialogue de confiance (V). **C** : forme exacte d'une source `directory` relative.
 - Étape B (mod, opt-in) : un mod JS qui ouvre un panneau (`$.ui.open`), relit le journal ou `flow status --json`, rafraîchit (`$.clock.every`), liste les documents produits en parcourant le disque (dossiers `docs/` du projet, forme fixée au plan) ; ligne de rapport qui dit explicitement « JS exécuté avec vos permissions ». **C** : ouverture automatique d'un panneau ; liens `file://` cliquables.
-- Les mods n'existent qu'à partir de Claude Code v2.1.287, sont coupés par `disableAllHooks`/`--safe-mode`, absents en `claude -p` : la ligne de rapport est `approximated` ou `not-compiled` selon le cas, jamais `compiled` sans que le mod soit réellement chargé.
+- Les mods existent dès Claude Code v2.1.287, mais le panneau annonce 2.1.318 (décision de Dimitri du 2026-11-09 : `mtimeMs` de `$.fs.list` et `startedAt` de `$.session.usage()` n'existent que dans les types 2.1.318) ; ils sont coupés par `disableAllHooks`/`--safe-mode`, absents en `claude -p` : la ligne de rapport est `approximated` ou `not-compiled` selon le cas, jamais `compiled` sans que le mod soit réellement chargé.
 
 ### 4.4 Piste 4 : vue partagée
 - `armadai graph --format md` : par flow, un titre et un bloc Mermaid (même contenu que `--format mermaid`), sur stdout.

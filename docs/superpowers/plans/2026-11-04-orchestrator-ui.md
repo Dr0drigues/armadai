@@ -587,7 +587,7 @@ Rapport de `link` (format actuel `<target> <element>: <status> (<reason>)` rendu
 | L4 refus | `ui.subagent_status_line` | `not-compiled` | `key <path> of .claude/settings.json already has another value; link leaves it` |
 | L4-T4 plugin déjà là, identique, non enregistré (décision Dimitri 2026-11-05) | `ui.subagent_status_line` | `approximated` | `existing identical plugin kept, not owned: unlink leaves it` |
 | L4-T4 plugin déjà là en partie ou modifié, non enregistré (décision Dimitri 2026-11-05, « Rien du plugin, not-compiled (Recommandé) ») | `ui.subagent_status_line` | `not-compiled` | `existing plugin differs from what link writes at <element>, not owned: link leaves it; remove it to let link write it` |
-| L5 écrit | `ui.panel` | `approximated` | `mod in .armadai/plugins/armadai-ui: runs JavaScript and the armadai command with your permissions; needs Claude Code 2.1.287 or later, off under --safe-mode, disableAllHooks or claude -p` |
+| L5 écrit | `ui.panel` | `approximated` | `mod in .armadai/plugins/armadai-ui: runs JavaScript and the armadai command with your permissions; needs Claude Code 2.1.318 or later, off under --safe-mode, disableAllHooks or claude -p` |
 
 Erreurs de `link` (précédent `hooks`) :
 - `project.yaml: native.claude key \`statusLine\` collides with ui.status_line`

@@ -268,6 +268,16 @@ Links taken more than once: build → guard (2).
 
 The Time column shows the time only, with the date added on the first row of a table and whenever the UTC day changes. The Status column is the text of the plain output (the state, or `running`/`pending`, then the note in parentheses). A session with no run says `No run of a declared flow in this session yet.`; with no log at all, the usual `no flow activity recorded yet` line.
 
+## Panel (mod)
+
+`ui: { panel: true }` in `project.yaml`, then `armadai link --target claude`, adds a Claude Code mod to the plugin `armadai-ui` (the same plugin as `ui.subagent_status_line`; either key writes it). The mod is three files in `.armadai/plugins/armadai-ui/`: `hooks/hooks.json` (`{"modules": ["./register.js"]}`), `hooks/register.js` (the same bytes for every project, embedded in the `armadai` binary) and `panel.json` (`{"documents": [...]}`, the data: `ui.documents`, or `["docs"]` when the key is absent). Format read 2026-11-09 on [code.claude.com/docs/en/plugins/mods/overview](https://code.claude.com/docs/en/plugins/mods/overview.md) and [mods/reference](https://code.claude.com/docs/en/plugins/mods/reference.md).
+
+The panel opens when a session starts (Claude Code seats a pane nobody asked for from 144 terminal columns; the command `/armadai-panel` opens it at any width). Every 2 seconds it runs `armadai flow status --json` (the `armadai` of your `PATH`, in the project folder) and draws each run with its steps and their signs, then lists the `.md` files under the `ui.documents` folders (up to 4 levels deep) modified since the Claude Code session began, newest first, 20 at most. Nothing new is recorded: the list comes from the disk. If the JSON has a `schema` other than `armadai.flow-status/1`, the panel says `armadai flow status --json gave schema <value>; this panel reads armadai.flow-status/1. Run armadai link again.` and draws no run.
+
+`link` reports `ui.panel` as `approximated`, never `compiled`: it cannot know whether Claude Code loads the mod. The mod runs JavaScript and the `armadai` command with your permissions; it needs Claude Code 2.1.318 or later and does not run under `--safe-mode`, with `disableAllHooks`, or in `claude -p`. Other targets report `not-compiled (Claude Code only)`. Without the key, `link` writes no mod file.
+
+The JavaScript is tested with `claude plugin test` (`crates/armadai/src/compile/ui/armadai-ui-panel.test.ts`, copied into a linked plugin folder); CI has no Claude Code, so it does not run there.
+
 ## Limits
 
 - Claude Code only.

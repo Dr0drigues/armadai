@@ -46,6 +46,8 @@ native: { claude: {} }       # optional, opaque
 ui:                          # optional, opt-in interface keys
   status_line: true          # Claude Code only: a status bar with the flow progress (default false)
   subagent_status_line: true # Claude Code only: a status row per subagent (default false)
+  panel: true                # Claude Code only: a panel mod beside the chat (default false)
+  documents: [docs]          # folders whose recent .md files the panel lists (default [docs])
 ```
 
 With `pack:`, the project is built on a pack by reference: its files are the pack's, plus yours at
@@ -69,6 +71,11 @@ progress of the flow in progress. It is Claude Code only. If `.claude/settings.j
 `native.claude.statusLine` is an error. Once compiled, it replaces the status bar you had.
 `ui.subagent_status_line` is a boolean too (any other value is `invalid-yaml`): a status line per
 subagent showing the step it holds. It is Claude Code only.
+`ui.panel` (boolean, default `false`) asks for a panel beside the chat, and `ui.documents` is the list of
+project folders whose recent Markdown files it shows (default `[docs]`; an empty list lists none).
+Each entry is a folder inside the project: an entry that is empty, absolute, climbs with `..`, is the
+project root, or points into `.armadai/` or `.git/` (any case) is `bad-document-folder`. `documents`
+without `panel` is accepted and has no effect.
 
 ## `agents/<id>.md`
 
@@ -474,7 +481,8 @@ warning on stderr.
 | `duplicate-step` | error | A `sequence` defines the same step id twice | Use `{ id: …, agent: … }` for the repeat |
 | `bad-id` | error | A file, folder or step id, a `vars` name, a slot name of an agent's `slots` or `pack.name`, does not match `[a-z0-9][a-z0-9-]{0,63}` | Rename it in kebab-case |
 | `unknown-target` | error | A target in `targets`, `outputs` or a `native` key is not supported | Use `claude`, `codex`, `copilot` or `opencode` |
-| `bad-output` | error | An `outputs` value is absolute, climbs with `..`, is the project root, or points into `.armadai/` or `.git/` | Use a folder inside the project such as `.claude` (`link --output` can point elsewhere for one run) |
+| `bad-output` | error | An `outputs` value is absolute, climbs with `..`, is the project root, or points into `.armadai/` or `.git/` (any case) | Use a folder inside the project such as `.claude` (`link --output` can point elsewhere for one run) |
+| `bad-document-folder` | error | A `ui.documents` entry is empty, absolute, climbs with `..`, is the project root, or points into `.armadai/` or `.git/` | Name a folder of the project such as `docs` |
 | `unknown-agent` | error | A step or `coordinator` names no agent of the project | Use an existing agent id (the hint suggests a close one) |
 | `unknown-free-agent` | warning | A `free_agents` entry names no agent of the project | Not reported for an agent a declared target provides itself (Claude Code: `Explore`, `Plan`, `general-purpose`, `claude`, `statusline-setup`, `claude-code-guide`; OpenCode: `general`, `explore`; no `targets` means Claude Code); otherwise fix the id (the hint suggests a close one) |
 | `unknown-skill` | error | An agent lists a skill the project does not have | Add the skill or fix the id |

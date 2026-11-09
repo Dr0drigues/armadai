@@ -49,6 +49,20 @@
       "additionalProperties": false,
       "description": "Opt-in interface keys: absent or `false`, `link` writes nothing for them.",
       "properties": {
+        "documents": {
+          "description": "Project folders whose recent Markdown files the panel lists (default `docs`).",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "panel": {
+          "description": "Compile a Claude Code mod: a panel beside the chat with the flows and recent documents.",
+          "type": "boolean"
+        },
         "status_line": {
           "description": "Compile a Claude Code statusLine that shows the flow progress.",
           "type": "boolean"

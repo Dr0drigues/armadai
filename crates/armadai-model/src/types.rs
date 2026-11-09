@@ -124,6 +124,12 @@ pub struct Ui {
     /// Compile a Claude Code subagent status row that shows the step a subagent holds.
     #[serde(default, skip_serializing_if = "is_false")]
     pub subagent_status_line: bool,
+    /// Compile a Claude Code mod: a panel beside the chat with the flows and recent documents.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub panel: bool,
+    /// Project folders whose recent Markdown files the panel lists (default `docs`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub documents: Option<Vec<String>>,
 }
 
 fn is_false(b: &bool) -> bool {
