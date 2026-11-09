@@ -14,7 +14,7 @@ pub enum GraphFormat {
     Dot,
     Json,
     Ascii,
-    /// Markdown: a heading and a mermaid block per flow
+    /// Markdown: a heading and a mermaid block per flow, or `## team` for --view team
     Md,
 }
 

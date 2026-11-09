@@ -308,6 +308,7 @@ armadai graph review > review.mmd               # one flow, as Mermaid
 armadai graph                                   # every flow
 armadai graph review --format dot | dot -Tsvg > review.svg
 armadai graph review --format ascii             # boxes for the terminal
+armadai graph --format md > flows.md            # Markdown: a heading and a mermaid block per flow
 armadai graph --view team                       # who may delegate to whom
 armadai graph review --open                     # in your browser, on mermaid.live
 ```
