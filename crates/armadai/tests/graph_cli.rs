@@ -455,7 +455,7 @@ Output format (--format):
   mermaid  flowchart TD (default). Paste it into a Markdown ```mermaid block or a .mmd file.
   dot      Graphviz: armadai graph <flow> --format dot | dot -Tsvg > flow.svg
   json     nodes and edges. With --view flows it is always {\"flows\": [...]}, even for one flow; with --view team it is the team object.
-  ascii    boxes for the terminal, without colour. A link the drawing cannot show is listed under `links not drawn:`: a link back to an earlier step, a second link between the same two steps, a link to an unknown step, and in the team view a delegation to an agent already drawn.
+  ascii    boxes for the terminal, without colour. A link the drawing cannot show is listed under `links not drawn:`: a link back to an earlier step, a second link between the same two steps, a link to an unknown step.
 
 With --format md, each flow is printed as a `## <flow id>` heading (or `## team` for --view team) followed by a ```mermaid block, ready for GitHub, GitLab or VS Code.
 

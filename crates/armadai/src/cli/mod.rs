@@ -102,7 +102,7 @@ pub enum Command {
             mermaid  flowchart TD (default). Paste it into a Markdown ```mermaid block or a .mmd file.\n  \
             dot      Graphviz: armadai graph <flow> --format dot | dot -Tsvg > flow.svg\n  \
             json     nodes and edges. With --view flows it is always {\"flows\": [...]}, even for one flow; with --view team it is the team object.\n  \
-            ascii    boxes for the terminal, without colour. A link the drawing cannot show is listed under `links not drawn:`: a link back to an earlier step, a second link between the same two steps, a link to an unknown step, and in the team view a delegation to an agent already drawn.\n\n\
+            ascii    boxes for the terminal, without colour. A link the drawing cannot show is listed under `links not drawn:`: a link back to an earlier step, a second link between the same two steps, a link to an unknown step.\n\n\
             With --format md, each flow is printed as a `## <flow id>` heading (or `## team` for --view team) followed by a ```mermaid block, ready for GitHub, GitLab or VS Code.\n\n\
             Several flows are several drawings, each opened by a `%% flow: <id>` comment (`// flow: <id>` in DOT, `flow: <id>` in ASCII) and separated by a blank line: Mermaid and Graphviz render one drawing per document, so take them one at a time. Conditional links are labelled with their state; failure paths (`when: failed`, `on_failure`) are dotted in Mermaid and dashed in DOT.",
         after_help = "Examples:\n  \
