@@ -206,7 +206,7 @@ fn graph_reads_the_pack_flows() {
     assert_eq!(code, Some(0), "{err}");
     assert_eq!(
         out,
-        "%% flow: ship\nflowchart TD\n  n_a[\"a\"]\n  n_b[\"b\"]\n  n_a --> n_b\n"
+        "%% flow: ship\nflowchart TD\n  n_a([\"a\"])\n  n_b[[\"b\"]]\n  n_a --> n_b\n  classDef startStep stroke-width:3px\n  classDef endStep stroke-width:3px,stroke-dasharray:4 2\n  class n_a startStep\n  class n_b endStep\n"
     );
 }
 
