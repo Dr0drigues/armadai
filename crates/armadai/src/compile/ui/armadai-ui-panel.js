@@ -11,11 +11,11 @@ const MAX_DEPTH = 4
 // What the pane draws: set by `refresh`, read by `ui.render`.
 let view = { message: 'Reading the flows...', runs: [], documents: [] }
 
-// The .md files under `dir` (relative to the project) with their mtime.
-async function walk($, dir, depth) {
+// The .md files under `dir` (relative to the project root) with their mtime.
+async function walk($, root, dir, depth) {
   let entries = []
   try {
-    entries = await $.fs.list(dir)
+    entries = await $.fs.list(root + '/' + dir)
   } catch {
     return [] // a folder that does not exist (yet) lists nothing
   }
@@ -25,13 +25,13 @@ async function walk($, dir, depth) {
     if (entry.kind === 'file' && entry.name.endsWith('.md')) {
       found.push({ path, mtimeMs: entry.mtimeMs })
     } else if (entry.kind === 'dir' && depth < MAX_DEPTH) {
-      found.push(...(await walk($, path, depth + 1)))
+      found.push(...(await walk($, root, path, depth + 1)))
     }
   }
   return found
 }
 
-async function documents($) {
+async function documents($, root) {
   let folders = ['docs']
   try {
     const panel = JSON.parse(await $.fs.read($.plugin.root + '/panel.json'))
@@ -41,7 +41,7 @@ async function documents($) {
   }
   const since = (await $.session.usage()).startedAt
   const all = []
-  for (const folder of folders) all.push(...(await walk($, folder, 0)))
+  for (const folder of folders) all.push(...(await walk($, root, folder, 0)))
   return all
     .filter(doc => doc.mtimeMs >= since)
     .sort((a, b) => b.mtimeMs - a.mtimeMs)
@@ -49,8 +49,11 @@ async function documents($) {
     .map(doc => doc.path)
 }
 
-async function status($) {
-  const { exitCode, stdout, stderr } = await $.process.run(['armadai', 'flow', 'status', '--json'])
+async function status($, root) {
+  // from the project root, wherever Claude Code was started in the project
+  const { exitCode, stdout, stderr } = await $.process.run(['armadai', 'flow', 'status', '--json'], {
+    cwd: root,
+  })
   if (exitCode !== 0) throw new Error(stderr.trim() || 'exit code ' + exitCode)
   const json = JSON.parse(stdout)
   if (json.schema !== SCHEMA) {
@@ -74,14 +77,15 @@ async function refresh($) {
   if (isRefreshing) return
   isRefreshing = true
   try {
+    const root = await $.session.root()
     let next
     try {
-      next = await status($)
+      next = await status($, root)
     } catch (error) {
       next = { message: 'armadai flow status --json failed: ' + error.message, runs: [] }
     }
     try {
-      next.documents = await documents($)
+      next.documents = await documents($, root)
     } catch {
       next.documents = []
     }
@@ -94,13 +98,17 @@ async function refresh($) {
 
 export function register(on) {
   on('session.start', async ($, e, next) => {
-    await $.command.register({
-      name: 'armadai-panel',
-      description: 'Open the ArmadAI panel: flows and recent documents',
-    })
     void $.ui.open({ id: PANE, title: 'ArmadAI' })
     void refresh($)
     $.clock.every(EVERY_MS, () => refresh($))
+    try {
+      await $.command.register({
+        name: 'armadai-panel',
+        description: 'Open the ArmadAI panel: flows and recent documents',
+      })
+    } catch {
+      // a taken name throws, and a hook that throws is skipped: the panel works without it
+    }
     return next(e)
   })
 

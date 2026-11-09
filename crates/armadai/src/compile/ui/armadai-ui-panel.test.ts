@@ -45,13 +45,17 @@ async function start(
   schema: string,
   documents: string[] | null,
   run: any = null,
+  isCommandTaken = false,
 ) {
   const clock = mock.clock(on)
-  on('command.register', () => ({ value: undefined }))
+  on('command.register', () => (isCommandTaken ? { deny: 'taken' } : { value: undefined }))
+  // the project root is not the folder Claude Code was started in
+  on('session.root', () => ({ value: '/p' }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('session.start', (_: any, e: any) => ({ cwd: e.cwd }))
   on('process.run', async (_: any, e: any) => {
     expect(e.argv).toEqual(['armadai', 'flow', 'status', '--json'])
+    expect(e.init?.cwd).toBe('/p')
     if (run) return await run(clock)
     return { value: { exitCode: 0, stdout: STATUS(schema), stderr: '' } }
   })
@@ -59,14 +63,17 @@ async function start(
     if (documents === null) return { deny: 'no panel.json' }
     return { value: JSON.stringify({ documents }) }
   })
-  on('fs.list', (_: any, e: any) => ({
+  on('fs.list', (_: any, e: any) => {
+    expect(e.path.startsWith('/p/')).toBe(true)
+    return {
     value:
       e.path.endsWith('/notes')
         ? [file('new.md', SINCE + 5), file('old.md', SINCE - 5), file('b.txt', SINCE + 9)]
         : e.path.endsWith('/docs')
           ? [file('d.md', SINCE + 1)]
           : [],
-  }))
+    }
+  })
   on('session.usage', () => ({ value: { startedAt: SINCE, context: {}, rateLimits: [], cost: {} } }))
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/p' })
   await clock.advance(10)
@@ -131,4 +138,25 @@ test('a slow armadai is not launched again while it runs', async ($, on) => {
   // two more periods of 2 s pass while the first call still runs
   await time.advance(4000)
   expect(calls).toBe(1)
+})
+
+test('a taken command name does not stop the panel or the timer', async ($, on) => {
+  let calls = 0
+  let time: any
+  const ui = await start(
+    $,
+    on,
+    'armadai.flow-status/1',
+    ['docs'],
+    async (clock: any) => {
+      time = clock
+      calls += 1
+      return { value: { exitCode: 0, stdout: STATUS('armadai.flow-status/1'), stderr: '' } }
+    },
+    true,
+  )
+  expect(await ui.find({ type: 'Text', text: 'deliver (in-progress)' })).toBeDefined()
+  await time.advance(2000)
+  expect(calls).toBeGreaterThan(1)
+  await ui.unmount()
 })
