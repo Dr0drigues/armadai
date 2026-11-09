@@ -110,6 +110,7 @@ dependencies = [
  "clap_complete",
  "dialoguer",
  "include_dir",
+ "libc",
  "miniz_oxide",
  "pulldown-cmark",
  "semver",

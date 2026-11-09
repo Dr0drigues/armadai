@@ -1194,3 +1194,139 @@ fn subagent_statusline_does_not_wait_for_a_stdin_that_stays_open() {
         assert!(done, "pass {pass}: still waiting for stdin after 5 s");
     }
 }
+
+/// `flow status --watch` with stdout in a pipe: waits for the first image
+/// (`first` bytes, 20 s at most: a slow start under load, not the nominal time),
+/// then `after`, sends `signal` (`None`: kills) and returns what was read and how it ended.
+struct Watched {
+    out: Vec<u8>,
+    status: std::process::ExitStatus,
+}
+
+fn watch_in_a_pipe(
+    env: &Env,
+    args: &[&str],
+    first: usize,
+    after: std::time::Duration,
+    sigint: bool,
+) -> Watched {
+    use std::io::Read;
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_armadai"))
+        .current_dir(env.root())
+        .env("ARMADAI_CONFIG_DIR", env.dir.path().join("config"))
+        .env("HOME", env.dir.path())
+        .env("NO_COLOR", "1")
+        .args(["flow", "status", "--watch"])
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        while let Ok(n) = stdout.read(&mut buf) {
+            if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                break;
+            }
+        }
+    });
+    let mut out = Vec::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while out.len() < first {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        match rx.recv_timeout(left) {
+            Ok(chunk) => out.extend(chunk),
+            Err(_) => break,
+        }
+    }
+    std::thread::sleep(after);
+    if sigint {
+        let ok = std::process::Command::new("/bin/kill")
+            .args(["-INT", &child.id().to_string()])
+            .status()
+            .unwrap();
+        assert!(ok.success());
+    } else {
+        child.kill().unwrap();
+    }
+    let status = child.wait().unwrap();
+    reader.join().unwrap();
+    out.extend(rx.try_iter().flatten());
+    Watched { out, status }
+}
+
+/// `s` without its SGR sequences (`ESC [ ... m`).
+fn without_sgr(s: &str) -> String {
+    let mut out = String::new();
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' && chars.peek() == Some(&'[') {
+            let mut seq = String::from("\x1b[");
+            chars.next();
+            for d in chars.by_ref() {
+                seq.push(d);
+                if d == 'm' || d.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+            if !seq.ends_with('m') {
+                out += &seq;
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+#[test]
+fn watch_outside_a_terminal_is_the_list_once_without_escape() {
+    let env = Env::new();
+    looping(&env, "s1", T0);
+    // more than two steps of one second: a redraw at every step would show
+    let w = watch_in_a_pipe(
+        &env,
+        &[],
+        LOOPING.len(),
+        std::time::Duration::from_millis(2500),
+        false,
+    );
+    assert_eq!(String::from_utf8_lossy(&w.out), LOOPING);
+}
+
+#[test]
+fn watch_outside_a_terminal_with_color_always_has_colour_only() {
+    let env = Env::new();
+    looping(&env, "s1", T0);
+    let w = watch_in_a_pipe(
+        &env,
+        &["--color", "always"],
+        LOOPING.len(),
+        std::time::Duration::from_millis(2500),
+        false,
+    );
+    let raw = String::from_utf8_lossy(&w.out).into_owned();
+    assert!(
+        raw.contains("\x1b[") && raw.contains('m'),
+        "no colour at all: {raw:?}"
+    );
+    assert_eq!(without_sgr(&raw), LOOPING, "{raw:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn ctrl_c_outside_a_terminal_still_kills_by_sigint() {
+    use std::os::unix::process::ExitStatusExt;
+    let env = Env::new();
+    looping(&env, "s1", T0);
+    let w = watch_in_a_pipe(
+        &env,
+        &[],
+        LOOPING.len(),
+        std::time::Duration::from_millis(200),
+        true,
+    );
+    assert_eq!(w.status.signal(), Some(2), "{:?}", w.status);
+}

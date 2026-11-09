@@ -29,7 +29,6 @@ fn fits(text: &str, size: Size) -> bool {
 /// drawn (heading, drawing, then its body) and the other runs are listed under
 /// it as `render` lists them. Without such a run, or when the drawn part does
 /// not fit `size`, the image is `render(runs, session)`.
-#[allow(dead_code)] // wired by task 4
 pub fn frame(project: &Project, runs: &[Run], session: &str, tick: u64, size: Size) -> String {
     let list = || render(runs, session);
     let Some(run) = open_run(runs) else {

@@ -15,6 +15,7 @@ mod pack;
 pub(crate) mod setup;
 mod skills;
 pub(crate) mod style;
+mod term;
 pub(crate) mod unlink;
 mod update;
 mod validate;
