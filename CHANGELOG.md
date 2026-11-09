@@ -3,6 +3,7 @@
 ### Added
 
 - `armadai graph` draws more: `--format dot|json|ascii` next to Mermaid, `--view team` for who may delegate to whom (the policy gate's own rule, `allowed_targets`, now lives in `armadai-model`), and `--open` to see the Mermaid in mermaid.live (step and agent names leave this machine). The nodes follow the flow from its start and the start and end steps are marked. `--format md` works with every view, the team view included (`## team`), and `--open` takes Mermaid only. In ASCII, `--view team` is a list that fits 80 columns (the main thread, then one entry per agent with its flows and the agents it delegates to), not boxes.
+- `armadai flow status --watch` in a terminal draws the run in progress in boxes, each step with its mark (`✓ ● ○ ? ✗ ~ -`) and a spinner on the running step, redrawn within 250 ms of a new event without clearing the screen; the other runs are counted on one line under it, a run that does not fit the terminal is listed instead, and the image never scrolls the terminal. The cursor is hidden while watching and shown again on exit, Ctrl-C included. Outside a terminal the output is the list, as before, and no longer carries a clear-screen sequence, even with `--color always`. See [Flow status](docs/wiki/flow-status.md).
 
 ## v1.0.0-rc.10 (2026-11-05)
 

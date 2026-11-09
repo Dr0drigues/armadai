@@ -16,14 +16,15 @@ pub enum Piece {
 /// The pieces of the line (empty when there is no run). The run shown is the
 /// last one still open, else the last one.
 pub fn line(runs: &[Run]) -> Vec<(Piece, String)> {
-    let Some(run) = runs
-        .iter()
-        .rfind(|r| !r.finished && !r.interrupted)
-        .or(runs.last())
-    else {
+    let Some(run) = open_run(runs).or(runs.last()) else {
         return Vec::new();
     };
     pieces(run, current(run))
+}
+
+/// The run a live view follows: the last one still open (neither finished nor interrupted).
+pub fn open_run(runs: &[Run]) -> Option<&Run> {
+    runs.iter().rfind(|r| !r.finished && !r.interrupted)
 }
 
 /// The line of an open run naming `step` instead of the run's current step
@@ -218,6 +219,25 @@ mod tests {
         let mut b = run("b", vec![v("y", Mark::Done)], vec![]);
         b.interrupted = true;
         assert_eq!(shown(&[a, b]), "b interrupted 1/1");
+    }
+
+    #[test]
+    fn open_run_is_none_without_an_open_run() {
+        let mut a = run("a", vec![v("x", Mark::Done)], vec![]);
+        a.finished = true;
+        let mut b = run("b", vec![v("y", Mark::Pending)], vec![]);
+        b.interrupted = true;
+        assert!(open_run(&[a, b]).is_none());
+    }
+
+    #[test]
+    fn open_run_is_the_last_open_one() {
+        let first = run("one", vec![v("a", Mark::Running)], vec![]);
+        let second = run("two", vec![v("b", Mark::Running)], vec![]);
+        let mut done = run("three", vec![v("c", Mark::Done)], vec![]);
+        done.finished = true;
+        let runs = [first, second, done];
+        assert_eq!(open_run(&runs).map(|r| r.flow.as_str()), Some("two"));
     }
 
     #[test]

@@ -4,15 +4,18 @@
 //! The project root is resolved exactly as the hooks resolve it (from a
 //! subdirectory or a git worktree), so the logs read are the ones written.
 
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 use armadai_model::Project;
 
-use crate::flow_status::line::Piece;
+use crate::cli::term;
+use crate::flow_status::line::{Piece, open_run};
 use crate::flow_status::record::{FlowEvent, GROUP_SEP, log_path};
 use crate::flow_status::render;
 use crate::flow_status::runs::{Mark, Run, runs};
+use crate::flow_status::watch;
 
 const NO_ACTIVITY: &str =
     "no flow activity recorded yet (link installs the hooks; start a flow in Claude Code)";
@@ -62,7 +65,7 @@ pub enum FlowCommand {
         /// Session id (see --list); the latest one when omitted
         #[arg(long)]
         session: Option<String>,
-        /// Redraw on every new event (checked each second) until Ctrl-C
+        /// Follow the session until Ctrl-C: in a terminal, the running flow is drawn in boxes with its marks and a spinner on the running step; elsewhere, the text is printed again on each new event
         #[arg(long, conflicts_with = "list")]
         watch: bool,
         /// List the recorded sessions instead
@@ -181,7 +184,11 @@ pub fn execute(cmd: FlowCommand) -> anyhow::Result<()> {
         print_painted(&view.text());
         return Ok(());
     }
-    // shortcut: polls each second rather than watching the file; enough for a terminal view.
+    if std::io::stdout().is_terminal() {
+        return view.animate();
+    }
+    // shortcut: polls each second rather than watching the file; enough for a pipe or a file.
+    // No positioning sequence here, whatever `--color` says: the output is the list, as before.
     let mut last: Option<(Option<String>, Option<u64>)> = None;
     loop {
         let (session, path) = view.log();
@@ -193,12 +200,23 @@ pub fn execute(cmd: FlowCommand) -> anyhow::Result<()> {
             Some((s, old)) => *s != session || render::should_redraw(*old, len),
         };
         if redraw {
-            anstream::print!("\x1b[2J\x1b[H");
             print_painted(&view.text());
         }
         last = Some((session, len));
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
+}
+
+/// The step of `--watch` in a terminal: a `stat` of the log, a redraw only when it changed
+/// or a step runs, so the spinner turns four times a second.
+const PACE: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// How often `--watch` in a terminal looks for a newer session (no `--session`).
+const LATEST_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The image to write: `None` when it is the one written last (never write it twice).
+fn to_write<'a>(last: Option<&str>, image: &'a str) -> Option<&'a str> {
+    (last != Some(image)).then_some(image)
 }
 
 struct View {
@@ -220,7 +238,17 @@ impl View {
     /// file) and its runs, filtered by the flow id; the one reading of the
     /// log `text` and `--json` share.
     fn snapshot(&self) -> (Option<(String, Vec<FlowEvent>)>, Vec<Run>) {
-        let (Some(session), path) = self.log() else {
+        let (session, path) = self.log();
+        self.snapshot_of(session, path)
+    }
+
+    /// `snapshot` of a session and log already found.
+    fn snapshot_of(
+        &self,
+        session: Option<String>,
+        path: Option<PathBuf>,
+    ) -> (Option<(String, Vec<FlowEvent>)>, Vec<Run>) {
+        let Some(session) = session else {
             return (None, Vec::new());
         };
         let events = (path.filter(|p| p.is_file()))
@@ -240,6 +268,86 @@ impl View {
                 render::render_md(&found, &session, events.last().map(|e| e.ts))
             }
             _ => format!("{NO_ACTIVITY}\n"),
+        }
+    }
+
+    /// `--watch` in a terminal: the drawn flow, redrawn in place (no clear after the
+    /// first image), the cursor hidden until the loop ends or Ctrl-C.
+    fn animate(&self) -> anyhow::Result<()> {
+        use std::io::Write;
+        let _cursor = term::HiddenCursor::new()?;
+        // the positioning sequences go to the raw stdout; only the content follows `--color`
+        let colour =
+            anstream::AutoStream::choice(&std::io::stdout()) != anstream::ColorChoice::Never;
+        let mut key: Option<(Option<String>, Option<u64>)> = None;
+        let mut cached: Option<(String, Vec<Run>)> = None;
+        let mut last: Option<String> = None;
+        let mut last_size = None;
+        // the latest session is looked for (a `read_dir` and a `stat` per log) once a
+        // second at most, like `master`; between two looks only its log is `stat`ed
+        let mut latest: Option<(std::time::Instant, Option<String>)> = None;
+        let (mut tick, mut first) = (0u64, true);
+        loop {
+            let session = match &self.session {
+                Some(s) => Some(s.clone()),
+                None => {
+                    let stale = latest
+                        .as_ref()
+                        .is_none_or(|(at, _)| at.elapsed() >= LATEST_EVERY);
+                    if stale {
+                        latest = Some((
+                            std::time::Instant::now(),
+                            render::latest_session(&self.root),
+                        ));
+                    }
+                    latest.as_ref().and_then(|(_, s)| s.clone())
+                }
+            };
+            let path = session.as_deref().and_then(|s| log_path(&self.root, s));
+            let len = (path.as_ref())
+                .and_then(|p| std::fs::metadata(p).ok())
+                .map(|m| m.len());
+            let changed = key.as_ref() != Some(&(session.clone(), len));
+            if changed {
+                cached = match (self.snapshot_of(session.clone(), path.clone()), path) {
+                    ((Some((id, _)), runs), Some(p)) if p.is_file() => Some((id, runs)),
+                    _ => None,
+                };
+                key = Some((session, len));
+            }
+            let running = cached.as_ref().is_some_and(|(_, runs)| {
+                open_run(runs).is_some_and(|r| r.steps.iter().any(|v| v.mark == Mark::Running))
+            });
+            // a terminal resized while nothing happens still gets an image of its size
+            let size = term::size();
+            if changed || running || last_size != Some(size) {
+                let image = match &cached {
+                    Some((id, runs)) => watch::frame(&self.project, runs, id, tick, size),
+                    None => format!("{NO_ACTIVITY}\n"),
+                };
+                if let Some(image) = to_write(last.as_deref(), &image) {
+                    let mut buf = String::from(if first { "\x1b[2J\x1b[H" } else { "\x1b[H" });
+                    for line in image.lines() {
+                        let painted = paint_image_line(line);
+                        match colour {
+                            true => buf += &painted,
+                            false => buf += &anstream::adapter::strip_str(&painted).to_string(),
+                        }
+                        buf += "\x1b[K\n";
+                    }
+                    buf += "\x1b[J";
+                    let mut out = std::io::stdout().lock();
+                    out.write_all(buf.as_bytes())?;
+                    out.flush()?;
+                    first = false;
+                    last = Some(image.to_string());
+                }
+                last_size = Some(size);
+                if running {
+                    tick += 1;
+                }
+            }
+            std::thread::sleep(PACE);
         }
     }
 
@@ -264,21 +372,70 @@ fn read_log(path: &Path) -> Vec<FlowEvent> {
 
 /// Print the plain text of `render`, coloured line by line as `list` does.
 fn print_painted(text: &str) {
-    use crate::cli::style;
     for line in text.lines() {
-        let s = match line.trim_start().chars().next() {
-            _ if line.starts_with("session ") || line.starts_with("SESSION ") => style::header(),
-            Some('✓') => style::ok(),
-            Some('●') => style::running(),
-            Some('○' | '~') => style::muted(),
-            Some('?') => style::warn(),
-            Some('✗') => style::err(),
-            // a run's heading: `<flow>  in progress|interrupted|finished`
-            _ if !line.starts_with(' ') && line.contains("  ") => style::accent(),
-            _ => anstyle::Style::new(),
-        };
-        anstream::println!("{s}{line}{s:#}");
+        anstream::println!("{}", paint_line(line));
     }
+}
+
+/// One line of `render`, in the style of what it starts with.
+fn paint_line(line: &str) -> String {
+    use crate::cli::style;
+    let s = match line.trim_start().chars().next() {
+        _ if line.starts_with("session ") || line.starts_with("SESSION ") => style::header(),
+        Some('✓') => style::ok(),
+        Some('●') => style::running(),
+        Some('○' | '~') => style::muted(),
+        Some('?') => style::warn(),
+        Some('✗') => style::err(),
+        // a run's heading: `<flow>  in progress|interrupted|finished`
+        _ if !line.starts_with(' ') && line.contains("  ") => style::accent(),
+        _ => anstyle::Style::new(),
+    };
+    format!("{s}{line}{s:#}")
+}
+
+const MARKS: [Mark; 7] = [
+    Mark::Done,
+    Mark::Running,
+    Mark::Pending,
+    Mark::Unsure,
+    Mark::Unexpected,
+    Mark::Relay,
+    Mark::NotRun,
+];
+
+/// A line of the animated image: a line with a box (`[`, a sign, a space) gets its marks painted, any other
+/// line is painted as `list` paints it.
+fn paint_image_line(line: &str) -> String {
+    let box_at = |(i, _): (usize, &str)| {
+        MARKS.iter().any(|m| {
+            line[i + 1..]
+                .strip_prefix(m.sign())
+                .is_some_and(|rest| rest.starts_with(' '))
+        })
+    };
+    if line.match_indices('[').any(box_at) {
+        paint_boxes(line)
+    } else {
+        paint_line(line)
+    }
+}
+
+/// The sign right after each `[` of a line of boxes, in the style of its mark.
+fn paint_boxes(line: &str) -> String {
+    let mut out = String::new();
+    let mut rest = line;
+    while let Some(at) = rest.find('[') {
+        let (head, tail) = rest.split_at(at + 1);
+        out += head;
+        rest = tail;
+        if let Some(m) = MARKS.iter().find(|m| rest.starts_with(m.sign())) {
+            let sign = m.sign();
+            out += &painted(&[(Piece::Mark(m.clone()), sign.to_string())]);
+            rest = &rest[sign.len()..];
+        }
+    }
+    out + rest
 }
 
 /// How long `--line` waits for a JSON on stdin before ignoring it.
@@ -447,6 +604,49 @@ mod tests {
         ]
         .join(" ");
         assert_eq!(painted(&pieces), want);
+    }
+
+    #[test]
+    fn the_mark_after_a_box_bracket_is_painted() {
+        assert_eq!(
+            paint_boxes("  [✓ a (x)  ]   [● b (y) |]"),
+            format!(
+                "  [{} a (x)  ]   [{} b (y) |]",
+                paint(style::ok(), "✓"),
+                paint(style::running(), "●")
+            )
+        );
+        // a sign that is not right after a `[` (here in a label) stays plain
+        assert_eq!(
+            paint_boxes("[○ c ✓  ]"),
+            format!("[{} c ✓  ]", paint(style::muted(), "○"))
+        );
+    }
+
+    #[test]
+    fn a_box_after_an_edge_is_painted() {
+        assert_eq!(
+            paint_image_line("  │   [● c (z) |]"),
+            format!("  │   [{} c (z) |]", paint(style::running(), "●"))
+        );
+        // a `[` and a sign that are no box (no space after the sign) paint nothing
+        assert_eq!(paint_image_line("  see [✓x]"), paint_line("  see [✓x]"));
+        // a step line is a list line: painted by its first sign, as `list` does
+        assert_eq!(
+            paint_image_line("  ● guard     running"),
+            paint_line("  ● guard     running")
+        );
+        assert_eq!(
+            paint_image_line("  ● guard     running"),
+            paint(style::running(), "  ● guard     running")
+        );
+    }
+
+    #[test]
+    fn an_identical_image_is_not_written() {
+        assert_eq!(to_write(None, "a\n"), Some("a\n"));
+        assert_eq!(to_write(Some("a\n"), "a\n"), None);
+        assert_eq!(to_write(Some("a\n"), "b\n"), Some("b\n"));
     }
 
     #[test]

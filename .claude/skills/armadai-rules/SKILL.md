@@ -16,6 +16,8 @@ Sources abrégées : `CLAUDE.md` (racine du dépôt), `.claude/CLAUDE.md` (règl
 - `frozen/armadai-audit/` est hors workspace : ne pas l'étendre, seulement le garder compilable (`cd frozen/armadai-audit && cargo check --all-targets && cargo test`) quand un crate dont il dépend change. Source : `CLAUDE.md`, Architecture.
 - Lire le code retour de chaque commande de la barrière ; jamais de `tail` (ou autre tube) qui masque un échec. Raison : le code retour d'un tube est celui de sa dernière commande. Source : plan dogfood ; brief coordinateur.
 - `armadai-core` et `armadai-model` doivent compiler seuls ; `armadai-model` reste pur (serde, serde-saphyr, serde_json, thiserror, schemars). Source : `CLAUDE.md`, Build & Test Commands et Where things live.
+- `unsafe` : confiné à un seul module par fonctionnalité, chaque bloc commenté de son invariant ; un gestionnaire de signal ne fait que de l'async-signal-safe. Raison : l'`unsafe` reste auditable et un gestionnaire ne bloque ni ne corrompt l'état du processus. Source : Dimitri, 2026-11-09 (« Les deux (Recommandé) »).
+- Dépendance : une dépendance déjà au lock mais non déclarée par le crate qui l'utilise s'ajoute sans paquet nouveau au lock ; tout paquet nouveau au lock passe par Dimitri. Raison : l'arbre de dépendances ne grossit pas sans décision. Source : Dimitri, 2026-11-09 (« Les deux (Recommandé) ») ; cas d'origine : `libc` dans `crates/armadai`, Dimitri, 2026-11-02 (« libc + handler SIGINT »).
 
 ## Tests et mutations
 

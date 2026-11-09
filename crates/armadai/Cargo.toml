@@ -51,6 +51,10 @@ miniz_oxide = "0.9.1"
 # pack versions: ordering and ranges
 semver = "1"
 
+# term.rs: terminal size and the cursor restored on Ctrl-C
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 armadai-core = { path = "../armadai-core", features = ["test-support"] }
 assert_cmd = "2.2.2"
