@@ -153,6 +153,92 @@ they started.
   the logs of the main checkout; a worktree with its own `.armadai/` writes and reads its own
   `state/`.
 
+## In a status bar
+
+`armadai flow status --line` prints one line for a status bar, and never fails: with no project, an invalid project, an unknown flow or session, or no run, it prints an empty line, with exit code 0 and nothing on stderr.
+
+```text
+deliver ● guard 2/4 (loops 1)
+deliver 3/4
+hotfix finished 2/2
+bugfix interrupted 1/2
+```
+
+- The run shown is the last one still open, else the last one. `●` guard is the current step (the running one, else the first `?` or `✗`, else the first pending one) with its mark; `2/4` counts done steps over the steps recorded in this session (`~` and `-` steps are left out); `(loops 1)` counts the extra times links were taken, and shows only when there is one.
+- The session is `--session`, else the `session_id` of a JSON read on stdin (the one Claude Code pipes to a status line), else the latest log of the project. The project is the `cwd` of that JSON, else the current directory. stdin is read only when it is piped, for 250 ms at most, so a terminal or a pipe that stays open never blocks the command.
+- Marks are always printed; colour comes on top. `--color auto|always|never` (default `auto`) applies to every `flow status` output: `auto` follows the terminal and honours `NO_COLOR` and `CLICOLOR_FORCE`. A status bar that runs the command through a pipe needs `--color always`: `armadai flow status --line --color always`.
+- In [ccstatusline](https://github.com/sirmalloc/ccstatusline), add a **Custom Command** widget, give it `armadai flow status --line --color always` and turn on its **preserve colors** option (without it the widget drops the colour). Read in the code of ccstatusline (the `render` method of the Custom Command widget; its page does not say so): the widget passes the whole JSON of Claude Code on stdin (`session_id`, `cwd`, ...) plus `terminal_width`, so the line follows the session and the project of Claude Code. Measured with ccstatusline run in an isolated `HOME`: the bar shows the same line as `flow status --line --session <id>`, an unknown session leaves the widget empty, and a JSON without `session_id` shows the latest log. The widget waits 1000 ms by default (`timeoutMs`, set per widget); its page also announces an optional cache of up to 60 s, so the line can lag behind a flow by that much.
+- The status line that `armadai link` writes for Claude Code calls the hidden command `armadai __claude-statusline`: it reads `session_id` and `cwd` from the JSON on stdin, always colours, takes no argument, and prints nothing (0 bytes, exit code 0) when the JSON has no `session_id`, the session is unknown, the JSON is invalid or the log holds no run. It never falls back to the latest log.
+- To get that bar without a script, set `ui: { status_line: true }` in `project.yaml` and run `armadai link --target claude`: it writes `statusLine` (`armadai __claude-statusline`, refreshed every 5 s) in `.claude/settings.json`, which hides the `statusLine` of your user settings. If `.claude/settings.json` already has a `statusLine`, `link` leaves it, writes the rest and reports `ui.status_line` as `not-compiled`: add `armadai flow status --line` to your own bar instead. If your own `statusLine` is identical to the one `link` would write, `link` reports `compiled` but does not own it: `unlink` leaves it in place. Other targets report `not-compiled` (Claude Code only). See [Project format](project-format.md).
+- To get a row per subagent, set `ui: { subagent_status_line: true }` and run `armadai link --target claude`: it writes the plugin `armadai-ui` (see [Link](link.md#claude-code)), whose `subagentStatusLine` runs the hidden command `armadai __claude-subagent-statusline`. Claude Code pipes it one JSON object with the session `session_id`, its `cwd` and a `tasks` array; for each task whose `agentType` holds a running step of a run in progress, the command prints one JSON line `{"id": "<task id>", "content": "<the line of that run naming that step>"}` (coloured; the other tasks keep Claude Code's row). It prints nothing (0 bytes, exit code 0) on an empty or invalid input and never blocks. Format read on [code.claude.com/docs/en/statusline](https://code.claude.com/docs/en/statusline) (2026-11-05).
+- The latest log is a guess when two sessions run at once in the same project: pass the session explicitly when you can.
+
+## Machine-readable output
+
+`armadai flow status --json` prints the session as one JSON document on stdout, and nothing else (it does not combine with `--watch` or `--list`). The `flow` argument and `--session` apply as for the text.
+
+```json
+{
+  "schema": "armadai.flow-status/1",
+  "session": { "id": "s1", "started_at": "2026-10-22T09:15:00Z", "last_event_at": "2026-10-22T09:15:50Z" },
+  "runs": [
+    {
+      "flow": "deliver",
+      "status": "in-progress",
+      "steps": [ { "step": "guard", "mark": "running", "sign": "●", "state": null, "note": null } ],
+      "loops": [ { "from": "build", "to": "guard", "times": 2 } ],
+      "transitions": [ { "at": "2026-10-22T09:15:20Z", "from": "design", "to": "build", "state": "done" } ]
+    }
+  ]
+}
+```
+
+- The schema only grows: a key is never renamed, retyped or removed, a new key is added. A change that breaks a reader gets a new `schema` value (`armadai.flow-status/2`). Read the keys you need and ignore the others.
+- `runs` come in the order the runs started (the text shows finished and interrupted runs first).
+- `started_at` and `last_event_at` are the first and last event of the log, UTC, to the second; `null` when the log is empty.
+- No log at all: `"session": null, "runs": []`, exit code 0. `--session S` with no log for `S`: the session with its dates `null` and no run, exit code 0.
+
+| `status` | Meaning |
+|---|---|
+| `in-progress` | The run has not finished and no later flow command closed it |
+| `finished` | The run reached the end of its flow |
+| `interrupted` | A later flow command closed it before it finished |
+
+| `mark` | `sign` | Meaning |
+|---|---|---|
+| `done` | `✓` | The step finished, `state` says how |
+| `running` | `●` | The step is running |
+| `pending` | `○` | The step has not started |
+| `unsure` | `?` | The log does not say; `note` gives the reason |
+| `unexpected` | `✗` | The step ended in a state it does not declare |
+| `coordinator` | `~` | The coordinator holds the step; it is not recorded |
+| `not-run` | `-` | Before the step the run opened at in this session |
+
+## Markdown snapshot
+
+`armadai flow status --format md` prints the same runs as Markdown, for a pull request, an issue or a file VS Code previews (it does not combine with `--watch`, `--list`, `--json` or `--line`, and is never coloured). `flow` and `--session` apply as for the text.
+
+```markdown
+# Flow status: session s1
+
+Snapshot at the last recorded event, 2026-10-22 09:15:50 UTC.
+
+## deliver: in progress
+
+| Step | Mark | Status |
+|---|---|---|
+| design | ✓ | done |
+| guard | ● | running |
+
+Links taken more than once: build → guard (2).
+
+| Time (UTC) | From | To | State |
+|---|---|---|---|
+| 2026-10-22 09:15:20 | design | build | done |
+```
+
+The Time column shows the time only, with the date added on the first row of a table and whenever the UTC day changes. The Status column is the text of the plain output (the state, or `running`/`pending`, then the note in parentheses). A session with no run says `No run of a declared flow in this session yet.`; with no log at all, the usual `no flow activity recorded yet` line.
+
 ## Limits
 
 - Claude Code only.

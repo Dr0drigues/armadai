@@ -159,6 +159,51 @@ mod tests {
         }
     }
 
+    /// The Claude project of the first snapshot with `ui.status_line: true` and
+    /// `ui.subagent_status_line: true`: the same tree plus the `statusLine` and the
+    /// plugin keys of `.claude/settings.json`, the plugin folder, and the report lines.
+    #[test]
+    fn the_ui_status_line_matches_its_golden() {
+        let dir = project();
+        let root = dir.path().join("project");
+        std::fs::write(
+            root.join(".armadai/project.yaml"),
+            "schema_version: 1\ncoordinator: lead\npolicy:\n  delegation: strict\n  free_agents: [Explore]\nui:\n  status_line: true\n  subagent_status_line: true\n",
+        )
+        .unwrap();
+        let output = Command::cargo_bin("armadai")
+            .unwrap()
+            .current_dir(&root)
+            .env("ARMADAI_CONFIG_DIR", isolated_config(dir.path()))
+            .env("HOME", dir.path())
+            .args(["link", "--target", "claude"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let claude_md = std::fs::read_to_string(root.join("CLAUDE.md")).unwrap();
+        let mut rendered = format!(
+            "=== CLAUDE.md ===\n{claude_md}\n{}",
+            render_tree(&root, &root.join(".claude"))
+        );
+        rendered.push_str(&render_tree(
+            &root,
+            &root.join(".armadai/plugins/armadai-ui"),
+        ));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let report = stdout.split_once("Conformance report:\n").unwrap().1;
+        rendered.push_str(&format!("=== report ===\n{report}"));
+        assert!(rendered.contains("\"statusLine\""), "{rendered}");
+        assert!(
+            rendered.contains("=== .armadai/plugins/armadai-ui/settings.json"),
+            "{rendered}"
+        );
+        check_golden("claude-ui", &rendered);
+    }
+
     /// `rendered` against `golden/link/<name>.txt`, or written there under
     /// `UPDATE_GOLDEN` (set, not empty, not `0`).
     fn check_golden(name: &str, rendered: &str) {

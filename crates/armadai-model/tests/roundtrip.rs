@@ -310,3 +310,31 @@ fn a_command_without_hint_nor_native_writes_neither() {
     };
     assert_eq!(render_command(&c), "---\ndescription: d\n---\nB\n");
 }
+
+#[test]
+fn ui_is_written_only_when_it_is_not_the_default() {
+    let write = |ui: &str| {
+        let src = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(src.path().join(".armadai")).unwrap();
+        std::fs::write(
+            src.path().join(".armadai/project.yaml"),
+            format!("schema_version: 1\n{ui}"),
+        )
+        .unwrap();
+        let out = tempfile::tempdir().unwrap();
+        write_project(&load_ok(src.path()), out.path()).unwrap();
+        std::fs::read_to_string(out.path().join(".armadai/project.yaml")).unwrap()
+    };
+    let plain = write("");
+    assert_eq!(plain, "schema_version: 1\n");
+    assert_eq!(write("ui: { status_line: false }\n"), plain);
+    assert_eq!(
+        write("ui: { status_line: true }\n"),
+        "schema_version: 1\nui:\n  status_line: true\n"
+    );
+    assert_eq!(write("ui: { subagent_status_line: false }\n"), plain);
+    assert_eq!(
+        write("ui: { subagent_status_line: true }\n"),
+        "schema_version: 1\nui:\n  subagent_status_line: true\n"
+    );
+}

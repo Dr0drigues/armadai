@@ -14,6 +14,8 @@ pub enum GraphFormat {
     Dot,
     Json,
     Ascii,
+    /// Markdown: a heading and a mermaid block per flow
+    Md,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
@@ -21,6 +23,10 @@ pub enum GraphView {
     #[default]
     Flows,
     Team,
+}
+
+fn markdown_block(id: &str, mermaid: &str) -> String {
+    format!("## {id}\n\n```mermaid\n{mermaid}```\n")
 }
 
 /// `https://mermaid.live/edit#pako:<payload>`: the editor's own serde, a zlib stream
@@ -71,7 +77,8 @@ pub fn execute(
         bail!("--view team draws the whole team: drop the flow id {id}");
     }
     let root = crate::compile::find_project(&std::env::current_dir()?)?;
-    let project = match armadai_model::load_checked(&root) {
+    let effective = crate::pack::effective::open(&root, crate::pack::effective::Vars::Literal)?;
+    let project = match effective.load_checked() {
         Ok((p, _)) => p,
         Err(ds) => {
             for d in &ds {
@@ -89,6 +96,7 @@ pub fn execute(
             "{}",
             match format {
                 GraphFormat::Mermaid => armadai_model::team_to_mermaid(&g),
+                GraphFormat::Md => markdown_block("team", &armadai_model::team_to_mermaid(&g)),
                 GraphFormat::Dot => armadai_model::team_to_dot(&g),
                 GraphFormat::Json => format!("{}\n", serde_json::to_string_pretty(&g)?),
                 GraphFormat::Ascii => crate::ascii_graph::team_to_ascii(&g),
@@ -132,6 +140,9 @@ pub fn execute(
             let blocks: Vec<String> = graphs
                 .iter()
                 .map(|g| match format {
+                    GraphFormat::Md => {
+                        markdown_block(&g.id, &armadai_model::flow_graph_to_mermaid(g))
+                    }
                     GraphFormat::Dot => armadai_model::flow_graph_to_dot(g),
                     GraphFormat::Ascii => crate::ascii_graph::flow_to_ascii(g),
                     _ => armadai_model::flow_graph_to_mermaid(g),

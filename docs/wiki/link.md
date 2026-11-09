@@ -43,6 +43,22 @@ armadai link --force                 # overwrite files link did not write
 
 Every target is planned and checked before the first write.
 
+## Packs and variables
+
+A project with a `pack:` key is compiled from its effective view: the locked snapshot of the pack
+(`.armadai/pack.lock`, read from the local cache, never the network) overlaid by the project's own
+files. `link` adds two kinds of line to the report:
+
+| Element | Status | Reason |
+|---|---|---|
+| `pack <name>` | `compiled` | `<version> (<id12>), from the cache` |
+| `var <name>` | `approximated` | `set by none of ARMADAI_VAR_<NAME>, .armadai/vars.local.yaml, .armadai/vars.yaml: replaced by an empty value` |
+
+When the cache holds a newer version than the lock, `link` also writes a `note:` on stderr that
+names `armadai pack update`. If the lock is missing, belongs to another pack or source, or points
+at a snapshot the cache does not hold, `link` stops with the message that says which command to
+run (`armadai pack update` or `armadai pack sync`). See [Starter packs](starter-packs.md).
+
 ## Claude Code
 
 | Declared | Produced |
@@ -56,6 +72,8 @@ Every target is planned and checked before the first write.
 | `policy.delegation: strict` | a `PreToolUse` hook on `Agent|Task` running `armadai __claude-policy-gate` (see [Policy gate](policy-gate.md)) |
 | a flow | with the flows, four async hooks running `armadai __record-flow-event` (`SubagentStart`, `SubagentStop`, `PreToolUse` on `SubagentHandback`, `UserPromptExpansion` (a typed command, its name only)) and, for an agent holding a step with `states:` or a failure path, a closing `STATE: <state>` instruction in its file (OpenCode agents get it too); report `flow recording: compiled`. `.armadai/.gitignore` gets `state/`. See [Flow status](flow-status.md) |
 | `native.claude` of project.yaml | top-level keys of `settings.json` |
+| `ui.status_line: true` | the `statusLine` of `.claude/settings.json`, running `armadai __claude-statusline` (it hides the `statusLine` of your user settings; a `statusLine` you already have is kept and reported `not-compiled`) |
+| `ui.subagent_status_line: true` | the plugin `armadai-ui` in `.armadai/plugins/armadai-ui/` (`.claude-plugin/marketplace.json`, `.claude-plugin/plugin.json`, and a `settings.json` whose `subagentStatusLine` runs `armadai __claude-subagent-statusline`), and two entries in `.claude/settings.json`: `extraKnownMarketplaces.armadai-ui` (a `directory` source, `./.armadai/plugins/armadai-ui`) and `enabledPlugins.armadai-ui@armadai-ui: true`. Claude Code loads the plugin once you trust the folder. The plugin is versioned with the project. If you already set one of those two entries to another value, `link` writes no plugin and reports `ui.subagent_status_line` as `not-compiled`, naming the key. `native.claude` may not hold `enabledPlugins` or `extraKnownMarketplaces` with this key (error). The other targets report `not-compiled (Claude Code only)` |
 
 **Commands use `.claude/commands/`**, the format Claude Code documents as merged into skills
 whose files "keep working" (skills page, read on 2026-10-21): a legacy format that may be
@@ -199,6 +217,10 @@ inverse of each recorded outcome, so it removes exactly what `link` produced and
 including files whose agent has since been removed from the project, which is the case no amount
 of regeneration can recover — then forgets the target.
 
+A pack installed by copy (`init --pack`) is recorded in a `packs:` section (source, version, and the
+digest of each file the install wrote), which `armadai pack update` reads. The section is
+optional, and a binary older than pack management that rewrites the manifest drops it.
+
 The manifest is data on disk, so `unlink` treats it as untrusted input: it re-derives the target's
 output directory from the project config and refuses the manifest wholesale if the two disagree,
 and it refuses any individual entry or recorded directory that resolves outside the target's own
@@ -207,6 +229,23 @@ root, onto that root itself, or that corresponds to no file `link` recorded crea
 `unlink --agents x` removes the files of those agents and, as for the skills, every command (a
 command belongs to no agent). Directories link created are removed once empty, except the
 target root itself (`.claude/`, `.opencode/`…), which `unlink` never removes: it stays, empty.
+
+The files of the `armadai-ui` plugin are the only ones `link` writes under `.armadai/`, and only
+inside `.armadai/plugins/armadai-ui/`, with no symbolic link on the way; `unlink` removes them and
+the folders `link` created, and takes back only the two `settings.json` entries it added (your own
+`enabledPlugins` and `extraKnownMarketplaces` entries stay). On a fresh clone, where the manifest
+is missing, `unlink` leaves the plugin and says so
+(`.armadai/plugins/armadai-ui/ not removed: no manifest records what link wrote there`).
+
+**Clone.** The plugin is versioned, the manifest is not. On a clone, `link` finds the plugin
+already there with no record of it and owns nothing of it, neither its files nor its two
+`settings.json` entries: identical, it reports `ui.subagent_status_line` as `approximated`
+(`existing identical plugin kept, not owned: unlink leaves it`) and `unlink` leaves it whole;
+partial or edited, it writes nothing, reports `not-compiled` naming the first element that
+differs (`existing plugin differs from what link writes at <element>, not owned: link leaves
+it; remove it to let link write it`), and `--force` does not change that. To remove the plugin
+from such a clone, delete the folder and the two entries by hand, or run `unlink` on the
+machine that wrote it.
 
 `--dry-run` writes no manifest. When no usable manifest exists — a fresh clone, a deleted
 `.armadai/`, or a project linked before the manifest existed — `unlink` says so and falls back to a

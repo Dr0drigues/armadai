@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use anyhow::Context;
+
 use crate::linker::{LinkTarget, supported_target_names};
 use armadai_core::config;
 use armadai_core::registries::redact_url;
@@ -326,6 +328,124 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// A versioned pack of a source, installed as `pack update` would: the snapshot of the
+/// commit (or digest) of its version, whatever the clone holds now.
+struct Pinned {
+    dir: std::path::PathBuf,
+    version: String,
+    id: String,
+}
+
+/// `Some` for a versioned pack of a registry source; refuses a name that is not an id
+/// (M27) before anything is written.
+fn pin(asked: &str, dir: &Path, name: &str) -> anyhow::Result<Option<Pinned>> {
+    use armadai_core::registries::cache_key;
+    let cache = armadai_core::starter::starters_cache_dir();
+    let Some(source) = crate::starters_registry::effective_starter_sources()
+        .into_iter()
+        .find(|s| dir.starts_with(cache.join(cache_key(&s.url))))
+    else {
+        return Ok(None);
+    };
+    anyhow::ensure!(
+        is_path(asked) || crate::pack::cache::valid_name(asked),
+        "pack {asked} has an invalid name or version id: {asked}"
+    );
+    let Some(version) = crate::pack::cache::read_index(&cache.join(cache_key(&source.url)))
+        .and_then(|i| i.packs.into_iter().find(|p| p.name == name))
+        .and_then(|p| p.version)
+    else {
+        return Ok(None);
+    };
+    let registry = config::registry_cache_dir();
+    let held = |v: Option<crate::pack::cache::Versions>| {
+        let pv = v?.packs.get(name).cloned()?;
+        let a = pv.versions.iter().find(|a| a.version == version)?.clone();
+        Some((pv.path, a))
+    };
+    // never synced yet: the sync gives the clone its tags
+    let synced = || match crate::pack::cache::sync_source_in(&registry, &source) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            eprintln!(
+                "{}",
+                crate::starters_registry::sync_warning(&source.url, &e)
+            );
+            None
+        }
+    };
+    let Some((path, a)) =
+        held(crate::pack::cache::versions_in(&registry, &source.url)).or_else(|| held(synced()))
+    else {
+        return Ok(None);
+    };
+    let dir = crate::pack::cache::ensure_snapshot_in(&registry, &source, name, &path, &a)?;
+    Ok(Some(Pinned {
+        dir,
+        version,
+        id: a.id(),
+    }))
+}
+
+/// Remember where a copied pack came from and what the install wrote, for `pack update`:
+/// the URL of its source (as `.armadai/` may show it), `embedded`, or the folder.
+fn record_origin(
+    root: &Path,
+    asked: &str,
+    dir: &Path,
+    name: &str,
+    pin: Option<&Pinned>,
+    written: std::collections::BTreeMap<std::path::PathBuf, String>,
+) -> anyhow::Result<()> {
+    use armadai_core::registries::cache_key;
+    let cache = armadai_core::starter::starters_cache_dir();
+    let url = crate::starters_registry::effective_starter_sources()
+        .into_iter()
+        .find(|s| dir.starts_with(cache.join(cache_key(&s.url))))
+        .map(|s| s.url);
+    let mut id = None;
+    let (source, version) = match (url, pin) {
+        (Some(url), Some(p)) => {
+            id = Some(p.id.clone());
+            (crate::pack::source::recorded(&url), Some(p.version.clone()))
+        }
+        (Some(url), None) => {
+            let version = crate::pack::cache::read_index(&cache.join(cache_key(&url)))
+                .and_then(|i| i.packs.into_iter().find(|p| p.name == name))
+                .and_then(|p| p.version);
+            (crate::pack::source::recorded(&url), version)
+        }
+        (None, _)
+            if !is_path(asked)
+                && dir.parent()
+                    == Some(armadai_core::starter::builtin_starters_dir().as_path()) =>
+        {
+            ("embedded".to_string(), None)
+        }
+        (None, _) => (dir.canonicalize()?.display().to_string(), None),
+    };
+    // a file kept by an earlier install of the same pack stays recorded as it was
+    let mut files = crate::linker::manifest::installed_packs(root)
+        .remove(name)
+        .map(|p| p.files)
+        .unwrap_or_default();
+    files.extend(written);
+    crate::linker::manifest::write_installed_pack(
+        root,
+        name,
+        crate::linker::manifest::InstalledPack {
+            source,
+            version,
+            id: match id {
+                Some(id) => Some(id),
+                None => Some(crate::pack::cache::tree_digest(dir)?),
+            },
+            files,
+        },
+    )
+    .context("cannot record the origin of the pack in .armadai/link-manifest.yaml")
+}
+
 /// A canonical project from a starter pack. A native pack (`format: 1`) is
 /// copied (`native_pack`); a legacy one is materialised as a legacy project in a
 /// scratch directory and converted by `migrate`, then its `.armadai/` is copied
@@ -352,11 +472,25 @@ fn init_project_from_pack(root: &Path, pack_name: &str, force: bool) -> anyhow::
              folders or sources: {source}{w:#}"
         );
     }
-    let pack_dir = found.dir;
+    let found_dir = found.dir;
+    let first = StarterPack::load(&found_dir)?;
+    // a versioned pack of a source is installed as its version, as `pack update` would
+    let pinned = pin(pack_name, &found_dir, &first.name)?;
+    let pack_dir = pinned.as_ref().map_or(found_dir.clone(), |p| p.dir.clone());
     let pack = StarterPack::load(&pack_dir)?;
     no_link_at(&root.join(".armadai"))?;
     match pack.format {
-        Some(1) => return super::native_pack::install(root, &pack_dir, &pack.name),
+        Some(1) => {
+            let written = super::native_pack::install(root, &pack_dir, &pack.name)?;
+            return record_origin(
+                root,
+                pack_name,
+                &found_dir,
+                &pack.name,
+                pinned.as_ref(),
+                written,
+            );
+        }
         Some(n) => anyhow::bail!(
             "pack '{}' uses format {n}; this armadai reads format 1: update armadai",
             pack.name

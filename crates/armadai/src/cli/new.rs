@@ -452,7 +452,8 @@ pub fn create_flow(id: &str, flow: &armadai_model::Flow, force: bool) -> anyhow:
         &armadai_model::render_flow(flow),
     )?;
     let root = crate::compile::find_project(&std::env::current_dir()?)?;
-    let manifest = armadai_model::load_project(&root)
+    let manifest = crate::pack::effective::open(&root, crate::pack::effective::Vars::Literal)?
+        .load_project()
         .project
         .map(|p| p.manifest);
     if manifest.is_some_and(|m| {
@@ -505,11 +506,21 @@ pub fn create(
 ) -> anyhow::Result<()> {
     let mut target = crate::cli::new_target::NewTarget::resolve(kind, id, force)?;
     let key = |d: &armadai_model::Diagnostic| (d.code, d.file.clone());
-    let before: std::collections::BTreeSet<_> = (armadai_model::validate(&target.root).iter())
-        .map(key)
-        .collect();
+    // the effective view (pack + overlay): the skills a pack brings resolve; a fresh view
+    // after the write, since a view is a copy
+    let validate = |root: &std::path::Path| -> anyhow::Result<Vec<armadai_model::Diagnostic>> {
+        Ok(crate::pack::effective::open(root, crate::pack::effective::Vars::Literal)?.validate())
+    };
+    let before: std::collections::BTreeSet<_> = validate(&target.root)?.iter().map(key).collect();
     target.write(content)?;
-    let introduced: Vec<armadai_model::Diagnostic> = armadai_model::validate(&target.root)
+    let after = match validate(&target.root) {
+        Ok(ds) => ds,
+        Err(e) => {
+            target.undo()?;
+            return Err(e);
+        }
+    };
+    let introduced: Vec<armadai_model::Diagnostic> = after
         .into_iter()
         .filter(|d| !before.contains(&key(d)))
         .collect();

@@ -78,12 +78,26 @@ impl Serialize for PlainNumbers<'_> {
     }
 }
 
+/// A pack this project is built on (reference mode): its files come from the cache,
+/// the project's own files overlay them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PackRef {
+    pub name: String,
+    /// URL of the source (git repository or archive) holding the pack.
+    pub source: String,
+    /// `latest`, an exact version (`1.2.3`) or a semver range (`^1.3`, `~1.2`, `1`).
+    pub version: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub schema_version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pack: Option<PackRef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(description = "Default link targets: claude, codex, copilot, opencode")]
     pub targets: Vec<String>,
@@ -96,6 +110,30 @@ pub struct Manifest {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[schemars(with = "BTreeMap<String, serde_json::Value>")]
     pub native: Native,
+    #[serde(default, skip_serializing_if = "Ui::is_default")]
+    pub ui: Ui,
+}
+
+/// Opt-in interface keys: absent or `false`, `link` writes nothing for them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Ui {
+    /// Compile a Claude Code statusLine that shows the flow progress.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub status_line: bool,
+    /// Compile a Claude Code subagent status row that shows the step a subagent holds.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub subagent_status_line: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+impl Ui {
+    fn is_default(&self) -> bool {
+        *self == Ui::default()
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]

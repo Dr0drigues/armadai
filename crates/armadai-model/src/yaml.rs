@@ -57,7 +57,33 @@ pub fn from_str<T: DeserializeOwned>(s: &str) -> Result<T, Error> {
     o.with_snippet = false;
     o.reject_unsupported_tags = true;
     o.merge_keys = serde_saphyr::MergeKeyPolicy::AsOrdinary;
-    serde_saphyr::from_str_with_options(&keep_text(s), o).map_err(Error)
+    serde_saphyr::from_str_with_options(&keep_text(s, was_text), o).map_err(Error)
+}
+
+/// `from_str` into a JSON value for a `project.yaml`: outside `native`, a plain
+/// decimal-looking scalar (`1.10`) stays the text the typed loader reads, instead of the
+/// number `1.1`; under `native` a number stays a number.
+pub fn from_str_manifest(s: &str) -> Result<serde_json::Value, Error> {
+    let mut v: serde_json::Value = from_str(s)?;
+    let mut o = serde_saphyr::Options::default();
+    o.strict_booleans = true;
+    o.with_snippet = false;
+    o.reject_unsupported_tags = true;
+    o.merge_keys = serde_saphyr::MergeKeyPolicy::AsOrdinary;
+    let text: serde_json::Value =
+        serde_saphyr::from_str_with_options(&keep_text(s, |t| was_text(t) || is_float(t)), o)
+            .map_err(Error)?;
+    let native = v.get_mut("native").map(std::mem::take);
+    v = text;
+    if let (Some(n), Some(m)) = (native, v.as_object_mut()) {
+        m.insert("native".into(), n);
+    }
+    Ok(v)
+}
+
+/// A plain scalar written as a decimal or exponent number (an integer is not one).
+fn is_float(t: &str) -> bool {
+    t.bytes().any(|c| matches!(c, b'.' | b'e' | b'E')) && t.parse::<f64>().is_ok()
 }
 
 pub fn to_string<T: Serialize>(v: &T) -> Result<String, SerializeError> {
@@ -70,7 +96,7 @@ pub fn to_string<T: Serialize>(v: &T) -> Result<String, SerializeError> {
 /// `s` with every plain, untagged scalar that the previous reader kept as text
 /// single-quoted (`'` doubled), so saphyr reads it as text too. Quoting shifts the columns
 /// that follow on the same line by two, plus one per `'` in the scalar. Input that does not parse is returned as is: saphyr reports it.
-fn keep_text(s: &str) -> Cow<'_, str> {
+fn keep_text(s: &str, quote: impl Fn(&str) -> bool) -> Cow<'_, str> {
     let mut spans = Vec::new();
     for ev in Parser::new_from_str(s) {
         let Ok((ev, span)) = ev else {
@@ -83,7 +109,7 @@ fn keep_text(s: &str) -> Cow<'_, str> {
             continue;
         };
         // only a scalar whose span is exactly its text is rewritten
-        if s.get(a..b) == Some(&*text) && was_text(&text) {
+        if s.get(a..b) == Some(&*text) && quote(&text) {
             spans.push((a, b));
         }
     }

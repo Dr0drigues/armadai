@@ -15,6 +15,9 @@ with "legacy format, run `armadai migrate`" (see [Migrating](#migrating-a-legacy
   automations/<id>.yaml
   commands/<id>.md        # commands the user types (`/<id>`)
   native/<target>/<path>  # files copied as is by link
+  pack.lock               # with `pack:`: the pack version link uses (written by `armadai pack`)
+  vars.yaml               # values of the {{var.name}} variables (versioned)
+  vars.local.yaml         # the same, on this machine only (not versioned)
 ```
 
 Every file is strict YAML: an unknown key, a duplicate key or a value outside its domain is an
@@ -29,6 +32,10 @@ only identity of an agent, template, skill, flow, automation or command. The sup
 ```yaml
 schema_version: 1            # integer; the only accepted value is 1
 name: my-project             # optional, informative
+pack:                        # optional: build on a pack (see starter-packs.md)
+  name: demo                 # pack id
+  source: https://example.com/packs.git   # URL of the git repository or archive
+  version: ^1.3              # latest, an exact version, or a semver range
 targets: [claude, opencode]  # default link targets
 outputs: { claude: .claude } # optional: output directory per target
 coordinator: lead            # optional: agent id whose prompt becomes the root file
@@ -36,7 +43,32 @@ policy:                      # optional
   delegation: strict         # off (default) | strict
   free_agents: [explorer, Explore]    # reachable from anywhere: project agent ids, or agents the target provides (Claude Code's Explore)
 native: { claude: {} }       # optional, opaque
+ui:                          # optional, opt-in interface keys
+  status_line: true          # Claude Code only: a status bar with the flow progress (default false)
+  subagent_status_line: true # Claude Code only: a status row per subagent (default false)
 ```
+
+With `pack:`, the project is built on a pack by reference: its files are the pack's, plus yours at
+the same paths, and `project.yaml` is merged key by key. `.armadai/pack.lock` records the version
+`link` uses. `pack.source` and `pack.version` may not be empty (`pack-empty-source`,
+`pack-empty-version`). A source that carries a secret is written masked. The commands, the ranges
+and the merge rules are in [Starter packs](starter-packs.md#building-on-a-pack-by-reference).
+
+`{{var.name}}` in the body of an agent, template, command or `SKILL.md`, or in a text value under
+`native` of `project.yaml`, is replaced by `link` with the value of `name` (an id), read from
+`ARMADAI_VAR_<NAME>`, then `.armadai/vars.local.yaml`, then `.armadai/vars.yaml`: the first one
+that sets it wins. Each file is a flat map of `name: value`. A name no layer sets becomes an empty
+value and an `approximated` line `var <name>` in the report. The files of `.armadai/` are never
+rewritten. See [Starter packs](starter-packs.md#variables).
+
+`ui` holds opt-in interface keys: absent or `false`, `link` writes nothing for them. `ui.status_line`
+(a boolean; any other value, and any other key under `ui`, is `invalid-yaml`) asks `link --target claude`
+for a `statusLine` in `.claude/settings.json` that runs `armadai __claude-statusline`, which shows the
+progress of the flow in progress. It is Claude Code only. If `.claude/settings.json` already holds a
+`statusLine` that link does not own, link keeps yours and reports `not-compiled`; setting it also in
+`native.claude.statusLine` is an error. Once compiled, it replaces the status bar you had.
+`ui.subagent_status_line` is a boolean too (any other value is `invalid-yaml`): a status line per
+subagent showing the step it holds. It is Claude Code only.
 
 ## `agents/<id>.md`
 
@@ -282,7 +314,7 @@ armadai graph review --open                     # in your browser, on mermaid.li
 
 `graph` prints the drawing, and nothing else, on stdout; diagnostics and errors go to stderr.
 `--view` chooses what is drawn (`flows`, the default, or `team`); `--format` chooses how
-(`mermaid`, the default, `dot`, `json` or `ascii`). All four formats work in both views.
+(`mermaid`, the default, `dot`, `json`, `ascii` or `md`). All five formats work in both views.
 
 ### A flow
 
@@ -312,6 +344,7 @@ flowchart TD
   colour alone.
 - `done` links are plain arrows, other states are labelled, failure paths (`when: failed`,
   `on_failure`) are dotted in Mermaid and dashed in DOT.
+- `--format md` prints `## <flow id>` (`## team` for the team view), a blank line and a ```` ```mermaid ```` block (the same Mermaid as the default format) per drawing, for GitHub, GitLab or VS Code to render. `--open` takes Mermaid only.
 - Without a flow id, every flow is drawn, one diagram each, opened by a `%% flow: <id>` comment
   (`// flow: <id>` in DOT, `flow: <id>` in ASCII) and separated by a blank line: Mermaid and
   Graphviz read one diagram per document, so render them one at a time.
@@ -438,7 +471,7 @@ warning on stderr.
 | `ignored-file` | warning | A `.yml` file in `flows/` or `automations/` is not loaded | Rename it to `.yaml` |
 | `sequence-and-steps` | error | A flow has both `sequence` and `steps`/`links` | Keep one form |
 | `duplicate-step` | error | A `sequence` defines the same step id twice | Use `{ id: …, agent: … }` for the repeat |
-| `bad-id` | error | A file, folder or step id, a `vars` name or a slot name of an agent's `slots`, does not match `[a-z0-9][a-z0-9-]{0,63}` | Rename it in kebab-case |
+| `bad-id` | error | A file, folder or step id, a `vars` name, a slot name of an agent's `slots` or `pack.name`, does not match `[a-z0-9][a-z0-9-]{0,63}` | Rename it in kebab-case |
 | `unknown-target` | error | A target in `targets`, `outputs` or a `native` key is not supported | Use `claude`, `codex`, `copilot` or `opencode` |
 | `bad-output` | error | An `outputs` value is absolute, climbs with `..`, is the project root, or points into `.armadai/` or `.git/` | Use a folder inside the project such as `.claude` (`link --output` can point elsewhere for one run) |
 | `unknown-agent` | error | A step or `coordinator` names no agent of the project | Use an existing agent id (the hint suggests a close one) |
@@ -478,6 +511,8 @@ warning on stderr.
 | `command-target-variable` | error | The body holds a `${CLAUDE_…}` substitution, replaced by Claude Code only | Only `$ARGUMENTS` is portable: remove it, or put it in a native file |
 | `command-shadows-skill` | error | A command has the id of a skill | Rename one of them (Claude Code would run the skill and ignore the command) |
 | `command-shadows-builtin` | warning | A command has the name of a built-in command of Claude Code or OpenCode | Pick another name: one of them hides the other |
+| `pack-empty-source` | error | `pack.source` is empty | Give the URL of the pack's source, as in `registries.yaml` |
+| `pack-empty-version` | error | `pack.version` is empty | Write `latest`, a version such as `1.2.3`, or a range such as `^1.3` |
 
 ## Migrating a legacy project
 

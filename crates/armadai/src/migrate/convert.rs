@@ -88,11 +88,13 @@ pub fn convert(old: &OldProject) -> (Project, Vec<SkillCopy>, Report) {
     let mut manifest = Manifest {
         schema_version: armadai_model::SCHEMA_VERSION,
         name: None,
+        pack: None,
         targets: Vec::new(),
         outputs: BTreeMap::new(),
         coordinator: None,
         policy: Policy::default(),
         native: Default::default(),
+        ui: Default::default(),
     };
     convert_link(old, &resolve, &mut manifest, &mut r);
     let mut flows = BTreeMap::new();

@@ -477,15 +477,52 @@ fn collect_skills() -> Vec<Skill> {
     let mut skills = Vec::new();
 
     // Project skills: `.armadai/skills/` of the canonical project, else a local skills/
-    let local_dir = match std::env::current_dir()
+    // read through the effective view (a pack's skills too); the view owns its scratch
+    // copy, so it lives as long as the listing. Writes stay in `.armadai/skills/`.
+    let root = std::env::current_dir()
         .ok()
-        .and_then(|cwd| crate::compile::find_project(&cwd).ok())
-    {
-        Some(root) => root.join(".armadai/skills"),
-        None => std::path::PathBuf::from("skills"),
+        .and_then(|cwd| crate::compile::find_project(&cwd).ok());
+    let view = root.as_ref().and_then(|r| {
+        crate::pack::effective::open(r, crate::pack::effective::Vars::Literal)
+            .inspect_err(|e| {
+                let w = crate::cli::style::warn();
+                anstream::eprintln!("{w}warning: {e:#}{w:#}");
+            })
+            .ok()
+    });
+    let local_dir = match (&root, &view) {
+        (_, Some(v)) => v.sources.join(".armadai/skills"),
+        (Some(r), None) => r.join(".armadai/skills"),
+        (None, _) => std::path::PathBuf::from("skills"),
     };
     if local_dir.is_dir() {
-        skills.extend(load_all_skills(&local_dir));
+        for mut s in load_all_skills(&local_dir) {
+            // what `skills show` prints is never the view's scratch copy: the real file
+            // of its layer (the project's own, else the snapshot of the pack)
+            if let (Some(r), Some(v)) = (&root, &view)
+                && let Some(d) = s.source.file_name().map(|d| d.to_os_string())
+            {
+                let scratch = std::mem::take(&mut s.source);
+                let own = r.join(".armadai/skills").join(&d);
+                let (real, label) = match &v.pack {
+                    Some(p) if !own.is_dir() => (
+                        p.snapshot.join("skills").join(&d),
+                        // shortcut: the label rides in `source` (a path), only ever displayed
+                        Some(format!("pack {}, skills/{}", p.name, d.to_string_lossy())),
+                    ),
+                    _ => (own, None),
+                };
+                for list in [&mut s.scripts, &mut s.references, &mut s.assets] {
+                    for f in list.iter_mut() {
+                        if let Ok(rel) = f.strip_prefix(&scratch) {
+                            *f = real.join(rel);
+                        }
+                    }
+                }
+                s.source = label.map_or(real, Into::into);
+            }
+            skills.push(s);
+        }
     }
 
     // Always include user-global skills

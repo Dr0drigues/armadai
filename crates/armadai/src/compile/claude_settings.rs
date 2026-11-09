@@ -61,6 +61,11 @@ pub struct Owned {
     /// from manifests written before 1.0.0, hence the default.
     #[serde(default, skip_serializing_if = "OwnedJson::is_empty")]
     pub permissions: OwnedJson,
+    /// The nested keys of `ui.subagent_status_line` (`enabledPlugins.<id>`,
+    /// `extraKnownMarketplaces.<id>`), owned entry by entry. Absent from manifests
+    /// written before it existed, hence the default.
+    #[serde(default, skip_serializing_if = "OwnedJson::is_empty")]
+    pub plugin: OwnedJson,
 }
 
 /// What a merge did besides its text and what it owns: for the report.
@@ -176,12 +181,220 @@ pub fn gate_entry() -> HookEntry {
 }
 
 /// Top-level settings keys from the manifest's `native.claude` (`hooks` is generated).
-pub fn native_settings(project: &Project) -> anyhow::Result<BTreeMap<String, Value>> {
+pub fn native_keys(project: &Project) -> anyhow::Result<BTreeMap<String, Value>> {
     let m = native_map(project.manifest.native.get("claude"), "project.yaml")?;
     if m.contains_key("hooks") {
         bail!("project.yaml: native.claude key `hooks` collides with the generated hooks");
     }
     Ok(m.into_iter().collect())
+}
+
+/// What Claude Code runs for `ui.status_line`. Format read on
+/// code.claude.com/docs/en/statusline (2026-11-05): `type: command`, `command`, optional
+/// `padding` (not written) and `refreshInterval` in seconds, minimum 1.
+pub const STATUS_LINE_COMMAND: &str = "armadai __claude-statusline";
+
+/// `{"type":"command","command":STATUS_LINE_COMMAND,"refreshInterval":5}`
+pub fn status_line_value() -> Value {
+    serde_json::json!({"type": "command", "command": STATUS_LINE_COMMAND, "refreshInterval": 5})
+}
+
+/// The plugin link writes for `ui.subagent_status_line`: its name, which is also the
+/// name of its marketplace (`enabledPlugins` keys are `<plugin>@<marketplace>`).
+pub const PLUGIN_NAME: &str = "armadai-ui";
+
+/// The settings key (dotted path) holding the plugin in `enabledPlugins`.
+pub const PLUGIN_ENABLED_KEY: &str = "enabledPlugins.armadai-ui@armadai-ui";
+/// The settings key (dotted path) registering the plugin's marketplace.
+pub const PLUGIN_MARKETPLACE_KEY: &str = "extraKnownMarketplaces.armadai-ui";
+
+/// The files of the plugin, relative to the project root, with their content.
+///
+/// Formats read 2026-11-05 on code.claude.com/docs/en/plugins/manifest-reference
+/// (`plugin.json`: `name` is the only required key; `settings.json` at the plugin root:
+/// only `agent` and `subagentStatusLine` take effect), plugins/marketplace-reference
+/// (`marketplace.json`: `name`, `owner.name`, `plugins[]` with `name` and `source`; a
+/// relative `source` is a path from the marketplace root, `"."` being the root itself)
+/// and statusline (`subagentStatusLine`: `type: command`, `command`).
+pub fn plugin_files() -> Vec<(std::path::PathBuf, String)> {
+    let desc = "Flow progress from ArmadAI, in Claude Code";
+    let files = [
+        (
+            ".claude-plugin/marketplace.json",
+            serde_json::json!({
+                "name": PLUGIN_NAME,
+                "owner": {"name": "ArmadAI"},
+                "plugins": [{"name": PLUGIN_NAME, "source": ".", "description": desc}],
+            }),
+        ),
+        (
+            ".claude-plugin/plugin.json",
+            serde_json::json!({"name": PLUGIN_NAME, "description": desc}),
+        ),
+        (
+            "settings.json",
+            serde_json::json!({"subagentStatusLine": {
+                "type": "command",
+                "command": SUBAGENT_STATUS_LINE_COMMAND,
+            }}),
+        ),
+    ];
+    files
+        .into_iter()
+        .map(|(name, v)| {
+            let text = serde_json::to_string_pretty(&v).expect("JSON value serializes") + "\n";
+            (std::path::Path::new(super::PLUGIN_DIR).join(name), text)
+        })
+        .collect()
+}
+
+/// What Claude Code runs for the plugin's `subagentStatusLine`.
+pub const SUBAGENT_STATUS_LINE_COMMAND: &str = "armadai __claude-subagent-statusline";
+
+/// The nested keys the plugin needs in `.claude/settings.json`, by dotted path.
+/// UNVERIFIED: the docs only show absolute paths for a `directory` source (relative
+/// ones are not described); a path relative to the project is assumed.
+pub fn plugin_settings_keys() -> BTreeMap<String, Value> {
+    BTreeMap::from([
+        (PLUGIN_ENABLED_KEY.to_string(), Value::Bool(true)),
+        (
+            PLUGIN_MARKETPLACE_KEY.to_string(),
+            serde_json::json!({"source": {
+                "source": "directory",
+                "path": format!("./{}", super::PLUGIN_DIR),
+            }}),
+        ),
+    ])
+}
+
+/// The keys link wants: [`native_keys`] plus the `statusLine` of `ui.status_line` and
+/// the dotted plugin keys of `ui.subagent_status_line`; each together with the same
+/// key of `native.claude` is an error.
+pub fn native_settings(project: &Project) -> anyhow::Result<BTreeMap<String, Value>> {
+    let mut keys = native_keys(project)?;
+    if project.manifest.ui.subagent_status_line {
+        for k in ["enabledPlugins", "extraKnownMarketplaces"] {
+            if keys.contains_key(k) {
+                bail!(
+                    "project.yaml: native.claude key `{k}` collides with ui.subagent_status_line"
+                );
+            }
+        }
+        keys.extend(plugin_settings_keys());
+    }
+    if project.manifest.ui.status_line {
+        if keys.contains_key("statusLine") {
+            bail!("project.yaml: native.claude key `statusLine` collides with ui.status_line");
+        }
+        keys.insert("statusLine".into(), status_line_value());
+    }
+    Ok(keys)
+}
+
+/// The path of the first plugin key the user already set to another value (neither
+/// the wanted one nor the one `previous` wrote): then every plugin key leaves `keys`
+/// and the plugin is not written at all.
+pub fn keep_users_plugin(
+    existing: Option<&str>,
+    keys: &mut BTreeMap<String, Value>,
+    previous: &Owned,
+) -> anyhow::Result<Option<String>> {
+    let Some(text) = existing else {
+        return Ok(None);
+    };
+    let doc = Value::Object(parse(Some(text))?);
+    let clash = plugin_settings_keys()
+        .into_iter()
+        .find_map(|(path, wanted)| {
+            let cur = path.split('.').try_fold(&doc, |v, k| v.get(k))?;
+            (*cur != wanted && previous.plugin.values.get(&path) != Some(cur)).then_some(path)
+        });
+    if clash.is_some() {
+        keys.retain(|k, _| !is_plugin_key(k));
+    }
+    Ok(clash)
+}
+
+/// What of the plugin is already in the project when no earlier link recorded it.
+#[derive(Debug, PartialEq)]
+pub enum FoundPlugin {
+    /// None of its 3 files and 2 settings entries.
+    Absent,
+    /// All 5, byte for byte (files) and value for value (entries), as link writes them.
+    Identical,
+    /// Anything else: the first element, in a fixed order, present with other content,
+    /// else the first one missing (a file path relative to the root, or a dotted key).
+    Differs(String),
+}
+
+/// Files first ([`plugin_files`] order), then entries ([`plugin_settings_keys`] order).
+/// `settings` is the text of `.claude/settings.json`, when there is one; an invalid one
+/// is an error already raised by [`keep_users_plugin`].
+pub fn found_plugin(root: &std::path::Path, settings: Option<&str>) -> anyhow::Result<FoundPlugin> {
+    let doc = Value::Object(parse(settings)?);
+    // (element, found content equals what link writes: None when missing)
+    let mut seen: Vec<(String, Option<bool>)> = Vec::new();
+    for (rel, text) in plugin_files() {
+        let found = std::fs::read(root.join(&rel)).ok();
+        seen.push((
+            rel.display().to_string(),
+            found.map(|b| b == text.as_bytes()),
+        ));
+    }
+    for (path, wanted) in plugin_settings_keys() {
+        let cur = path.split('.').try_fold(&doc, |v, k| v.get(k));
+        seen.push((path, cur.map(|c| *c == wanted)));
+    }
+    if seen.iter().all(|(_, s)| s.is_none()) {
+        return Ok(FoundPlugin::Absent);
+    }
+    if seen.iter().all(|(_, s)| *s == Some(true)) {
+        return Ok(FoundPlugin::Identical);
+    }
+    let first = |f: fn(&Option<bool>) -> bool| seen.iter().find(|(_, s)| f(s));
+    let (element, _) = first(|s| *s == Some(false))
+        .or_else(|| first(Option::is_none))
+        .expect("a differing or a missing element exists here");
+    Ok(FoundPlugin::Differs(element.clone()))
+}
+
+/// A dotted key of `keys`: a nested plugin key, merged by [`merge_into`] instead of
+/// being a top-level key. shortcut: a top-level `native.claude` key containing `.`
+/// would be read the same way, no Claude Code setting has one.
+pub(crate) fn is_plugin_key(k: &str) -> bool {
+    k.contains('.')
+}
+
+/// The dotted keys of `keys`, taken out of it.
+fn plugin_keys(keys: &mut BTreeMap<String, Value>) -> JsonKeys {
+    let mut out = JsonKeys::default();
+    let dotted: Vec<String> = keys.keys().filter(|k| is_plugin_key(k)).cloned().collect();
+    for k in dotted {
+        if let Some(v) = keys.remove(&k) {
+            out.values.insert(k, v);
+        }
+    }
+    out
+}
+
+/// When `existing` already holds a `statusLine` that is neither the wanted one nor the
+/// one `previous` wrote: the key leaves `keys` (the user's bar stays) and this says so.
+pub fn keep_users_status_line(
+    existing: Option<&str>,
+    keys: &mut BTreeMap<String, Value>,
+    previous: &Owned,
+) -> anyhow::Result<bool> {
+    let (Some(wanted), Some(text)) = (keys.get("statusLine"), existing) else {
+        return Ok(false);
+    };
+    let doc = parse(Some(text))?;
+    let kept = doc
+        .get("statusLine")
+        .is_some_and(|cur| cur != wanted && previous.keys.get("statusLine") != Some(cur));
+    if kept {
+        keys.remove("statusLine");
+    }
+    Ok(kept)
 }
 
 fn parse(existing: Option<&str>) -> anyhow::Result<Map<String, Value>> {
@@ -351,6 +564,7 @@ pub fn merge_settings(
     let previous = &read_previous(previous);
     let mut keys = keys.clone();
     let perms = permission_keys(&mut keys);
+    let plugin = plugin_keys(&mut keys);
     let keys = &keys;
     let gone: Vec<&HookEntry> = (previous.entries.iter())
         .filter(|e| !entries.contains(e))
@@ -380,6 +594,7 @@ pub fn merge_settings(
         }
     }
     owned.permissions = on_value(&mut doc, |d| merge_into(d, &perms, &previous.permissions))?;
+    owned.plugin = on_value(&mut doc, |d| merge_into(d, &plugin, &previous.plugin))?;
     for e in entries {
         if present(&mut doc, e) {
             if previous.entries.contains(e) {
@@ -460,6 +675,7 @@ pub fn remove_entries(existing: &str, previous: &Owned) -> anyhow::Result<String
     let keys: Vec<(&String, &Value)> = previous.keys.iter().collect();
     unmerge(&mut doc, &entries, &keys);
     on_value(&mut doc, |d| remove_from(d, &previous.permissions));
+    on_value(&mut doc, |d| remove_from(d, &previous.plugin));
     prune(&mut doc, &previous.containers);
     Ok(render(doc))
 }
@@ -512,6 +728,39 @@ mod tests {
 
     fn none() -> BTreeMap<String, Value> {
         BTreeMap::new()
+    }
+
+    fn bar_keys() -> BTreeMap<String, Value> {
+        BTreeMap::from([("statusLine".to_string(), status_line_value())])
+    }
+
+    #[test]
+    fn a_status_line_is_kept_unless_it_is_ours_or_the_wanted_one() {
+        let theirs = r#"{"statusLine":{"type":"command","command":"mine"}}"#;
+        let old = json!({"type":"command","command":"armadai old"});
+        let owns_old = Owned {
+            keys: BTreeMap::from([("statusLine".to_string(), old.clone())]),
+            ..Owned::default()
+        };
+        let old_text = json!({ "statusLine": old }).to_string();
+        let wanted_text = json!({ "statusLine": status_line_value() }).to_string();
+        let cases: [(Option<&str>, &Owned, bool); 5] = [
+            (None, &Owned::default(), false),
+            (Some(r#"{"a":1}"#), &Owned::default(), false),
+            (Some(theirs), &Owned::default(), true),
+            // written by an earlier link: ours to update
+            (Some(&old_text), &owns_old, false),
+            (Some(&wanted_text), &Owned::default(), false),
+        ];
+        for (i, (existing, prev, want)) in cases.into_iter().enumerate() {
+            let mut keys = bar_keys();
+            assert_eq!(
+                keep_users_status_line(existing, &mut keys, prev).unwrap(),
+                want,
+                "case {i}"
+            );
+            assert_eq!(keys.contains_key("statusLine"), !want, "case {i}");
+        }
     }
 
     #[test]
@@ -1087,5 +1336,119 @@ mod tests {
         assert!(merge(Some("{ not json"), &wanted(), &none(), &Owned::default()).is_err());
         assert!(merge(Some("[1]"), &wanted(), &none(), &Owned::default()).is_err());
         assert!(remove_entries("{ not json", &Owned::default()).is_err());
+    }
+
+    #[test]
+    fn an_owned_record_of_an_earlier_version_has_no_plugin() {
+        let o: Owned = armadai_model::yaml::from_str("entries: []\n").unwrap();
+        assert!(o.plugin.is_empty());
+    }
+
+    #[test]
+    fn a_plugin_key_of_the_user_is_kept_unless_it_is_ours_or_the_wanted_one() {
+        let wanted = plugin_settings_keys();
+        let off = r#"{"enabledPlugins":{"armadai-ui@armadai-ui":false}}"#;
+        let other_market = r#"{"extraKnownMarketplaces":{"armadai-ui":{"source":{"source":"github","repo":"a/b"}}}}"#;
+        let same = json!({"enabledPlugins":{"armadai-ui@armadai-ui":true}}).to_string();
+        let mut old = Owned::default();
+        old.plugin
+            .values
+            .insert(PLUGIN_ENABLED_KEY.into(), json!(false));
+        let cases: [(Option<&str>, &Owned, Option<&str>); 6] = [
+            (None, &Owned::default(), None),
+            (Some(r#"{"a":1}"#), &Owned::default(), None),
+            (Some(off), &Owned::default(), Some(PLUGIN_ENABLED_KEY)),
+            (
+                Some(other_market),
+                &Owned::default(),
+                Some(PLUGIN_MARKETPLACE_KEY),
+            ),
+            // written by an earlier link: ours to update
+            (Some(off), &old, None),
+            (Some(&same), &Owned::default(), None),
+        ];
+        for (i, (existing, prev, want)) in cases.into_iter().enumerate() {
+            let mut keys = wanted.clone();
+            let got = keep_users_plugin(existing, &mut keys, prev).unwrap();
+            assert_eq!(got.as_deref(), want, "case {i}");
+            assert_eq!(keys.is_empty(), want.is_some(), "case {i}");
+        }
+    }
+
+    #[test]
+    fn found_plugin_tells_absent_identical_and_the_first_element_that_differs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let put = |rel: &std::path::Path, text: &str| {
+            std::fs::create_dir_all(root.join(rel).parent().unwrap()).unwrap();
+            std::fs::write(root.join(rel), text).unwrap();
+        };
+        let files = plugin_files();
+        let (m, p, s) = (&files[0], &files[1], &files[2]);
+        let entries = json!({
+            "enabledPlugins": {"armadai-ui@armadai-ui": true},
+            "extraKnownMarketplaces": {"armadai-ui": {"source": {
+                "source": "directory", "path": "./.armadai/plugins/armadai-ui"}}},
+        })
+        .to_string();
+        let name = |f: &(std::path::PathBuf, String)| f.0.display().to_string();
+        let found = |settings: Option<&str>| found_plugin(root, settings).unwrap();
+
+        assert_eq!(found(None), FoundPlugin::Absent, "absent");
+        assert_eq!(found(Some("{}")), FoundPlugin::Absent, "absent, empty file");
+        // the entries alone: the first file is the first missing element
+        assert_eq!(
+            found(Some(&entries)),
+            FoundPlugin::Differs(name(m)),
+            "entries only"
+        );
+        for f in &files {
+            put(&f.0, &f.1);
+        }
+        assert_eq!(found(Some(&entries)), FoundPlugin::Identical, "identical");
+        // a file present with other content, whichever it is
+        for f in [m, p, s] {
+            let mut other = f.1.clone();
+            other.push(' ');
+            put(&f.0, &other);
+            assert_eq!(
+                found(Some(&entries)),
+                FoundPlugin::Differs(name(f)),
+                "{}",
+                name(f)
+            );
+            put(&f.0, &f.1);
+        }
+        // the files without entries: the first entry is the first missing element
+        assert_eq!(
+            found(None),
+            FoundPlugin::Differs(PLUGIN_ENABLED_KEY.into()),
+            "no entries"
+        );
+        let only_market = json!({"extraKnownMarketplaces": serde_json::from_str::<Value>(&entries)
+            .unwrap()["extraKnownMarketplaces"]})
+        .to_string();
+        assert_eq!(
+            found(Some(&only_market)),
+            FoundPlugin::Differs(PLUGIN_ENABLED_KEY.into()),
+            "one entry missing"
+        );
+        // an entry with another value
+        let off = json!({"enabledPlugins": {"armadai-ui@armadai-ui": false}}).to_string();
+        assert_eq!(
+            found(Some(&off)),
+            FoundPlugin::Differs(PLUGIN_ENABLED_KEY.into()),
+            "entry differs"
+        );
+        // a differing element is named before a missing one
+        std::fs::remove_file(root.join(&m.0)).unwrap();
+        let mut other = p.1.clone();
+        other.push(' ');
+        put(&p.0, &other);
+        assert_eq!(
+            found(Some(&entries)),
+            FoundPlugin::Differs(name(p)),
+            "differs before missing"
+        );
     }
 }

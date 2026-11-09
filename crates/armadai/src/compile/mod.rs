@@ -29,7 +29,12 @@ pub enum ArtifactKind {
     Instructions,
     /// Copied from `.armadai/native/<target>/`; its path is relative to the project root.
     Native,
+    /// A file of the `armadai-ui` plugin; its path is relative to the project root.
+    Plugin,
 }
+
+/// Where link writes the `armadai-ui` plugin (`ui.subagent_status_line`).
+pub const PLUGIN_DIR: &str = ".armadai/plugins/armadai-ui";
 
 /// One whole file a target needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -257,6 +262,29 @@ pub fn check_destination(root: &Path, trust: &Path, rel: &Path) -> anyhow::Resul
     Ok(())
 }
 
+/// The destination of a file of the `armadai-ui` plugin: the one place under `.armadai/`
+/// link may write. `rel` must sit lexically under [`PLUGIN_DIR`] and no component on
+/// the way (`.armadai` included) may be a symbolic link, so the path resolves to itself.
+pub fn check_plugin_destination(root: &Path, rel: &Path) -> anyhow::Result<()> {
+    let plain = rel
+        .components()
+        .all(|c| matches!(c, std::path::Component::Normal(_)));
+    if !plain || !rel.starts_with(PLUGIN_DIR) {
+        bail!("{} is not inside {PLUGIN_DIR}", rel.display());
+    }
+    let mut at = PathBuf::new();
+    for c in rel.components() {
+        at.push(c);
+        if std::fs::symlink_metadata(root.join(&at)).is_ok_and(|m| m.file_type().is_symlink()) {
+            bail!(
+                "{} is a symbolic link; link does not write through it",
+                at.display()
+            );
+        }
+    }
+    Ok(())
+}
+
 /// An output directory link may write and unlink may clean: anywhere (a `--output`
 /// may leave the project for one run) except the project root itself, its sources
 /// (`.armadai/`) and `.git/`, lexically and through symbolic links.
@@ -334,6 +362,132 @@ pub fn find_project(cwd: &Path) -> anyhow::Result<PathBuf> {
 }
 
 pub trait Compiler {
-    /// `root` is the project root (the directory holding `.armadai/`).
-    fn compile(&self, project: &Project, root: &Path) -> anyhow::Result<Plan>;
+    /// `root`: the project root, where files are written and the user's files read
+    /// (the root `CLAUDE.md`; `opencode.json` is read by `patch.rs`, not here). `sources`: the directory holding the
+    /// `.armadai/` to compile — `root` itself, or the effective view of task 9.
+    fn compile(&self, project: &Project, root: &Path, sources: &Path) -> anyhow::Result<Plan>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write(dir: &Path, rel: &str, content: &str) {
+        let p = dir.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, content).unwrap();
+    }
+
+    /// A project with a coordinator and one skill `s` (with a script), in `dir`.
+    fn sources_with_skill(dir: &Path) -> Project {
+        write(
+            dir,
+            ".armadai/project.yaml",
+            "schema_version: 1\ncoordinator: lead\n",
+        );
+        write(
+            dir,
+            ".armadai/agents/lead.md",
+            "---\ndescription: L\n---\nB\n",
+        );
+        write(
+            dir,
+            ".armadai/skills/s/SKILL.md",
+            "---\nname: s\ndescription: S\n---\nB\n",
+        );
+        write(dir, ".armadai/skills/s/scripts/run.sh", "#!/bin/sh\n");
+        armadai_model::load_checked(dir).unwrap().0
+    }
+
+    #[test]
+    fn skills_are_read_from_sources() {
+        let sources = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let p = sources_with_skill(sources.path());
+        for t in ["claude", "opencode", "codex", "copilot"] {
+            let plan = compiler_for(t, Path::new(default_output(t)))
+                .unwrap()
+                .compile(&p, root.path(), sources.path())
+                .unwrap();
+            for want in ["skills/s/SKILL.md", "skills/s/scripts/run.sh"] {
+                assert!(
+                    plan.artifacts.iter().any(|a| a.path == Path::new(want)),
+                    "{t}: no {want}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_root_claude_md_is_read_under_root() {
+        let sources = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let p = sources_with_skill(sources.path());
+        let kept = |root: &Path| {
+            let plan = compiler_for("claude", Path::new(".claude"))
+                .unwrap()
+                .compile(&p, root, sources.path())
+                .unwrap();
+            plan.report
+                .lines
+                .iter()
+                .any(|l| l.element == "CLAUDE.md" && l.status == Status::Approximated)
+        };
+        assert!(!kept(root.path()));
+        write(root.path(), "CLAUDE.md", "mine\n");
+        write(sources.path(), "CLAUDE.md", "theirs\n");
+        assert!(kept(root.path()));
+        std::fs::remove_file(root.path().join("CLAUDE.md")).unwrap();
+        assert!(!kept(root.path()), "sources' CLAUDE.md must not count");
+    }
+
+    #[test]
+    fn the_plugin_guard_accepts_only_files_of_the_plugin_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let ok = |rel: &str| check_plugin_destination(root.path(), Path::new(rel));
+        for good in [
+            ".armadai/plugins/armadai-ui/settings.json",
+            ".armadai/plugins/armadai-ui/.claude-plugin/plugin.json",
+        ] {
+            assert!(ok(good).is_ok(), "{good}");
+        }
+        for bad in [
+            ".armadai/plugins/armadai-ui-x/a",
+            ".armadai/plugins/other/a",
+            ".armadai/project.yaml",
+            ".armadai/plugins/armadai-ui/../../project.yaml",
+            ".git/config",
+            "src/a",
+        ] {
+            assert!(ok(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_plugin_guard_refuses_a_link_on_the_way() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("p");
+        let rel = ".armadai/plugins/armadai-ui/settings.json";
+        // each link in turn: to a folder outside the project, to one inside it
+        for (at, to) in [
+            (".armadai/plugins", "outside"),
+            (".armadai/plugins", "p/src"),
+            (".armadai/plugins/armadai-ui", "outside"),
+            (".armadai/plugins/armadai-ui", "p/src"),
+        ] {
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(root.join(".armadai/plugins")).unwrap();
+            std::fs::create_dir_all(root.join("src")).unwrap();
+            std::fs::create_dir_all(dir.path().join("outside")).unwrap();
+            if at.ends_with("armadai-ui") {
+                // `plugins` stays a real folder: the link is the plugin folder itself
+            } else {
+                std::fs::remove_dir(root.join(at)).unwrap();
+            }
+            std::os::unix::fs::symlink(dir.path().join(to), root.join(at)).unwrap();
+            let e = check_plugin_destination(&root, Path::new(rel)).unwrap_err();
+            assert!(e.to_string().contains("symbolic link"), "{at} -> {to}: {e}");
+        }
+    }
 }

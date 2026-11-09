@@ -97,6 +97,35 @@ fn every_flow_is_one_block_each_in_flow_order() {
     assert_eq!(out, format!("{REVIEW}\n{SHIP}"));
 }
 
+fn md_block(id: &str, mermaid: &str) -> String {
+    format!("## {id}\n\n```mermaid\n{mermaid}```\n")
+}
+
+#[test]
+fn md_format_wraps_each_flow_in_a_heading_and_a_mermaid_block() {
+    let env = Env::new(PROJECT);
+    let (code, out, _) = env.run(&env.root(), &["graph", "--format", "md"]);
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        out,
+        format!("{}\n{}", md_block("review", REVIEW), md_block("ship", SHIP))
+    );
+    let (_, one, _) = env.run(&env.root(), &["graph", "review", "--format", "md"]);
+    assert_eq!(one, md_block("review", REVIEW));
+}
+
+#[test]
+fn md_format_of_an_unknown_flow_is_the_same_error() {
+    let env = Env::new(PROJECT);
+    let (code, out, err) = env.run(&env.root(), &["graph", "shipp", "--format", "md"]);
+    assert_eq!(code, Some(1));
+    assert!(out.is_empty(), "{out}");
+    assert!(
+        err.contains("unknown flow `shipp`") && err.contains("review, ship"),
+        "{err}"
+    );
+}
+
 #[test]
 fn an_unknown_flow_lists_the_flows() {
     let env = Env::new(PROJECT);
@@ -391,6 +420,8 @@ Output format (--format):
   dot      Graphviz: armadai graph <flow> --format dot | dot -Tsvg > flow.svg
   json     nodes and edges. With --view flows it is always {\"flows\": [...]}, even for one flow; with --view team it is the team object.
   ascii    boxes for the terminal, without colour. A link the drawing cannot show is listed under `links not drawn:`: a link back to an earlier step, a second link between the same two steps, a link to an unknown step, and in the team view a delegation to an agent already drawn.
+
+With --format md, each flow is printed as a `## <flow id>` heading followed by a ```mermaid block, ready for GitHub, GitLab or VS Code.
 
 Several flows are several drawings, each opened by a `%% flow: <id>` comment (`// flow: <id>` in DOT, `flow: <id>` in ASCII) and separated by a blank line: Mermaid and Graphviz render one drawing per document, so take them one at a time. Conditional links are labelled with their state; failure paths (`when: failed`, `on_failure`) are dotted in Mermaid and dashed in DOT.
 ";

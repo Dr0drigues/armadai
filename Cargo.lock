@@ -95,7 +95,7 @@ checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
 name = "armadai"
-version = "1.0.0-rc.8"
+version = "1.0.0-rc.10"
 dependencies = [
  "anstream",
  "anstyle",
@@ -112,6 +112,7 @@ dependencies = [
  "include_dir",
  "miniz_oxide",
  "pulldown-cmark",
+ "semver",
  "serde",
  "serde_json",
  "sha2",
@@ -122,7 +123,7 @@ dependencies = [
 
 [[package]]
 name = "armadai-core"
-version = "1.0.0-rc.8"
+version = "1.0.0-rc.10"
 dependencies = [
  "anyhow",
  "armadai-model",
@@ -863,6 +864,12 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
+name = "semver"
+version = "1.0.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 
 [[package]]
 name = "serde"

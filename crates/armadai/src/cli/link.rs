@@ -16,6 +16,7 @@ use crate::compile::json_keys::JsonKeys;
 use crate::compile::patch::{self, PatchKind, PatchedFile};
 use crate::compile::{self, Artifact, ArtifactKind, Report, Status};
 use crate::linker::manifest::{self, DigestCheck, FileOutcome, Lookup, Outcome, ProducedBy};
+use crate::pack::effective::{self, Effective, Vars};
 
 type Settings = (PathBuf, Vec<HookEntry>, BTreeMap<String, serde_json::Value>);
 
@@ -36,13 +37,15 @@ struct Prepared {
     report: Report,
     /// Agent id -> the template it is an instance of: a report line names the source.
     templates: std::collections::BTreeMap<String, String>,
+    /// The directory holding the `.armadai/` that was compiled (skills are read there).
+    sources: PathBuf,
 }
 
 impl Prepared {
     /// Where an artifact lands, relative to the project root.
     fn rel(&self, a: &Artifact) -> PathBuf {
         match a.kind {
-            ArtifactKind::Native => a.path.clone(),
+            ArtifactKind::Native | ArtifactKind::Plugin => a.path.clone(),
             _ => self.output_dir.join(&a.path),
         }
     }
@@ -54,11 +57,16 @@ impl Prepared {
     }
 }
 
-/// The project at or above the current directory, validated; diagnostics go to stderr.
-pub fn load_project() -> anyhow::Result<(PathBuf, Project)> {
+/// The project at or above the current directory, as its effective view (pack
+/// overlay, variables resolved from the environment and the vars files), validated;
+/// diagnostics go to stderr. The view owns the scratch copy: keep it until the writes
+/// are done.
+pub fn load_project() -> anyhow::Result<(PathBuf, Effective, Project)> {
     let root = compile::find_project(&std::env::current_dir()?)?;
-    match armadai_model::load_checked(&root) {
-        Ok((p, _)) => Ok((root, p)),
+    let env = |n: &str| std::env::var(n).ok();
+    let view = effective::open(&root, Vars::Resolve(&env))?;
+    match view.load_checked() {
+        Ok((p, _)) => Ok((root, view, p)),
         Err(ds) => {
             for d in &ds {
                 eprintln!("{}", d.render());
@@ -66,6 +74,43 @@ pub fn load_project() -> anyhow::Result<(PathBuf, Project)> {
             bail!("the project is invalid; nothing was written")
         }
     }
+}
+
+/// Every path a plain `link` may write, patch or remove, relative to the project root:
+/// what it compiles for each target, the files it patches, what the last link recorded, the
+/// link manifest and `.armadai/.gitignore`. Nothing is written.
+pub fn touched_paths() -> anyhow::Result<Vec<PathBuf>> {
+    let (root, view, project) = load_project()?;
+    let mut out: BTreeSet<PathBuf> = BTreeSet::new();
+    for t in targets_of(&[], &project) {
+        let p = prepare(&project, &root, &view.sources, &t, None, None)?;
+        out.extend(p.artifacts.iter().map(|a| p.rel(a)));
+        out.extend(p.all_produced.iter().cloned());
+        out.extend(p.blocks.iter().map(|(rel, _)| rel.clone()));
+        out.extend(p.settings.iter().map(|(rel, ..)| rel.clone()));
+        out.extend(p.json.iter().map(|(rel, _)| rel.clone()));
+        if let Some(m) = &p.previous {
+            out.extend(m.entries.iter().map(|e| e.path.clone()));
+            out.extend(m.patched.iter().map(|f| f.path.clone()));
+        }
+    }
+    out.insert(PathBuf::from(".armadai/link-manifest.yaml"));
+    out.insert(PathBuf::from(".armadai/.gitignore"));
+    // a path outside the project is none of ours to copy back
+    out.retain(|p| {
+        p.components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)))
+    });
+    Ok(out.into_iter().collect())
+}
+
+/// Take the whole plugin out of the plan: its artifacts, its paths in `all_produced`
+/// and its dotted keys.
+fn drop_plugin(p: &mut Prepared, keys: &mut BTreeMap<String, serde_json::Value>) {
+    p.artifacts.retain(|a| a.kind != ArtifactKind::Plugin);
+    p.all_produced
+        .retain(|r| !r.starts_with(compile::PLUGIN_DIR));
+    keys.retain(|k, _| !claude_settings::is_plugin_key(k));
 }
 
 /// `--target`, else `targets` of project.yaml, else claude.
@@ -95,13 +140,14 @@ fn folded(p: &Path) -> String {
 fn prepare(
     project: &Project,
     root: &Path,
+    sources: &Path,
     target: &str,
     output: Option<&Path>,
     agents: Option<&[String]>,
 ) -> anyhow::Result<Prepared> {
     compile::check_output(root, &output_of(target, output, project), output.is_some())?;
     let output_dir = output_of(target, output, project);
-    let plan = compile::compiler_for(target, &output_dir)?.compile(project, root)?;
+    let plan = compile::compiler_for(target, &output_dir)?.compile(project, root, sources)?;
     let mut p = Prepared {
         target: target.to_string(),
         output_dir,
@@ -115,6 +161,7 @@ fn prepare(
         },
         report: plan.report,
         all_produced: BTreeSet::new(),
+        sources: sources.to_path_buf(),
         templates: (project.agents.iter())
             .filter_map(|(id, a)| Some((id.clone(), a.instance.as_ref()?.from.clone())))
             .collect(),
@@ -172,7 +219,105 @@ fn prepare(
     if target == "claude" {
         let rel = p.output_dir.join("settings.json");
         let hooks = claude_settings::hook_entries(project)?;
-        let keys = claude_settings::native_settings(project)?;
+        let mut keys = claude_settings::native_settings(project)?;
+        if project.manifest.ui.subagent_status_line {
+            let existing = std::fs::read_to_string(root.join(&rel)).ok();
+            let previous = match p.previous_patch(&rel).map(|f| &f.kind) {
+                Some(PatchKind::SettingsHooks(o)) => o.clone(),
+                _ => Default::default(),
+            };
+            let clash =
+                claude_settings::keep_users_plugin(existing.as_deref(), &mut keys, &previous)
+                    .with_context(|| rel.display().to_string())?;
+            // the plugin is link's when an earlier link recorded it (a file entry, or a
+            // value of its settings entries); a plugin found without that record is not
+            let recorded = !previous.plugin.is_empty()
+                || (p.previous.iter().flat_map(|t| &t.entries)).any(|e| {
+                    e.produced_by.kind == manifest::ProducedByKind::Plugin
+                        && e.outcome == Outcome::Created
+                });
+            match clash {
+                Some(path) => {
+                    // a plugin the settings do not load would be a file nobody reads
+                    drop_plugin(&mut p, &mut keys);
+                    let why = format!(
+                        "key {path} of .claude/settings.json already has another value; \
+                         link leaves it"
+                    );
+                    p.report.push(
+                        target,
+                        "ui.subagent_status_line",
+                        Status::NotCompiled,
+                        Some(&why),
+                    );
+                }
+                None => {
+                    let found = if recorded {
+                        claude_settings::FoundPlugin::Absent
+                    } else {
+                        claude_settings::found_plugin(root, existing.as_deref())?
+                    };
+                    match found {
+                        claude_settings::FoundPlugin::Absent => p.report.push(
+                            target,
+                            "ui.subagent_status_line",
+                            Status::Compiled,
+                            Some(
+                                "plugin armadai-ui in .armadai/plugins/armadai-ui, enabled in \
+                                 .claude/settings.json; Claude Code loads it once you trust \
+                                 the folder",
+                            ),
+                        ),
+                        claude_settings::FoundPlugin::Identical => {
+                            drop_plugin(&mut p, &mut keys);
+                            p.report.push(
+                                target,
+                                "ui.subagent_status_line",
+                                Status::Approximated,
+                                Some("existing identical plugin kept, not owned: unlink leaves it"),
+                            );
+                        }
+                        claude_settings::FoundPlugin::Differs(element) => {
+                            drop_plugin(&mut p, &mut keys);
+                            let why = format!(
+                                "existing plugin differs from what link writes at {element}, \
+                                 not owned: link leaves it; remove it to let link write it"
+                            );
+                            p.report.push(
+                                target,
+                                "ui.subagent_status_line",
+                                Status::NotCompiled,
+                                Some(&why),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        if project.manifest.ui.status_line {
+            let existing = std::fs::read_to_string(root.join(&rel)).ok();
+            let previous = match p.previous_patch(&rel).map(|f| &f.kind) {
+                Some(PatchKind::SettingsHooks(o)) => o.clone(),
+                _ => Default::default(),
+            };
+            let kept =
+                claude_settings::keep_users_status_line(existing.as_deref(), &mut keys, &previous)
+                    .with_context(|| rel.display().to_string())?;
+            let (status, why) = if kept {
+                (
+                    Status::NotCompiled,
+                    ".claude/settings.json already has a statusLine; link leaves it \
+                     (add armadai flow status --line to your own bar instead)",
+                )
+            } else {
+                (
+                    Status::Compiled,
+                    "statusLine in .claude/settings.json, running armadai __claude-statusline; \
+                     it hides the statusLine of your user settings",
+                )
+            };
+            p.report.push(target, "ui.status_line", status, Some(why));
+        }
         patch::preflight_settings(
             root,
             &rel,
@@ -253,6 +398,10 @@ fn prepare(
         PathBuf::from(".")
     };
     for a in &p.artifacts {
+        if a.kind == ArtifactKind::Plugin {
+            compile::check_plugin_destination(root, &p.rel(a))?;
+            continue;
+        }
         let t = if a.kind == ArtifactKind::Native {
             Path::new(".")
         } else {
@@ -305,6 +454,9 @@ fn remove_stale(root: &Path, p: &mut Prepared, produced: &BTreeSet<PathBuf>, dry
         }
         let trust_root = match e.produced_by.kind {
             manifest::ProducedByKind::Native => Path::new("."),
+            manifest::ProducedByKind::Plugin if e.path.starts_with(compile::PLUGIN_DIR) => {
+                Path::new(".")
+            }
             _ => prev.root.as_path(),
         };
         let path = manifest::resolve_real(root, &e.path);
@@ -322,6 +474,14 @@ fn remove_stale(root: &Path, p: &mut Prepared, produced: &BTreeSet<PathBuf>, dry
                 "would be removed: no longer produced",
             ));
         } else if own && std::fs::remove_file(&path).is_ok() {
+            if e.produced_by.kind == manifest::ProducedByKind::Plugin
+                && let Some(parent) = path.parent()
+            {
+                super::unlink::remove_empty_ancestors(
+                    parent,
+                    &manifest::resolve_real(root, Path::new(".armadai")),
+                );
+            }
             lines.push((element, Status::Compiled, "removed: no longer produced"));
         } else {
             lines.push((
@@ -346,7 +506,7 @@ fn copy_executable_bits(root: &Path, p: &Prepared) {
                 .path
                 .strip_prefix("skills")
                 .ok()
-                .map(|rest| root.join(".armadai/skills").join(rest)),
+                .map(|rest| p.sources.join(".armadai/skills").join(rest)),
             ArtifactKind::Native => {
                 Some(root.join(".armadai/native").join(&p.target).join(&a.path))
             }
@@ -376,6 +536,7 @@ fn not_written(p: &mut Prepared, root: &Path, path: &Path) {
         manifest::ProducedByKind::Skill => format!("skill {}", a.produced_by.name),
         manifest::ProducedByKind::Command => format!("command {}", a.produced_by.name),
         manifest::ProducedByKind::Native => format!("native {}", a.produced_by.name),
+        manifest::ProducedByKind::Plugin => "ui.subagent_status_line".to_string(),
         _ => format!("agent {}", a.produced_by.name),
     };
     let rel = p.rel(a);
@@ -646,6 +807,45 @@ fn write(
     Ok(())
 }
 
+/// The report lines of the effective view: the locked pack, and each variable no layer sets.
+fn report_view(view: &Effective, p: &mut Prepared) {
+    if let Some(l) = &view.pack {
+        let r = &l.lock.resolved;
+        let id = r.id();
+        let id = id.strip_prefix("sha256-").unwrap_or(&id);
+        let reason = format!(
+            "{} ({}), from the cache",
+            r.version,
+            &id[..id.len().min(12)]
+        );
+        p.report.push(
+            &p.target,
+            format!("pack {}", l.name),
+            Status::Compiled,
+            Some(&reason),
+        );
+    }
+    for name in &view.missing_vars {
+        p.report.push(
+            &p.target,
+            format!("var {name}"),
+            Status::Approximated,
+            Some(&format!(
+                "set by none of {}, .armadai/vars.local.yaml, .armadai/vars.yaml: \
+                 replaced by an empty value",
+                armadai_model::pack_vars::env_name(name)
+            )),
+        );
+    }
+}
+
+/// The M4 note when the cache holds a newer version of the project's pack (no network);
+/// `link`, `list` and `inspect` write it on stderr.
+pub fn newer_pack_note(root: &std::path::Path) -> Option<String> {
+    let registry = armadai_core::config::registry_cache_dir();
+    crate::pack::status::newer(root, &registry).map(|n| crate::pack::status::note(&n))
+}
+
 pub fn execute(
     targets: Vec<crate::linker::LinkTarget>,
     dry_run: bool,
@@ -655,7 +855,7 @@ pub fn execute(
     json: bool,
     adopt_hooks: bool,
 ) -> anyhow::Result<()> {
-    let (root, project) = load_project()?;
+    let (root, view, project) = load_project()?;
     let targets = targets_of(&targets, &project);
     if output.is_some() && targets.len() > 1 {
         bail!("--output names one directory: link one target at a time with it");
@@ -663,8 +863,23 @@ pub fn execute(
 
     // every target is planned and checked before the first write
     let mut prepared = (targets.iter())
-        .map(|t| prepare(&project, &root, t, output.as_deref(), agents.as_deref()))
+        .map(|t| {
+            prepare(
+                &project,
+                &root,
+                &view.sources,
+                t,
+                output.as_deref(),
+                agents.as_deref(),
+            )
+        })
         .collect::<anyhow::Result<Vec<_>>>()?;
+    for p in &mut prepared {
+        report_view(&view, p);
+    }
+    if let Some(note) = newer_pack_note(&root) {
+        eprintln!("{note}");
+    }
 
     let mut lines = Vec::new();
     if dry_run {
@@ -776,4 +991,49 @@ pub fn execute(
         print!("{}", report.render_text());
     }
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn the_executable_bit_of_a_skill_is_read_under_sources() {
+        let root = tempfile::tempdir().unwrap();
+        let sources = tempfile::tempdir().unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o111;
+        let src = sources.path().join(".armadai/skills/s/run.sh");
+        std::fs::create_dir_all(src.parent().unwrap()).unwrap();
+        std::fs::write(&src, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let dest = root.path().join(".claude/skills/s/run.sh");
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        std::fs::write(&dest, "#!/bin/sh\n").unwrap();
+        // a decoy under root with the opposite bit must not decide
+        let decoy = root.path().join(".armadai/skills/s/run.sh");
+        std::fs::create_dir_all(decoy.parent().unwrap()).unwrap();
+        std::fs::write(&decoy, "x").unwrap();
+        let p = Prepared {
+            target: "claude".into(),
+            output_dir: PathBuf::from(".claude"),
+            artifacts: vec![Artifact {
+                path: PathBuf::from("skills/s/run.sh"),
+                content: Vec::new(),
+                kind: ArtifactKind::Skill,
+                produced_by: ProducedBy::skill("s"),
+            }],
+            blocks: Vec::new(),
+            settings: None,
+            json: None,
+            previous: None,
+            all_produced: BTreeSet::new(),
+            report: Report::default(),
+            templates: BTreeMap::new(),
+            sources: sources.path().to_path_buf(),
+        };
+        assert_eq!(mode(&dest), 0);
+        copy_executable_bits(root.path(), &p);
+        assert_ne!(mode(&dest), 0);
+    }
 }

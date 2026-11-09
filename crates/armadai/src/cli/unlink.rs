@@ -12,7 +12,15 @@ pub fn execute(
 ) -> anyhow::Result<()> {
     let root = compile::find_project(&std::env::current_dir()?)?;
     // targets and outputs only: a project that no longer validates can still be unlinked
-    let project = armadai_model::load_project(&root).project;
+    let project = match crate::pack::effective::open(&root, crate::pack::effective::Vars::Literal) {
+        Ok(view) => view.load_project().project,
+        Err(e) => {
+            // the pack cannot be read (snapshot missing...): unlink with what the project holds
+            let w = crate::cli::style::warn();
+            anstream::eprintln!("{w}warning: {e:#}{w:#}");
+            armadai_model::load_project(&root).project
+        }
+    };
     let targets: Vec<String> = match &project {
         Some(p) => crate::cli::link::targets_of(&targets, p),
         None if !targets.is_empty() => targets.iter().map(|t| t.to_string()).collect(),
@@ -251,6 +259,15 @@ fn unlink_from_manifest(
                         let m = crate::cli::style::muted();
                         anstream::println!("{m}  deleted {}{m:#}", path.display());
                         deleted += 1;
+                        // the plugin folders link created go with their last file
+                        if entry.produced_by.kind == linker::manifest::ProducedByKind::Plugin
+                            && let Some(parent) = path.parent()
+                        {
+                            remove_empty_ancestors(
+                                parent,
+                                &linker::manifest::resolve_real(root, Path::new(".armadai")),
+                            );
+                        }
                     }
                     Some(linker::manifest::DigestCheck::Differs) => {
                         let w = crate::cli::style::warn();
@@ -694,8 +711,10 @@ fn print_manifest_dry_run(
 /// Where a manifest entry must resolve: native files live anywhere in the project
 /// (outside `.armadai/`), everything else under the target's own root.
 fn trust_root<'a>(entry: &linker::manifest::ManifestEntry, target_root: &'a Path) -> &'a Path {
-    if entry.produced_by.kind == linker::manifest::ProducedByKind::Native
-        && !entry.path.starts_with(".armadai")
+    let kind = entry.produced_by.kind;
+    if (kind == linker::manifest::ProducedByKind::Native && !entry.path.starts_with(".armadai"))
+        || (kind == linker::manifest::ProducedByKind::Plugin
+            && entry.path.starts_with(compile::PLUGIN_DIR))
     {
         Path::new(".")
     } else {
@@ -724,15 +743,24 @@ fn unlink_via_fallback(
     dry_run: bool,
     agents_filter: Option<&[String]>,
 ) -> anyhow::Result<()> {
-    let (project, _) = armadai_model::load_checked(root).map_err(|ds| {
+    // the pack, when it can be read; else the project alone, as before packs (the
+    // warning about the unreadable pack was shown once already, by `execute`)
+    let view = crate::pack::effective::open(root, crate::pack::effective::Vars::Literal).ok();
+    let checked = match &view {
+        Some(v) => v.load_checked(),
+        None => armadai_model::load_checked(root),
+    };
+    let (project, _) = checked.map_err(|ds| {
         for d in &ds {
             eprintln!("{}", d.render());
         }
         anyhow::anyhow!("no link manifest and the project is invalid: nothing to compare against")
     })?;
-    let plan = compile::compiler_for(target_name, output_dir)?.compile(&project, root)?;
+    let sources = view.as_ref().map_or(root, |v| v.sources.as_path());
+    let plan = compile::compiler_for(target_name, output_dir)?.compile(&project, root, sources)?;
     let target_root = root.join(output_dir);
     let candidates: Vec<(PathBuf, Vec<u8>)> = (plan.artifacts.into_iter())
+        .filter(|a| a.kind != compile::ArtifactKind::Plugin)
         .filter(|a| match agents_filter {
             Some(f) => a.kind != compile::ArtifactKind::Agent || f.contains(&a.produced_by.name),
             None => true,
@@ -776,6 +804,12 @@ fn unlink_via_fallback(
         }
         deleted += 1;
     }
+    if target_name == "claude" && root.join(compile::PLUGIN_DIR).exists() {
+        anstream::eprintln!(
+            "{w}  {}/ not removed: no manifest records what link wrote there{w:#}",
+            compile::PLUGIN_DIR
+        );
+    }
     if !plan.blocks.is_empty() || target_name == "claude" {
         anstream::eprintln!(
             "{w}  hooks/CLAUDE.md block not removed: no manifest records what link added{w:#}"
@@ -810,7 +844,7 @@ fn content_matches(path: &Path, expected: &[u8]) -> bool {
 /// is). Callers pass the boundary that must survive — the target's root
 /// directory for linker-generated paths, the project root for the config
 /// file — so this function has no target-specific knowledge of its own.
-fn remove_empty_ancestors(path: &Path, stop_at: &Path) {
+pub(crate) fn remove_empty_ancestors(path: &Path, stop_at: &Path) {
     let mut current = path.to_path_buf();
     while current.starts_with(stop_at) && current != stop_at {
         if std::fs::read_dir(&current)

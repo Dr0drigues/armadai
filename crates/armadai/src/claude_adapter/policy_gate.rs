@@ -10,6 +10,11 @@
 //! absent project simply returns without output. A gate that refuses because it
 //! did not understand is a gate that gets uninstalled the same day.
 //!
+//! One exception, decided on purpose: a project that references a pack whose view
+//! does not open (lock missing or inconsistent, snapshot absent from the cache) gets
+//! a denial naming the error, because a gate that goes quiet after a successful
+//! `link` would let the delegation policy lapse unseen.
+//!
 //! Nothing may be written to stdout except the decision JSON (tracing and the
 //! invalid-project warning go to stderr).
 
@@ -138,18 +143,42 @@ pub fn decide(raw: &str) -> Option<String> {
         }
         return None;
     };
-    let project = match armadai_model::load_checked(&root) {
+    // the project as `link` compiled it: a pack reference reads its locked snapshot,
+    // variables stay as written. A view that does not open is refused below; a project
+    // that opens but does not load is "no opinion".
+    let invalid = |why: String| {
+        eprintln!(
+            "armadai policy gate: {} is invalid, the delegation gate is inactive{why}",
+            root.join(".armadai").display()
+        );
+    };
+    let view = match crate::pack::effective::open(&root, crate::pack::effective::Vars::Literal) {
+        Ok(v) => v,
+        // a pack the view cannot open must not silence the gate after a link that
+        // worked (cache removed, lock advanced by a `git pull`): refuse (Dimitri,
+        // 2026-11-03). An invalid project outside a pack never gets here: it opens in
+        // place and is judged by `load_checked` below.
+        Err(e) => {
+            eprintln!(
+                "armadai policy gate: {} could not be opened, delegation refused: {e}",
+                root.join(".armadai").display()
+            );
+            return Some(deny(format!(
+                "the project's pack cannot be read, so the delegation policy cannot be \
+                 checked: {e}"
+            )));
+        }
+    };
+    let project = match view.load_checked() {
         Ok((p, _)) => p,
         Err(ds) => {
             let first = ds
                 .iter()
                 .find(|d| d.severity == armadai_model::Severity::Error);
-            eprintln!(
-                "armadai policy gate: {} is invalid, the delegation gate is inactive{}",
-                root.join(".armadai").display(),
+            invalid(
                 first
                     .map(|d| format!(": {}", d.render()))
-                    .unwrap_or_default()
+                    .unwrap_or_default(),
             );
             return None;
         }
@@ -175,16 +204,18 @@ pub fn decide(raw: &str) -> Option<String> {
             allowed.into_iter().collect::<Vec<_>>().join(", ")
         )
     };
-    Some(
-        serde_json::json!({
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": reason,
-            }
-        })
-        .to_string(),
-    )
+    Some(deny(reason))
+}
+
+fn deny(reason: String) -> String {
+    serde_json::json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }
+    })
+    .to_string()
 }
 
 #[cfg(test)]

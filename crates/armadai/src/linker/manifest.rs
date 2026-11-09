@@ -77,6 +77,13 @@ impl ProducedBy {
         }
     }
 
+    pub fn plugin(path: impl Into<String>) -> Self {
+        Self {
+            kind: ProducedByKind::Plugin,
+            name: path.into(),
+        }
+    }
+
     pub fn native(path: impl Into<String>) -> Self {
         Self {
             kind: ProducedByKind::Native,
@@ -99,6 +106,10 @@ pub enum ProducedByKind {
     /// project root (not the target's root). An older binary reads a manifest
     /// holding this value as unusable (`Lookup::Fallback`).
     Native,
+    /// A file of the `armadai-ui` plugin (`ui.subagent_status_line`), relative to the
+    /// project root, under `compile::PLUGIN_DIR`. An older binary reads a manifest
+    /// holding this value as unusable (`Lookup::Fallback`).
+    Plugin,
 }
 
 /// `Created`: `link` wrote this path, **or** found it already present with
@@ -177,6 +188,25 @@ pub struct Manifest {
     pub version: u32,
     #[serde(default)]
     pub targets: BTreeMap<String, TargetManifest>,
+    /// Packs installed by copy (`init --pack`), for `pack update`. Absent from
+    /// manifests written before pack management, hence the default.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub packs: BTreeMap<String, InstalledPack>,
+}
+
+/// A pack installed by copy (`init --pack`), for `pack update`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstalledPack {
+    /// URL of its source, `embedded`, or the pack folder as given.
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// Commit or `sha256:` digest of the content installed, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Path relative to `.armadai/` -> digest of the bytes the install wrote there.
+    #[serde(default)]
+    pub files: BTreeMap<PathBuf, String>,
 }
 
 /// `sha256:<hex>` of `content`.
@@ -641,8 +671,8 @@ fn read(root: &Path) -> Option<Manifest> {
 
 /// Create `<root>/.armadai/.gitignore` when it is missing: `.armadai/` is versioned,
 /// but the link manifest, migration backups and flow records (`state/`) describe
-/// this machine only. An existing file without a `state/` line gets it appended,
-/// nothing else changed (projects created before the flow records existed).
+/// this machine only. An existing file missing the `state/` or `vars.local.yaml` line gets
+/// it appended, nothing else changed (older projects).
 /// Returns whether the file was created or changed.
 pub fn ensure_gitignore(root: &Path) -> std::io::Result<bool> {
     let path = root.join(".armadai/.gitignore");
@@ -657,7 +687,12 @@ pub fn ensure_gitignore(root: &Path) -> std::io::Result<bool> {
         Ok(m) if m.is_dir() => return Ok(false),
         Ok(_) => {
             let text = std::fs::read_to_string(&path)?;
-            if text.lines().any(|l| l.trim() == "state/") {
+            let missing: String = ["state/", "vars.local.yaml"]
+                .iter()
+                .filter(|want| !text.lines().any(|l| l.trim() == **want))
+                .map(|want| format!("{want}\n"))
+                .collect();
+            if missing.is_empty() {
                 return Ok(false);
             }
             let sep = if text.is_empty() || text.ends_with('\n') {
@@ -665,7 +700,7 @@ pub fn ensure_gitignore(root: &Path) -> std::io::Result<bool> {
             } else {
                 "\n"
             };
-            append(&path, &format!("{sep}state/\n"))?;
+            append(&path, &format!("{sep}{missing}"))?;
             return Ok(true);
         }
         Err(_) => {}
@@ -677,7 +712,7 @@ pub fn ensure_gitignore(root: &Path) -> std::io::Result<bool> {
         .write(true)
         .create_new(true)
         .open(&path)?
-        .write_all(b"link-manifest.yaml\n.migrated/\nstate/\n")?;
+        .write_all(b"link-manifest.yaml\n.migrated/\nstate/\nvars.local.yaml\n")?;
     Ok(true)
 }
 
@@ -723,6 +758,7 @@ pub fn write_target(
     let mut manifest = read(root).unwrap_or_else(|| Manifest {
         version: MANIFEST_VERSION,
         targets: BTreeMap::new(),
+        packs: BTreeMap::new(),
     });
     manifest.version = MANIFEST_VERSION;
     manifest.targets.insert(
@@ -745,13 +781,36 @@ pub fn write_target(
     std::fs::write(path, yaml)
 }
 
+/// The packs installed by copy, empty when there is no usable manifest.
+pub fn installed_packs(root: &Path) -> BTreeMap<String, InstalledPack> {
+    read(root).map(|m| m.packs).unwrap_or_default()
+}
+
+/// Record (replace) one installed pack; creates the manifest when absent.
+pub fn write_installed_pack(root: &Path, name: &str, pack: InstalledPack) -> std::io::Result<()> {
+    let mut manifest = read(root).unwrap_or_else(|| Manifest {
+        version: MANIFEST_VERSION,
+        targets: BTreeMap::new(),
+        packs: BTreeMap::new(),
+    });
+    manifest.packs.insert(name.to_string(), pack);
+    let path = manifest_path(root);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let yaml = armadai_model::yaml::to_string(&manifest)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    std::fs::write(path, yaml)
+}
+
 /// Forget `target` (after `unlink`); the manifest file goes once no target is left.
 pub fn remove_target(root: &Path, target: &str) -> std::io::Result<()> {
     let Some(mut manifest) = read(root) else {
         return Ok(());
     };
     manifest.targets.remove(target);
-    if manifest.targets.is_empty() {
+    // the `packs:` section is the only record of where a copied pack came from
+    if manifest.targets.is_empty() && manifest.packs.is_empty() {
         return std::fs::remove_file(manifest_path(root));
     }
     let yaml = armadai_model::yaml::to_string(&manifest)
@@ -1088,22 +1147,26 @@ mod tests {
         assert!(path.is_dir());
     }
 
-    /// An existing `.gitignore` without `state/` gets the line appended once,
-    /// nothing else changed; one that has it stays byte for byte.
+    /// An existing `.gitignore` gets each missing line (`state/`, `vars.local.yaml`)
+    /// appended once, in that order, nothing else changed; a complete one stays byte for byte.
     #[test]
-    fn ensure_gitignore_adds_the_state_line_to_an_existing_file_once() {
+    fn ensure_gitignore_adds_the_vars_local_line() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(".armadai/.gitignore");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         for (before, after) in [
             (
                 "link-manifest.yaml\n.migrated/\n",
-                "link-manifest.yaml\n.migrated/\nstate/\n",
+                "link-manifest.yaml\n.migrated/\nstate/\nvars.local.yaml\n",
             ),
-            ("mine", "mine\nstate/\n"),
-            ("", "state/\n"),
-            ("state/\nmine", "state/\nmine"),
-            ("a\n  state/  \nb\n", "a\n  state/  \nb\n"),
+            ("mine", "mine\nstate/\nvars.local.yaml\n"),
+            ("", "state/\nvars.local.yaml\n"),
+            ("state/\nmine", "state/\nmine\nvars.local.yaml\n"),
+            ("vars.local.yaml", "vars.local.yaml\nstate/\n"),
+            (
+                "a\n  state/  \n vars.local.yaml\nb\n",
+                "a\n  state/  \n vars.local.yaml\nb\n",
+            ),
         ] {
             std::fs::write(&path, before).unwrap();
             let first = super::ensure_gitignore(dir.path()).unwrap();
@@ -1111,6 +1174,82 @@ mod tests {
             assert_eq!(first, before != after, "{before:?}");
             assert_eq!(std::fs::read_to_string(&path).unwrap(), after, "{before:?}");
         }
+    }
+
+    /// What `link` on the previous version wrote: no `packs:` section.
+    const PREVIOUS_MANIFEST: &str = r#"version: 1
+targets:
+  claude:
+    linked_at: "2026-11-03T10:21:04Z"
+    root: .claude
+    created_dirs:
+    - .claude/agents
+    entries:
+    - path: .claude/agents/a.md
+      produced_by:
+        kind: agent
+        name: a
+      outcome: created
+      digest: sha256:4bd970e351823a69c2ce62074a825defecc96bd8ebc4b13d8646ef282ce72775
+"#;
+
+    #[test]
+    fn a_manifest_of_the_previous_version_still_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
+        std::fs::write(manifest_path(dir.path()), PREVIOUS_MANIFEST).unwrap();
+        assert!(matches!(
+            lookup_target(dir.path(), "claude"),
+            Lookup::Found(_)
+        ));
+        assert!(installed_packs(dir.path()).is_empty());
+    }
+
+    fn demo_pack() -> InstalledPack {
+        InstalledPack {
+            source: "https://example.com/packs.git".into(),
+            version: Some("1.2.0".into()),
+            id: Some("sha256:abc".into()),
+            files: BTreeMap::from([(PathBuf::from("agents/a.md"), "sha256:def".to_string())]),
+        }
+    }
+
+    #[test]
+    fn packs_survive_a_link_and_an_unlink() {
+        let dir = tempfile::tempdir().unwrap();
+        write_installed_pack(dir.path(), "demo", demo_pack()).unwrap();
+        write_target(
+            dir.path(),
+            "claude",
+            PathBuf::from(".claude"),
+            vec![],
+            vec![],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(installed_packs(dir.path()).get("demo"), Some(&demo_pack()));
+        remove_target(dir.path(), "claude").unwrap();
+        assert!(manifest_path(dir.path()).exists());
+        assert_eq!(
+            installed_packs(dir.path()),
+            BTreeMap::from([("demo".to_string(), demo_pack())])
+        );
+    }
+
+    #[test]
+    fn an_empty_packs_section_is_not_written() {
+        let dir = tempfile::tempdir().unwrap();
+        write_target(
+            dir.path(),
+            "claude",
+            PathBuf::from(".claude"),
+            vec![],
+            vec![],
+            &[],
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(manifest_path(dir.path())).unwrap();
+        assert!(!text.lines().any(|l| l.starts_with("packs:")), "{text}");
     }
 
     /// Published SHA-256 vectors (FIPS 180-4 / RFC 6234). They are properties

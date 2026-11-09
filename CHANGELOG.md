@@ -1,4 +1,19 @@
-## Unreleased
+## v1.0.0-rc.10 (2026-11-05)
+
+Tenth release candidate. The state of a flow is now readable by a machine (`flow status --json`) and by a status bar (`--line`), flows and sessions have Markdown views, and Claude Code gets an opt-in status bar and one status row per subagent. Moving from rc.9: after adding the `ui` keys to `project.yaml`, run `armadai link --target claude` again; without them `link` writes nothing new.
+
+### Added
+
+- `armadai graph --format md` prints each flow as a Markdown heading and a mermaid block, to render on GitHub, GitLab or in VS Code (#551).
+- `armadai flow status --json` prints a session as JSON (schema `armadai.flow-status/1`, which only grows) for other tools; see [Flow status](docs/wiki/flow-status.md) (#550).
+- `armadai flow status --line` prints one line for a status bar (`deliver ● guard 2/4 (loops 1)`) and never fails; `--color auto|always|never` sets the colour of the text outputs of `flow status` (`--json` is never coloured) (#550).
+- `ui.status_line: true` in `project.yaml` (opt-in, off by default): the key of the Claude Code status bar that `link` compiles into the Claude Code `statusLine` of `.claude/settings.json` (running `armadai __claude-statusline`; a `statusLine` you already have there is kept and reported `not-compiled`, and `native.claude.statusLine` together with the key is an error; other targets report `not-compiled`); a non-boolean value or an unknown key under `ui` is an `invalid-yaml` error. See [Project format](docs/wiki/project-format.md) (#552).
+- `ui.subagent_status_line: true` in `project.yaml` (opt-in, off by default, Claude Code only): `link` writes the plugin `armadai-ui` in `.armadai/plugins/armadai-ui/` (versioned with the project) and enables it in `.claude/settings.json` (`extraKnownMarketplaces.armadai-ui`, `enabledPlugins.armadai-ui@armadai-ui`); its `subagentStatusLine` runs the new hidden command `armadai __claude-subagent-statusline`, which gives each subagent that holds a step of a running flow a row with that step and the progress. An entry of yours with another value on those two keys stops the plugin (`not-compiled`, naming the key); `unlink` removes the plugin and only the entries `link` added. A plugin already in the project that no earlier `link` recorded (a clone: the manifest is not versioned) is never owned: `link` keeps it and reports it `approximated` when identical, `not-compiled` when partial or edited, and `unlink` leaves it whole. A real trial confirmed that the project-relative `directory` marketplace path is resolved and the plugin loads in place, without any install in the user's configuration, but only in the Claude Code session that follows the first `link`, once the folder is approved (#553).
+- `armadai flow status --format md` prints a session as a Markdown snapshot (headings and tables), for a pull request, an issue or VS Code; see [Flow status](docs/wiki/flow-status.md) (#551).
+
+## v1.0.0-rc.9 (2026-11-04)
+
+Ninth release candidate. Packs can now be managed, not only copied: a project references a pack of a registry (`pack:` in `project.yaml`, locked in `.armadai/pack.lock`) and the new `armadai pack add|sync|status|update|new` commands keep it up to date, with machine-local pack variables (`{{var.name}}`). Moving from rc.8: the `pack` commands are new, `link` adds `vars.local.yaml` to `.armadai/.gitignore`, and `link` itself still never touches the network.
 
 ### Added
 
@@ -6,6 +21,7 @@
 - New diagnostic: `ignored-pack-file` (warning), a file of a pack folder that `init --pack` does not install: counted by `validate`, present in `--json`, printed the same way by `init --pack` (#525).
 - New diagnostic: `skill-missing-path` (warning), a path under `scripts/` or `references/` that a `SKILL.md` names and its folder lacks (#524).
 - `armadai link --adopt-hooks` takes over the hooks of `.claude/settings.json` that are identical to the ones link adds (a clone or a worktree without `.armadai/link-manifest.yaml`), so `unlink` removes them; the report says so where it said `not owned` (#534).
+- Pack management (#539, #548). Two modes: copy (`armadai init --pack`, now recorded in a `packs:` section of the link manifest and updated by `pack update`) and reference (`pack: { name, source, version }` in `project.yaml`, with the lock `.armadai/pack.lock` that keeps the version, its tag and its commit). New commands `armadai pack add | sync | status | update | new` (`new`: guided, `--empty` or `--from-project`). A read-only snapshot of each version is cached once and shared by every project. A referencing project sees an effective view: a project file replaces the pack's file at the same path, and `project.yaml` is merged key by key. The projects that reference a pack are recorded in `~/.config/armadai/pack-referents.yaml`, so `pack update` lists the others without touching them. Pack variables `{{var.name}}` are read from `ARMADAI_VAR_<NAME>`, then `.armadai/vars.local.yaml` (ignored by git), then `.armadai/vars.yaml`, and rendered at `link`, in values and also in the keys of `native` and in the `vars:` of a template instance (#545, #546): two keys that render to the same text, a key whose variable is empty or set by no layer, and a `vars:` form that cannot be rewritten (a whole flow-style frontmatter) are errors and `link` writes nothing; the `.armadai/` source and diagnostic positions are unchanged. New diagnostics: `pack-empty-source`, `pack-empty-version` (`bad-id` now also covers `pack.name`). `link` still never touches the network (only `init --pack` on a local miss or an unknown version, `pack sync|add|update`, `skills sync|add` and `update` do). See [Starter packs](docs/wiki/starter-packs.md), [Project format](docs/wiki/project-format.md) and [Link](docs/wiki/link.md).
 
 ### Fixed
 
@@ -16,6 +32,10 @@
 - `validate` no longer reports as `unknown-free-agent` an agent that a declared target provides (Claude Code, OpenCode), and its hint lists them (#517).
 - `unlink` and a relink no longer reorder the keys of `.claude/settings.json`; numbers of hooks and keys recorded in the link manifest are plain YAML numbers (#505).
 - A mistake under `model_tiers` of `config.yaml` (an unknown tier such as `medium`) no longer breaks `config starters-dir` nor hides your `starters_dirs` from the pack search: it is a warning there, and an error naming the key only for `link --target opencode`, which uses it (#506).
+
+### Security
+
+- `pulldown-cmark` upgraded to 0.13.6 to resolve RUSTSEC-2026-0433, a quadratic parse of nested image wikilinks (#536).
 
 ## v1.0.0-rc.8 (2026-10-27)
 

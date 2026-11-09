@@ -41,6 +41,266 @@ A pack without `format` in its `pack.yaml` is the **legacy format** (an `agents:
 `prompts/`): it is still converted at install, like `armadai migrate`, whatever its origin, and
 `init` says "legacy pack converted". Another `format` value is refused.
 
+## Two modes: copy and reference
+
+| | Copy (`init --pack`) | Reference (`pack add`) |
+|---|---|---|
+| What the project holds | the pack's files, in `.armadai/` | only your own files, plus `pack:` in `project.yaml` and `.armadai/pack.lock` |
+| Who changes the pack's files | you (they are yours) | nobody here: the pack's version lives in the cache, read-only |
+| Updating | `armadai pack update` replaces what you did not edit | `armadai pack update` moves the lock |
+| Network | at install and at `pack update` | `pack sync`, `pack add`, `pack update` only |
+
+Nothing converts one mode into the other on its own. `pack add` in a project that already has
+files is allowed: they become the overlay on the pack.
+
+## Building on a pack by reference
+
+```bash
+armadai pack sync                      # refresh every source of registries.yaml (network)
+armadai pack add demo                  # the newest version, range ^<that version>
+armadai pack add demo@^1.3 --source https://example.com/packs.git
+armadai pack status                    # the pack, its lock, the cache (no network)
+armadai pack update                    # the best cached version of the range, then link
+armadai pack update 1.4.0              # an exact version inside the range
+```
+
+`pack add <name>[@<range>] [--source <url>]` builds the project on the pack: it writes the
+`pack:` key at the end of `.armadai/project.yaml` (your comments stay; a new file gets
+`schema_version: 1`), writes `.armadai/pack.lock`, records the project in the registry of
+referents, and runs `armadai link`. `--source` names the source when more than one of your
+`registries.yaml` holds the pack. If the project is already invalid, or the pack would make it
+invalid, nothing is changed. If the link fails, the lock, the key and the files link had written
+are put back.
+
+```
+Added pack demo 1.3.0 (0123456789ab): .armadai/project.yaml (version: ^1.3.0) and .armadai/pack.lock
+```
+
+**Ranges** (`pack.version`): `latest` (the newest version without a pre-release), an exact version
+(`1.2.3` means exactly that one, a pre-release only this way), or a semver range (`^1.3`, `~1.2`,
+`1`). Without `@`, `pack add` writes `^<resolved version>`, so `pack update` never jumps a major
+version. A range no cached version matches is an error that names the cached versions and says to
+run `armadai pack sync`, or to change `pack.version`.
+
+**The lock.** `.armadai/pack.lock` (versioned) records the version, its tag and its commit (an
+archive source: its digest). The commit is what counts: `link` reads the snapshot of that commit
+and nothing else, so a tag that moves changes nothing. Only `pack update` advances the lock;
+`pack update <version>` must stay inside the range. `pack sync` never writes it: it warns when
+the tag now points elsewhere (`  warn: tag demo-v1.3.0 of pack demo now points to <new12>, .armadai/pack.lock says <old12>: the lock is kept (link uses its commit)`) or no longer exists. When the cache holds a
+newer version than the lock, `pack sync`, `list`, `inspect` and `link` print
+
+```
+note: pack demo 1.4.0 is in the cache (locked: 1.3.0): run `armadai pack update`
+```
+
+A project that references a pack with no lock, or a lock for another pack or source, is refused
+by every command that reads the project (`link`, `list`, `inspect`, `graph`, `flow`, `validate`,
+`new`, `skills`, `unlink`), with a message that names the cure
+(`armadai pack update`).
+
+**The cache.** `pack sync` clones each git source (`--depth 1` first, then the whole history and
+every tag, so any version can be extracted) or downloads each archive, and writes
+`~/.config/armadai/registry/packs/<key>/versions.yaml`. Each version used is extracted once into
+`<key>/<pack>/<commit>/` and never rewritten; its files are read-only. `link` and the other
+commands read the cache without the network or `git`. A snapshot missing from the cache is
+``pack demo 1.3.0 (0123456789ab) is not in the local cache: run `armadai pack sync` ``.
+
+**The overlay.** The project the commands read is the pack's snapshot with your files laid over
+it: a file of yours replaces the pack's file **at the same path**, and your other files are added.
+`project.yaml` is merged key by key, recursively: a map is completed, a list gets the pack's items
+then yours that it lacks, any other value is yours. The `pack:` key of your file never reaches the
+merge. A pack whose own `project.yaml` has a `pack:` key is refused. The merge happens in a
+scratch copy: `.armadai/` is never rewritten, and a pack's list is never shortened by yours.
+`armadai models` sees only your overlay (it rewrites files and must never touch a snapshot).
+
+**Other projects on the same pack.** `~/.config/armadai/pack-referents.yaml` lists the projects
+that reference a pack (a `pack-referents.yaml.lock` file beside it serializes writers and stays).
+After a `pack update` that moved the lock, the command lists the others and changes none of them:
+
+```
+Other projects referencing pack demo (not changed; run `armadai pack update` in each):
+  /path/to/other-project
+```
+
+## Pack commands
+
+| Command | Does |
+|---|---|
+| `armadai pack sync [--source <url>]` | Refresh the sources now (network): the ones of `registries.yaml`, and the project's own, registered or not. Prints `Synced <url>: <n> pack(s), <v> version(s)` per source; a source that fails is a warning and a non-zero exit |
+| `armadai pack add <name>[@<range>] [--source <url>]` | Reference mode: see above |
+| `armadai pack status` | Locked and newest cached versions, and the projects referencing the pack (no network). In copy mode: the installed version and what is in the cache |
+| `armadai pack update [<version>]` | Reference: sync the source, move the lock to the best version of the range (or the one given), link. Copy: apply the new version of the pack to the files (below), link |
+| `armadai pack new <name> [--empty \| --from-project] [--description …] [--dir …]` | Create a native pack folder |
+
+`pack status` in reference mode:
+
+```
+Pack demo (reference)
+  source:    https://example.com/packs.git
+  range:     ^1.3.0
+  locked:    1.3.0 (tag demo-v1.3.0, 0123456789ab)
+  in cache:  1.3.0 matches the range (newest: 1.4.0)
+```
+
+**Updating a copy.** `init --pack` records in the link manifest, per file, the digest of what it
+wrote (the `packs:` section). `pack update` then replaces the files you did not edit
+(`  updated .armadai/<file>`), adds the pack's new ones (`  added`), removes the ones the pack
+dropped and you did not edit (`  removed .armadai/<file> (no longer in the pack)`), and keeps the
+rest with a warning each: edited since the install, removed by hand (not added back), not
+installed by the pack, dropped by the pack but edited. An edited `project.yaml` is merged: your
+keys stay, the pack's are added (`  merged .armadai/project.yaml (your keys kept, the pack's added)`);
+if your file's comments, key order or inline forms cannot survive the canonical form, the
+warning says it was rewritten. An embedded pack and a folder have no versions: the update
+compares their content. If the update would make the project invalid, or the link fails, the files
+and the record are put back.
+
+**Creating a pack.**
+
+```bash
+armadai pack new demo                       # guided: name, description (needs a terminal)
+armadai pack new demo --empty               # no questions
+armadai pack new demo --from-project        # this project's .armadai/, as a pack
+armadai pack new demo --dir ../packs        # in another parent folder
+```
+
+`--empty` writes `pack.yaml` (`format: 1`, the description, `A starter pack` by default), a minimal
+`project.yaml`, and `agents/`, `skills/`, `flows/`, `automations/` each holding a `.gitkeep` (the
+pack readers ignore it). `--from-project` copies the same white list as an install, and leaves out
+`link-manifest.yaml`, `state/`, `pack.lock` and the vars files; a project that references a pack is
+refused (its `.armadai/` is an overlay, not a pack). The pack is validated first: an invalid one
+writes nothing. An existing folder of that name is refused (`<dir> already exists: choose another
+name, or --dir`), and a failed write removes what the command created.
+
+## Variables
+
+A pack is written once and used by many projects, so what differs per project or per machine is a
+variable: `{{var.name}}` (or `{{ var.name }}`), `name` an id (`[a-z0-9][a-z0-9-]{0,63}`). `link`
+replaces it, in the files it compiles:
+
+- in the body (after the frontmatter) of agents, templates, commands and `SKILL.md`;
+- in the text values **and the keys** of the `native` block of `project.yaml`;
+- in the text values of `vars:` of an agent that is a template instance (`from:`): a value is
+  written back as a string, so it is never parsed again as YAML (`a: b # c` stays that text).
+
+Frontmatters (except `vars:` of an instance), `scripts/`, `references/` and `native/<target>/`
+files are never substituted.
+`\{{` is kept as it is, backslash included, and starts no variable; `{{name}}` without `var.`
+belongs to agent templates. A value is inserted as it is, never rendered again.
+
+Three layers give the value, the first that sets it wins:
+
+1. the environment variable `ARMADAI_VAR_<NAME>` (name in capitals, `-` written `_`:
+   `home-dir` is `ARMADAI_VAR_HOME_DIR`);
+2. `.armadai/vars.local.yaml`, on this machine only (`link` adds it to `.armadai/.gitignore`);
+3. `.armadai/vars.yaml`, versioned with the project.
+
+Both files are a flat map (`name: value`); a bad name or bad YAML is an error that names the file.
+
+```yaml
+# .armadai/vars.yaml
+home-dir: /srv/app
+```
+
+A name no layer sets becomes an empty value, and the report says so, as `approximated`:
+
+```
+var home-dir: approximated (set by none of ARMADAI_VAR_HOME_DIR, .armadai/vars.local.yaml, .armadai/vars.yaml: replaced by an empty value)
+```
+
+In a key of `native`, a variable is a rule selector: if no layer sets it, or a layer sets it to an
+empty value, `link` stops before writing anything (a key `"{{var.data-dir}}/**"` would otherwise
+become `"/**"`):
+
+```
+Error: project.yaml: under native, the key "{{var.data-dir}}/**" uses variable data-dir, which is empty or set by none of ARMADAI_VAR_DATA_DIR, .armadai/vars.local.yaml, .armadai/vars.yaml: a key never takes an empty value
+```
+
+Two keys of one object that render the same text stop it too:
+
+```
+Error: project.yaml: under native, the keys "{{var.a}}/**" and "/srv/data/**" both render as "/srv/data/**"
+```
+
+A value is more lenient: a variable that is empty or not set gives an empty value, and only a
+variable that no layer sets (not one set to an empty value) adds the `approximated` line. The same
+goes for a text value of `vars:` of an instance.
+
+In an instance, `link` rewrites the `vars:` entry of the frontmatter, written as a block or as an
+object on the same line (`vars: {dir: "{{var.d}}"}`). If the frontmatter has no such entry at the
+start of a line (for instance a whole frontmatter in flow style, `{from: t, vars: {...}}`), `link`
+stops with `agents/<id>.md: vars holds a pack variable but is not a "vars:" block at the start of a
+frontmatter line: write it that way`. A diagnostic about a key of `vars:` points at the `vars:`
+line, not at the entry.
+
+Not covered yet: a variable in the frontmatter outside `vars:`, in `scripts/`, in `references/` or
+in `native/<target>/` files stays as written, with no warning (tracked in
+[#547](https://github.com/Dr0drigues/armadai/issues/547)).
+
+The substitution happens at `link` only, on the effective view: the files of `.armadai/` and the
+snapshots keep `{{var.name}}`.
+
+## Sources, versions and secrets
+
+A source is a git repository or an archive (see [Remote starter registries](#remote-starter-registries)).
+It lists its packs in `armadai-packs.yaml` at its root:
+
+```yaml
+format: 1
+packs:
+  - name: demo
+    path: packs/demo          # the folder of the pack, with its pack.yaml
+    version: 1.3.0            # the version of its content at the current commit
+```
+
+For a git source, the history comes from the tags `<pack>-vX.Y.Z` (`demo-v1.3.0`); the version of
+the index at the current commit is offered too when no tag carries it. An archive has no tags: it
+needs the index to have versions at all, and keeps in the cache the versions of its earlier syncs
+(each identified by a digest). A source without an index lists its packs with no version, so a
+range cannot be used with it. A source is cloned with `git clone --depth 1`, then completed with
+`git fetch --unshallow --force --prune --prune-tags`: submodules are not initialized, so a pack
+cannot rely on one.
+
+`.armadai/project.yaml`, `.armadai/pack.lock` and `pack-referents.yaml` are versioned or shared:
+a source that carries a secret (`user:pass@`, a token in the userinfo of an `https` URL, a query)
+is written there masked (`https://***`), as in messages. `pack sync`, `pack add` and `pack update`
+find the real entry again in your `registries.yaml` (`the source <masked> matches none of your
+sources (registries.yaml): add it there, with its credentials` otherwise). An SSH URL
+(`git@host:org/repo.git`) carries no secret and is written as it is.
+
+## Limits of pack management
+
+- The link manifest keeps in clear a value resolved from a variable when it is written into a
+  managed array (accepted and documented, not masked).
+- A binary older than pack management that rewrites `.armadai/link-manifest.yaml` erases its
+  `packs:` section: a copied pack then answers `the origin of this project's pack is unknown
+  here` to `pack update`.
+- That message is also what a fresh clone gets (the manifest is not versioned), and so does a
+  project that never installed a pack but holds agents, skills or flows of its own: the command
+  cannot tell them apart, so it guesses nothing. Only a project with nothing but a `project.yaml`
+  gets "this project references no pack and records no installed pack: use `armadai pack add
+  <name>` or `armadai init --pack <name>`".
+- Two packs installed by copy in one project: `pack update` refuses and changes nothing.
+- `vars.yaml` and `vars.local.yaml` are read through a symbolic link. The effective view copies the
+  files it compiles and does not follow links. In a project with `pack:`, every command that
+  reads the project refuses a symbolic link among the listed files (agents, templates, commands,
+  skills, flows, automations): `<file> is a symbolic link, refused`, whether or not that file
+  holds a variable. Without `pack:`, only `link` refuses, and only once any file holds a
+  `{{var.…}}`.
+- The undo of a failed `link` after `pack add` or `pack update` does not cover the process being
+  interrupted (Ctrl-C) between the writes and the end of the link.
+- For the policy gate (see [Policy gate](policy-gate.md)), a view that does not open is refused:
+  missing cache, missing or foreign lock, a nested `pack:` in the pack, an unreadable pack
+  `project.yaml`. A view that opens but whose merged project has errors leaves it with no opinion.
+- Whole snapshot files lose their write bits, folders keep theirs: a file can be added to a
+  snapshot by hand, none edited.
+- A tag deleted in the source, followed by a `gc` of the local clone, can make a lock
+  irreparable: the commit is gone with the tag. Tracked in [#540](https://github.com/Dr0drigues/armadai/issues/540).
+- The `scripts/` and `references/` files of a skill, and the frontmatters (except `vars:` of an
+  instance), are not substituted.
+- A key at the top of `native.<target>` is checked once rendered: an error about it names the
+  rendered key (for OpenCode: ``native.opencode key `<key>` contains a `.`: armadai cannot own it
+  in opencode.json``).
+
 ## Available Packs
 
 The eight packs below ship embedded in the binary, all native.
@@ -207,7 +467,8 @@ above. The marker is never copied into a project.
 1. Build the team in a scratch project: `armadai init --project`, `armadai new agent ...`,
    `armadai new flow ...`, `armadai validate`, `armadai link`.
 2. Copy its `.armadai/` content (`project.yaml`, `agents/`, `templates/`, `skills/`,
-   `flows/`, `automations/`) into a pack folder and add `pack.yaml` with `format: 1`.
+   `flows/`, `automations/`) into a pack folder and add `pack.yaml` with `format: 1`: or let
+   `armadai pack new <name> --from-project` do it (see [Pack commands](#pack-commands)).
 3. Check it: `armadai validate <pack-dir>`, then `armadai init --pack <pack-dir>` in a scratch
    folder.
 4. Put it in one of the starter directories below, or share its folder.
@@ -280,8 +541,15 @@ When `armadai init --pack <name>` finds no local pack of that name, it syncs the
 registries once, then retries: the top-level `starters:` list of `~/.config/armadai/registries.yaml`
 (no `registries:` wrapper there), plus the `registries.starters` of a legacy project's config. A
 migrated project has none (see [Project format](project-format.md#migrating-a-legacy-project)). A
-pack found in your own folders or sources never triggers a sync; one found only in a project
-source does, so that one of your sources not synced yet still wins.
+pack found in your own folders or sources does not trigger a sync for lack of a pack; one found only
+in a project source does, so that one of your sources not synced yet still wins.
+
+A pack of a source that lists a version for it in `armadai-packs.yaml` is installed at the commit
+of that version's tag (`<pack>-vX.Y.Z`; an archive: its digest), not at the head of the clone, as
+`pack update` would do.
+If the cache does not know that version yet (`versions.yaml` lacks it, as before a first
+`pack sync`), `init --pack` syncs the source then, even though the pack was found locally. A failed
+sync is only a warning; the pack is then installed from the clone as it stands.
 
 ```yaml
 # ~/.config/armadai/registries.yaml

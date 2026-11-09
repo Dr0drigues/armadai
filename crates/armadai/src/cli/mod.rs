@@ -1,5 +1,5 @@
 mod config;
-mod flow;
+pub(crate) mod flow;
 mod graph;
 pub mod init;
 mod inspect;
@@ -7,10 +7,11 @@ mod link;
 mod list;
 mod migrate;
 mod models;
-mod native_pack;
+pub(crate) mod native_pack;
 pub(crate) mod new;
 mod new_target;
 mod new_wizard;
+mod pack;
 pub(crate) mod setup;
 mod skills;
 pub(crate) mod style;
@@ -102,6 +103,7 @@ pub enum Command {
             dot      Graphviz: armadai graph <flow> --format dot | dot -Tsvg > flow.svg\n  \
             json     nodes and edges. With --view flows it is always {\"flows\": [...]}, even for one flow; with --view team it is the team object.\n  \
             ascii    boxes for the terminal, without colour. A link the drawing cannot show is listed under `links not drawn:`: a link back to an earlier step, a second link between the same two steps, a link to an unknown step, and in the team view a delegation to an agent already drawn.\n\n\
+            With --format md, each flow is printed as a `## <flow id>` heading followed by a ```mermaid block, ready for GitHub, GitLab or VS Code.\n\n\
             Several flows are several drawings, each opened by a `%% flow: <id>` comment (`// flow: <id>` in DOT, `flow: <id>` in ASCII) and separated by a blank line: Mermaid and Graphviz render one drawing per document, so take them one at a time. Conditional links are labelled with their state; failure paths (`when: failed`, `on_failure`) are dotted in Mermaid and dashed in DOT.",
         after_help = "Examples:\n  \
             armadai graph review > review.mmd\n  \
@@ -326,6 +328,32 @@ pub enum Command {
             armadai skills info webapp-testing"
     )]
     Skills(skills::SkillsAction),
+    /// Install, refresh, update and create starter packs
+    #[command(
+        long_about = "Install, refresh, update and create starter packs.\n\n\
+            A pack can be copied into the project (armadai init --pack) or referenced: pack add \
+            writes a pack: key in .armadai/project.yaml and a lock in .armadai/pack.lock, and \
+            link compiles the locked version of the pack from the local cache with your own \
+            files laid over it. Only pack sync, pack add and pack update reach the network; \
+            link, list, inspect and pack status never do.\n\n\
+            Ranges: latest, an exact version (1.2.3), or a semver range (^1.3, ~1.2).\n\
+            Variables: {{var.name}} in the native block of project.yaml and in agent, template, \
+            command and skill bodies is set by ARMADAI_VAR_<NAME>, .armadai/vars.local.yaml, \
+            then .armadai/vars.yaml.",
+        after_help = "Examples:\n  \
+            armadai pack sync\n  \
+            armadai pack add demo\n  \
+            armadai pack add demo@^1.3 --source https://example.com/packs.git\n  \
+            armadai pack status\n  \
+            armadai pack update\n  \
+            armadai pack update 1.4.0\n  \
+            armadai pack new demo --empty\n  \
+            armadai pack new demo --from-project"
+    )]
+    Pack {
+        #[command(subcommand)]
+        what: pack::PackCommand,
+    },
     /// Self-update to the latest release
     #[command(long_about = "Self-update to the latest release.\n\n\
             Downloads the latest binary from GitHub Releases and replaces the current one.")]
@@ -350,6 +378,17 @@ pub enum Command {
     /// `.armadai/state/claude/`. Hidden from help.
     #[command(hide = true, name = "__record-flow-event")]
     RecordFlowEvent,
+    /// Internal: called by the Claude Code statusLine that link writes for
+    /// ui.status_line. Reads the status line JSON from stdin (session_id, cwd)
+    /// and prints the line of that session, or nothing. Hidden from help.
+    #[command(hide = true, name = "__claude-statusline")]
+    ClaudeStatusline,
+    /// Internal: called by the Claude Code subagentStatusLine of the armadai-ui
+    /// plugin. Reads the subagent status line JSON from stdin and prints one
+    /// JSON line per subagent row that holds a step of a run in progress, or
+    /// nothing. Hidden from help.
+    #[command(hide = true, name = "__claude-subagent-statusline")]
+    ClaudeSubagentStatusline,
 }
 
 /// Names of the subcommands marked `hide = true`, taken from clap itself
@@ -461,6 +500,7 @@ pub fn handle(cli: Cli) -> anyhow::Result<()> {
             link,
             no_link,
         } => init::execute(force, project, pack, link, no_link),
+        Command::Pack { what } => pack::execute(what),
         Command::Update => update::execute(),
         Command::Completion { shell } => {
             let mut buf = Vec::new();
@@ -474,6 +514,8 @@ pub fn handle(cli: Cli) -> anyhow::Result<()> {
         }
         Command::ClaudePolicyGate => crate::claude_adapter::policy_gate::gate_from_stdin(),
         Command::RecordFlowEvent => crate::flow_status::record::record_from_stdin(),
+        Command::ClaudeStatusline => flow::statusline_main(),
+        Command::ClaudeSubagentStatusline => flow::subagent_statusline_main(),
     }
 }
 
@@ -517,7 +559,12 @@ mod tests {
     fn there_are_hidden_subcommands_to_strip() {
         // If this ever empties, the filter below stops proving anything.
         let hidden = hidden_subcommand_names();
-        for name in ["__claude-policy-gate", "__record-flow-event"] {
+        for name in [
+            "__claude-policy-gate",
+            "__record-flow-event",
+            "__claude-statusline",
+            "__claude-subagent-statusline",
+        ] {
             assert!(
                 hidden.iter().any(|n| n == name),
                 "expected {name} among hidden subcommands: {hidden:?}"
@@ -597,6 +644,7 @@ mod tests {
             "link",
             "unlink",
             "init",
+            "pack",
             "update",
             "completion",
         ] {
@@ -611,6 +659,76 @@ mod tests {
                 "`{cmd}` has no short description (doc comment) in --help:\n{help}"
             );
         }
+        let pack = root.find_subcommand("pack").expect("pack");
+        for cmd in ["sync", "status", "add", "update", "new"] {
+            let sub = pack
+                .find_subcommand(cmd)
+                .unwrap_or_else(|| panic!("`pack {cmd}` missing from `pack --help`"));
+            let about = sub.get_about().map(|a| a.to_string()).unwrap_or_default();
+            assert!(
+                !about.trim().is_empty(),
+                "`pack {cmd}` has no short description (doc comment) in --help"
+            );
+        }
+    }
+
+    #[test]
+    fn pack_help_texts_are_pinned_line_for_line() {
+        use clap::CommandFactory;
+        let root = Cli::command();
+        let pack = root.find_subcommand("pack").expect("pack");
+        assert_eq!(
+            pack.get_about().map(|a| a.to_string()).as_deref(),
+            Some("Install, refresh, update and create starter packs")
+        );
+        let long = pack.get_long_about().expect("long_about").to_string();
+        let want = "Install, refresh, update and create starter packs.\n\n\
+A pack can be copied into the project (armadai init --pack) or referenced: pack add writes a pack: key in .armadai/project.yaml and a lock in .armadai/pack.lock, and link compiles the locked version of the pack from the local cache with your own files laid over it. Only pack sync, pack add and pack update reach the network; link, list, inspect and pack status never do.\n\n\
+Ranges: latest, an exact version (1.2.3), or a semver range (^1.3, ~1.2).\n\
+Variables: {{var.name}} in the native block of project.yaml and in agent, template, command and skill bodies is set by ARMADAI_VAR_<NAME>, .armadai/vars.local.yaml, then .armadai/vars.yaml.";
+        assert_eq!(
+            long.lines().collect::<Vec<_>>(),
+            want.lines().collect::<Vec<_>>()
+        );
+        let examples = pack.get_after_help().expect("after_help").to_string();
+        assert_eq!(
+            examples.lines().collect::<Vec<_>>(),
+            [
+                "Examples:",
+                "  armadai pack sync",
+                "  armadai pack add demo",
+                "  armadai pack add demo@^1.3 --source https://example.com/packs.git",
+                "  armadai pack status",
+                "  armadai pack update",
+                "  armadai pack update 1.4.0",
+                "  armadai pack new demo --empty",
+                "  armadai pack new demo --from-project",
+            ]
+        );
+        let about = |c: &str| {
+            let sub = pack.find_subcommand(c).expect(c);
+            sub.get_about().map(|a| a.to_string()).unwrap_or_default()
+        };
+        assert_eq!(
+            about("sync"),
+            "Refresh the pack sources now (network), and the snapshot the project locks"
+        );
+        assert_eq!(
+            about("status"),
+            "Show the project's pack, its locked and newest cached versions (no network)"
+        );
+        assert_eq!(
+            about("add"),
+            "Build the project on a pack of a source, by reference (cache and lock)"
+        );
+        assert_eq!(
+            about("update"),
+            "Move the pack to the best cached version of its range (or the one given), then link"
+        );
+        assert_eq!(
+            about("new"),
+            "Create a native pack: guided, minimal (--empty) or from this project (--from-project)"
+        );
     }
 
     #[test]

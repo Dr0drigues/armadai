@@ -32,7 +32,7 @@ const NO_PRELOAD: &str =
 pub struct ClaudeCompiler;
 
 impl Compiler for ClaudeCompiler {
-    fn compile(&self, project: &Project, root: &Path) -> anyhow::Result<Plan> {
+    fn compile(&self, project: &Project, root: &Path, sources: &Path) -> anyhow::Result<Plan> {
         let mut plan = Plan::default();
         let coordinator = project.manifest.coordinator.as_deref();
         let strict = project.manifest.policy.delegation == Delegation::Strict;
@@ -54,8 +54,8 @@ impl Compiler for ClaudeCompiler {
         }
 
         for id in project.skills.keys() {
-            let dir = root.join(".armadai/skills").join(id);
-            let (files, backups) = super::read_tree_skipping(&dir, &root.join(".armadai"))?;
+            let dir = sources.join(".armadai/skills").join(id);
+            let (files, backups) = super::read_tree_skipping(&dir, &sources.join(".armadai"))?;
             for rel in backups {
                 plan.report.push(
                     T,
@@ -94,6 +94,18 @@ impl Compiler for ClaudeCompiler {
                 .push(T, format!("command {id}"), Status::Compiled, None);
         }
         plan.artifacts.sort_by(|a, b| a.path.cmp(&b.path));
+        // the plugin sits under `.armadai/plugins/`, outside the output folder; whether
+        // it is written (the user may hold its keys) is decided by `link`
+        if project.manifest.ui.subagent_status_line {
+            for (path, text) in claude_settings::plugin_files() {
+                plan.artifacts.push(Artifact {
+                    produced_by: ProducedBy::plugin(path.display().to_string()),
+                    path,
+                    content: text.into_bytes(),
+                    kind: ArtifactKind::Plugin,
+                });
+            }
+        }
 
         // computed here so a native collision fails the compilation, before any write
         claude_settings::hook_entries(project)?;
@@ -128,7 +140,8 @@ impl Compiler for ClaudeCompiler {
                 ),
             );
         }
-        if !claude_settings::native_settings(project)?.is_empty() {
+        claude_settings::native_settings(project)?;
+        if !claude_settings::native_keys(project)?.is_empty() {
             plan.report.push(
                 T,
                 "project native",
@@ -510,7 +523,7 @@ mod tests {
 
     fn compile(files: &[(&str, &[u8])]) -> anyhow::Result<Plan> {
         let (dir, p) = project(files);
-        ClaudeCompiler.compile(&p, dir.path())
+        ClaudeCompiler.compile(&p, dir.path(), dir.path())
     }
 
     const M: (&str, &[u8]) = (".armadai/project.yaml", b"schema_version: 1\n");
@@ -873,7 +886,9 @@ mod tests {
             dir.path().join(".armadai/skills/lint/leak"),
         )
         .unwrap();
-        let err = ClaudeCompiler.compile(&p, dir.path()).unwrap_err();
+        let err = ClaudeCompiler
+            .compile(&p, dir.path(), dir.path())
+            .unwrap_err();
         assert!(err.to_string().contains("leak"), "{err}");
     }
 
@@ -1175,7 +1190,7 @@ mod tests {
                 assert!(status.success());
             }
             let err = ClaudeCompiler
-                .compile(&p, dir.path())
+                .compile(&p, dir.path(), dir.path())
                 .unwrap_err()
                 .to_string();
             assert!(

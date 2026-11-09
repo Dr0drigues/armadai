@@ -385,7 +385,10 @@ fn link_reports_the_gitignore_it_patched() {
     let (code, out, _) = env.run(&env.root(), &["link", "--target", "claude"]);
     assert_eq!(code, Some(0));
     assert_eq!(out.matches(&line).count(), 1, "{out}");
-    assert_eq!(std::fs::read_to_string(&ignore).unwrap(), "mine\nstate/\n");
+    assert_eq!(
+        std::fs::read_to_string(&ignore).unwrap(),
+        "mine\nstate/\nvars.local.yaml\n"
+    );
     let (_, out, _) = env.run(&env.root(), &["link", "--target", "claude"]);
     assert!(!out.contains(&line), "{out}");
 }
@@ -504,4 +507,690 @@ fn the_hook_command_decides_between_two_flows_the_events_fit() {
         out,
         "session s3 (UTC)\n\nbugfix  finished\n  ✓ analyse   done\n  ✓ test      done\n  ✓ fix-ui    done\n  ✓ review    done\n  ✓ validate  done\n  09:15:21  analyse → test  (done)\n  09:15:40  test → fix-ui  (done)\n  09:16:00  fix-ui → review  (done)\n  09:16:20  review → validate  (done)\n"
     );
+}
+
+#[test]
+fn json_prints_the_session_as_the_schema_says() {
+    let env = Env::new();
+    looping(&env, "s1", T0 + 100);
+    let (code, out, err) = env.run(&env.root(), &["flow", "status", "--json"]);
+    assert_eq!((code, err.as_str()), (Some(0), ""));
+    assert!(out.ends_with("}\n"), "one document and a newline: {out:?}");
+    let got: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let step = |s: &str, mark: &str, sign: &str, state: Option<&str>| serde_json::json!({"step": s, "mark": mark, "sign": sign, "state": state, "note": null});
+    let tr = |at: &str, from: &str, to: &str, state: &str| serde_json::json!({"at": at, "from": from, "to": to, "state": state});
+    assert_eq!(
+        got,
+        serde_json::json!({
+            "schema": "armadai.flow-status/1",
+            "session": {
+                "id": "s1",
+                "started_at": "2026-10-22T09:15:10Z",
+                "last_event_at": "2026-10-22T09:15:50Z"
+            },
+            "runs": [{
+                "flow": "deliver",
+                "status": "in-progress",
+                "steps": [
+                    step("design", "done", "✓", Some("done")),
+                    step("build", "done", "✓", Some("done")),
+                    step("guard", "running", "●", None),
+                    step("validate", "pending", "○", None),
+                ],
+                "loops": [{"from": "build", "to": "guard", "times": 2}],
+                "transitions": [
+                    tr("2026-10-22T09:15:20Z", "design", "build", "done"),
+                    tr("2026-10-22T09:15:30Z", "build", "guard", "done"),
+                    tr("2026-10-22T09:15:40Z", "guard", "build", "rejected"),
+                    tr("2026-10-22T09:15:50Z", "build", "guard", "done"),
+                ]
+            }]
+        })
+    );
+}
+
+#[test]
+fn json_without_any_log_or_with_an_unknown_session_still_succeeds() {
+    let env = Env::new();
+    let (code, out, err) = env.run(&env.root(), &["flow", "status", "--json"]);
+    let got: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(
+        (code, err.as_str(), got),
+        (
+            Some(0),
+            "",
+            serde_json::json!({"schema": "armadai.flow-status/1", "session": null, "runs": []})
+        )
+    );
+    let (code, out, err) = env.run(
+        &env.root(),
+        &["flow", "status", "--json", "--session", "inconnue"],
+    );
+    let got: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(
+        (code, err.as_str(), got),
+        (
+            Some(0),
+            "",
+            serde_json::json!({
+                "schema": "armadai.flow-status/1",
+                "session": {"id": "inconnue", "started_at": null, "last_event_at": null},
+                "runs": []
+            })
+        )
+    );
+}
+
+#[test]
+fn json_does_not_combine_with_watch_or_list() {
+    let env = Env::new();
+    for other in ["--watch", "--list"] {
+        let (code, out, err) = env.run(&env.root(), &["flow", "status", "--json", other]);
+        assert_eq!(
+            (code, out.as_str(), err.contains("cannot be used with")),
+            (Some(2), "", true),
+            "--json {other}: {err}"
+        );
+    }
+}
+
+impl Env {
+    /// `armadai flow status --line ...` with `stdin` piped: `(code, stdout, stderr)`.
+    fn line(&self, cwd: &Path, args: &[&str], stdin: &str) -> (Option<i32>, String, String) {
+        let mut a = vec!["flow", "status", "--line"];
+        a.extend_from_slice(args);
+        let out = Command::cargo_bin("armadai")
+            .unwrap()
+            .current_dir(cwd)
+            .env("ARMADAI_CONFIG_DIR", self.dir.path().join("config"))
+            .env("HOME", self.dir.path())
+            .env("NO_COLOR", "1")
+            .args(&a)
+            .write_stdin(stdin)
+            .timeout(std::time::Duration::from_secs(20))
+            .output()
+            .unwrap();
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+
+    /// Three sessions with distinct lines: `new` (newest), `mid`, `S` (oldest).
+    fn three_logs(&self) {
+        let events: Vec<Ev> = vec![
+            (T0 + 10, true, "a1", "architect", None),
+            (T0 + 11, false, "a1", "architect", None),
+        ];
+        looping(self, "new", T0 + 300);
+        self.log("mid", &events, T0 + 200);
+        self.log("S", &events[..1], T0 + 100);
+    }
+}
+
+const NEW_LINE: &str = "deliver ● guard 2/4 (loops 1)\n";
+const MID_LINE: &str = "deliver ○ build 1/4\n";
+const S_LINE: &str = "deliver ● design 0/4\n";
+
+#[test]
+fn line_prints_the_latest_log_without_a_session_id_and_the_one_asked_for_with_it() {
+    let env = Env::new();
+    env.three_logs();
+    let root = env.root();
+    let got = |stdin: &str| env.line(&root, &[], stdin);
+    assert_eq!(
+        got(r#"{"terminal_width":120}"#),
+        (Some(0), NEW_LINE.into(), String::new()),
+        "json without session_id"
+    );
+    assert_eq!(
+        got(""),
+        (Some(0), NEW_LINE.into(), String::new()),
+        "empty stdin"
+    );
+    assert_eq!(
+        got("not json"),
+        (Some(0), NEW_LINE.into(), String::new()),
+        "invalid json"
+    );
+    assert_eq!(
+        got(r#"{"session_id":"S"}"#),
+        (Some(0), S_LINE.into(), String::new()),
+        "session_id"
+    );
+    assert_eq!(
+        env.line(&root, &["--session", "mid"], r#"{"session_id":"S"}"#),
+        (Some(0), MID_LINE.into(), String::new()),
+        "--session wins"
+    );
+}
+
+#[test]
+fn line_takes_the_project_of_the_json_cwd() {
+    let env = Env::new();
+    env.three_logs();
+    let stdin = format!(r#"{{"cwd":"{}"}}"#, env.root().display());
+    let (code, out, err) = env.line(env.dir.path(), &[], &stdin);
+    assert_eq!((code, out.as_str(), err.as_str()), (Some(0), NEW_LINE, ""));
+}
+
+#[test]
+fn line_is_silent_and_succeeds_when_it_cannot_answer() {
+    let env = Env::new();
+    env.three_logs();
+    let root = env.root();
+    // an invalid project
+    let bad = env.dir.path().join("bad");
+    std::fs::create_dir_all(bad.join(".armadai")).unwrap();
+    std::fs::write(
+        bad.join(".armadai/project.yaml"),
+        "schema_version: 1\nnope: 1\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(bad.join(".git")).unwrap();
+    let cases = [
+        ("outside a project", env.line(env.dir.path(), &[], "")),
+        ("invalid project", env.line(&bad, &[], "")),
+        ("unknown flow", env.line(&root, &["nope"], "")),
+        ("unknown session", env.line(&root, &["--session", "zz"], "")),
+    ];
+    for (name, got) in cases {
+        assert_eq!(got, (Some(0), "\n".to_string(), String::new()), "{name}");
+    }
+}
+
+#[test]
+fn line_does_not_wait_for_a_stdin_that_stays_open() {
+    use std::process::Stdio;
+    let env = Env::new();
+    env.three_logs();
+    for pass in 0..5 {
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_armadai"))
+            .args(["flow", "status", "--line"])
+            .current_dir(env.root())
+            .env("ARMADAI_CONFIG_DIR", env.dir.path().join("config"))
+            .env("HOME", env.dir.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let _open = child.stdin.take(); // the handle stays open until the end of the pass
+        let start = std::time::Instant::now();
+        let done = loop {
+            if child.try_wait().unwrap().is_some() {
+                break true;
+            }
+            if start.elapsed() > std::time::Duration::from_secs(5) {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                break false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        assert!(
+            done,
+            "pass {pass}: --line was still waiting for stdin after 5 s"
+        );
+    }
+}
+
+impl Env {
+    /// `armadai __claude-statusline` with `stdin` piped, `NO_COLOR` set (it must colour anyway).
+    fn statusline(&self, cwd: &Path, stdin: &str) -> (Option<i32>, String, String) {
+        let out = Command::cargo_bin("armadai")
+            .unwrap()
+            .current_dir(cwd)
+            .env("ARMADAI_CONFIG_DIR", self.dir.path().join("config"))
+            .env("HOME", self.dir.path())
+            .env("NO_COLOR", "1")
+            .arg("__claude-statusline")
+            .write_stdin(stdin)
+            .timeout(std::time::Duration::from_secs(20))
+            .output()
+            .unwrap();
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+}
+
+#[test]
+fn statusline_prints_the_coloured_line_of_the_session_asked_for() {
+    let env = Env::new();
+    env.three_logs();
+    let root = env.root();
+    let stdin = format!(r#"{{"session_id":"S","cwd":"{}"}}"#, root.display());
+    let (code, out, err) = env.statusline(env.dir.path(), &stdin);
+    // the same pieces as `--line --color always` (the oldest session, not the latest)
+    let (_, want, _) = env.line(&root, &["--color", "always", "--session", "S"], "");
+    assert!(want.contains('\x1b'), "{want:?}");
+    assert_eq!(
+        (code, out.as_str(), err.as_str()),
+        (Some(0), want.as_str(), "")
+    );
+    assert_eq!(strip_sgr(&out), S_LINE);
+}
+
+#[test]
+fn statusline_prints_nothing_when_the_session_is_not_named_or_unknown() {
+    let env = Env::new();
+    env.three_logs();
+    let root = env.root();
+    let c = root.display();
+    let cases = [
+        ("no session_id", format!(r#"{{"cwd":"{c}"}}"#)),
+        (
+            "unknown session",
+            format!(r#"{{"session_id":"inconnue","cwd":"{c}"}}"#),
+        ),
+        (
+            "session leaving the directory",
+            format!(r#"{{"session_id":"../x","cwd":"{c}"}}"#),
+        ),
+        ("invalid json", "not json".to_string()),
+        ("empty stdin", String::new()),
+    ];
+    for (name, stdin) in cases {
+        let got = env.statusline(&root, &stdin);
+        assert_eq!(got, (Some(0), String::new(), String::new()), "{name}");
+    }
+}
+
+#[test]
+fn statusline_prints_nothing_for_a_log_without_a_run() {
+    let env = Env::new();
+    env.three_logs();
+    env.raw_log("empty", "", T0 + 400);
+    let root = env.root();
+    let got = env.statusline(&root, r#"{"session_id":"empty"}"#);
+    assert_eq!(got, (Some(0), String::new(), String::new()));
+}
+
+#[test]
+fn statusline_does_not_wait_for_a_stdin_that_stays_open() {
+    use std::process::Stdio;
+    let env = Env::new();
+    env.three_logs();
+    for pass in 0..5 {
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_armadai"))
+            .arg("__claude-statusline")
+            .current_dir(env.root())
+            .env("ARMADAI_CONFIG_DIR", env.dir.path().join("config"))
+            .env("HOME", env.dir.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let _open = child.stdin.take();
+        let start = std::time::Instant::now();
+        let done = loop {
+            if child.try_wait().unwrap().is_some() {
+                break true;
+            }
+            if start.elapsed() > std::time::Duration::from_secs(5) {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                break false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        assert!(
+            done,
+            "pass {pass}: __claude-statusline was still waiting for stdin after 5 s"
+        );
+    }
+}
+
+/// Remove the SGR escapes of `s`.
+fn strip_sgr(s: &str) -> String {
+    let mut out = String::new();
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            for c in chars.by_ref() {
+                if c == 'm' {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+#[test]
+fn color_always_paints_and_never_does_not_even_where_stdout_is_a_pipe() {
+    let env = Env::new();
+    env.three_logs();
+    let root = env.root();
+    let (_, always, _) = env.line(&root, &["--color", "always"], "");
+    assert!(always.contains('\x1b'), "always: {always:?}");
+    assert_eq!(strip_sgr(&always), NEW_LINE);
+    // `never` must beat a forced colour: CLICOLOR_FORCE makes `auto` paint on a pipe
+    let forced = |color: &str| {
+        let out = Command::cargo_bin("armadai")
+            .unwrap()
+            .current_dir(&root)
+            .env("ARMADAI_CONFIG_DIR", env.dir.path().join("config"))
+            .env("HOME", env.dir.path())
+            .env_remove("NO_COLOR")
+            .env("CLICOLOR_FORCE", "1")
+            .args(["flow", "status", "--line", "--color", color])
+            .write_stdin("")
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    assert!(forced("auto").contains('\x1b'), "auto with CLICOLOR_FORCE");
+    assert_eq!(forced("never"), NEW_LINE);
+    let (_, auto, _) = env.line(&root, &[], "");
+    assert_eq!(auto, NEW_LINE, "auto on a pipe with NO_COLOR");
+    // the table and the text of `flow status` follow --color too
+    let (_, text, _) = env.run(&root, &["flow", "status", "--color", "always"]);
+    assert!(
+        text.contains('\x1b'),
+        "flow status --color always: {text:?}"
+    );
+}
+
+#[test]
+fn a_reader_that_closes_early_is_not_a_panic() {
+    use std::process::Stdio;
+    let env = Env::new(); // no log: --list and --json both print without a session
+    for args in [&["--json"][..], &["--list"][..], &["--line"][..]] {
+        for pass in 0..3 {
+            let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_armadai"))
+                .args(["flow", "status"])
+                .args(args)
+                .current_dir(env.root())
+                .env("ARMADAI_CONFIG_DIR", env.dir.path().join("config"))
+                .env("HOME", env.dir.path())
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            drop(child.stdout.take()); // the reader is gone before the first write
+            let out = child.wait_with_output().unwrap();
+            assert_eq!(
+                (
+                    out.status.code(),
+                    String::from_utf8_lossy(&out.stderr).into_owned()
+                ),
+                (Some(0), String::new()),
+                "flow status {args:?}, pass {pass}"
+            );
+        }
+    }
+}
+
+/// Three runs: `ship` (finished), a `deliver` closed by a second `/deliver`
+/// (interrupted), and that second `deliver`, with a loop, still running.
+fn three_runs_log(env: &Env) {
+    let cmd = |ts: u64, name: &str| {
+        format!("{{\"ts\":{ts},\"event\":\"command\",\"command\":\"{name}\"}}\n")
+    };
+    let ev = |events: &[Ev]| event_lines(events);
+    let text = cmd(T0, "ship")
+        + &ev(&[
+            (T0 + 1, true, "c1", "rel", None),
+            (T0 + 2, false, "c1", "rel", None),
+        ])
+        + &cmd(T0 + 10, "deliver")
+        + &ev(&[
+            (T0 + 11, true, "a1", "architect", None),
+            (T0 + 12, false, "a1", "architect", None),
+        ])
+        + &cmd(T0 + 20, "deliver")
+        + &ev(&[
+            (T0 + 21, true, "b1", "architect", None),
+            (T0 + 22, false, "b1", "architect", None),
+            (T0 + 23, true, "b2", "dev", None),
+            (T0 + 24, false, "b2", "dev", None),
+            (T0 + 25, true, "b3", "qa", None),
+            (T0 + 26, false, "b3", "qa", Some("rejected")),
+            (T0 + 27, true, "b4", "dev", None),
+            (T0 + 28, false, "b4", "dev", None),
+            (T0 + 40, true, "b5", "qa", None),
+        ]);
+    env.raw_log("s1", &text, T0 + 100);
+}
+
+#[test]
+fn json_goes_through_the_same_runs_as_the_text() {
+    let env = Env::new();
+    three_runs_log(&env);
+    let (code, out, err) = env.run(&env.root(), &["flow", "status", "--json"]);
+    assert_eq!((code, err.as_str()), (Some(0), ""));
+    let got: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let runs = got["runs"].as_array().unwrap();
+    let summary: Vec<(&str, &str)> = runs
+        .iter()
+        .map(|r| (r["flow"].as_str().unwrap(), r["status"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            ("ship", "finished"),
+            ("deliver", "interrupted"),
+            ("deliver", "in-progress")
+        ],
+        "{out}"
+    );
+    assert_eq!(
+        runs[2]["loops"],
+        serde_json::json!([{"from": "build", "to": "guard", "times": 2}])
+    );
+    assert_eq!(runs[1]["loops"], serde_json::json!([]));
+    // the same runs, as the text shows them
+    let (_, text, _) = env.run(&env.root(), &["flow", "status"]);
+    let heads: Vec<&str> = text
+        .lines()
+        .filter(|l| {
+            l.ends_with("  in progress")
+                || l.ends_with("  finished")
+                || l.ends_with("  interrupted")
+        })
+        .collect();
+    assert_eq!(
+        heads,
+        [
+            "ship  finished",
+            "deliver  interrupted",
+            "deliver  in progress"
+        ]
+    );
+}
+
+/// What a status bar really runs: `--line` with stdout a pipe and no colour
+/// variable at all (the host's own are removed too).
+#[test]
+fn line_in_auto_prints_no_escape_on_a_pipe_without_any_colour_variable() {
+    let env = Env::new();
+    env.three_logs();
+    let out = Command::cargo_bin("armadai")
+        .unwrap()
+        .current_dir(env.root())
+        .env("ARMADAI_CONFIG_DIR", env.dir.path().join("config"))
+        .env("HOME", env.dir.path())
+        .env_remove("NO_COLOR")
+        .env_remove("CLICOLOR_FORCE")
+        .env_remove("CLICOLOR")
+        .args(["flow", "status", "--line"])
+        .write_stdin("")
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), NEW_LINE);
+}
+
+#[test]
+fn md_prints_the_snapshot_without_colour_even_when_forced() {
+    let env = Env::new();
+    looping(&env, "s1", T0 + 100);
+    let want = "# Flow status: session s1\n\nSnapshot at the last recorded event, 2026-10-22 09:15:50 UTC.\n\n## deliver: in progress\n\n| Step | Mark | Status |\n|---|---|---|\n| design | ✓ | done |\n| build | ✓ | done |\n| guard | ● | running |\n| validate | ○ | pending |\n\nLinks taken more than once: build → guard (2).\n\n| Time (UTC) | From | To | State |\n|---|---|---|---|\n| 2026-10-22 09:15:20 | design | build | done |\n| 09:15:30 | build | guard | done |\n| 09:15:40 | guard | build | rejected |\n| 09:15:50 | build | guard | done |\n";
+    for extra in [&["--color", "always"][..], &[][..]] {
+        let mut args = vec!["flow", "status", "--format", "md"];
+        args.extend_from_slice(extra);
+        let (code, out, err) = env.run(&env.root(), &args);
+        assert_eq!((code, err.as_str(), out.as_str()), (Some(0), "", want));
+    }
+}
+
+#[test]
+fn md_without_a_log_says_there_is_no_activity_and_text_is_unchanged() {
+    let env = Env::new();
+    let (code, out, _) = env.run(&env.root(), &["flow", "status", "--format", "md"]);
+    assert_eq!(
+        (code, out.as_str()),
+        (
+            Some(0),
+            "no flow activity recorded yet (link installs the hooks; start a flow in Claude Code)\n"
+        )
+    );
+    looping(&env, "s1", T0 + 100);
+    let (_, out, _) = env.run(&env.root(), &["flow", "status", "--format", "text"]);
+    assert_eq!(out, LOOPING);
+}
+
+#[test]
+fn md_does_not_combine_with_watch_list_json_or_line() {
+    let env = Env::new();
+    for other in ["--watch", "--list", "--json", "--line"] {
+        let (code, out, _) = env.run(&env.root(), &["flow", "status", "--format", "md", other]);
+        assert_eq!((code, out.as_str()), (Some(2), ""), "{other}");
+    }
+}
+
+impl Env {
+    /// `armadai __claude-subagent-statusline` with `stdin` piped, `NO_COLOR` set.
+    fn subagent_statusline(&self, cwd: &Path, stdin: &str) -> (Option<i32>, String, String) {
+        let out = Command::cargo_bin("armadai")
+            .unwrap()
+            .current_dir(cwd)
+            .env("ARMADAI_CONFIG_DIR", self.dir.path().join("config"))
+            .env("HOME", self.dir.path())
+            .env("NO_COLOR", "1")
+            .arg("__claude-subagent-statusline")
+            .write_stdin(stdin)
+            .timeout(std::time::Duration::from_secs(20))
+            .output()
+            .unwrap();
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+}
+
+#[test]
+fn subagent_statusline_prints_one_json_line_per_row_it_overrides() {
+    let env = Env::new();
+    env.three_logs();
+    let root = env.root();
+    let stdin = format!(
+        r#"{{"session_id":"S","cwd":"{}","columns":80,"tasks":[{{"id":"t1","agentType":"architect","status":"running","tokenCount":12}},{{"id":"t2","agentType":"Explore"}}]}}"#,
+        root.display()
+    );
+    let (code, out, err) = env.subagent_statusline(env.dir.path(), &stdin);
+    let (_, line, _) = env.line(&root, &["--color", "always", "--session", "S"], "");
+    assert_eq!((code, err.as_str()), (Some(0), ""));
+    let row: serde_json::Value = serde_json::from_str(out.trim_end_matches('\n')).unwrap();
+    assert_eq!(out.matches('\n').count(), 1, "{out:?}");
+    assert_eq!(
+        row,
+        serde_json::json!({"id": "t1", "content": line.trim_end_matches('\n')})
+    );
+    assert_eq!(
+        strip_sgr(row["content"].as_str().unwrap()),
+        "deliver ● design 0/4"
+    );
+}
+
+#[test]
+fn subagent_statusline_prints_nothing_on_bad_input() {
+    let env = Env::new();
+    env.three_logs();
+    let root = env.root();
+    let c = root.display();
+    let cases = [
+        ("empty stdin", String::new()),
+        (
+            "invalid json",
+            r#"{"session_id":"S","tasks":[{"id":"t1""#.to_string(),
+        ),
+        (
+            "tasks not an array",
+            format!(r#"{{"session_id":"S","cwd":"{c}","tasks":"x"}}"#),
+        ),
+        ("no tasks", format!(r#"{{"session_id":"S","cwd":"{c}"}}"#)),
+        (
+            "unknown session",
+            format!(
+                r#"{{"session_id":"nope","cwd":"{c}","tasks":[{{"id":"t1","agentType":"architect"}}]}}"#
+            ),
+        ),
+    ];
+    for (name, stdin) in cases {
+        let got = env.subagent_statusline(&root, &stdin);
+        assert_eq!(got, (Some(0), String::new(), String::new()), "{name}");
+    }
+}
+
+#[test]
+fn subagent_statusline_without_a_session_id_falls_back_to_the_latest_log() {
+    let env = Env::new();
+    env.three_logs();
+    let root = env.root();
+    let stdin = format!(
+        r#"{{"cwd":"{}","tasks":[{{"id":"t1","agentType":"qa"}}]}}"#,
+        root.display()
+    );
+    let (code, out, err) = env.subagent_statusline(env.dir.path(), &stdin);
+    assert_eq!((code, err.as_str()), (Some(0), ""));
+    let row: serde_json::Value = serde_json::from_str(out.trim_end_matches('\n')).unwrap();
+    assert_eq!(row["id"], "t1");
+    assert_eq!(
+        strip_sgr(row["content"].as_str().unwrap()),
+        NEW_LINE.trim_end_matches('\n')
+    );
+}
+
+#[test]
+fn subagent_statusline_does_not_wait_for_a_stdin_that_stays_open() {
+    use std::process::Stdio;
+    let env = Env::new();
+    env.three_logs();
+    for pass in 0..5 {
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_armadai"))
+            .arg("__claude-subagent-statusline")
+            .current_dir(env.root())
+            .env("ARMADAI_CONFIG_DIR", env.dir.path().join("config"))
+            .env("HOME", env.dir.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let _open = child.stdin.take();
+        let start = std::time::Instant::now();
+        let done = loop {
+            if child.try_wait().unwrap().is_some() {
+                break true;
+            }
+            if start.elapsed() > std::time::Duration::from_secs(5) {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                break false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        assert!(done, "pass {pass}: still waiting for stdin after 5 s");
+    }
 }
