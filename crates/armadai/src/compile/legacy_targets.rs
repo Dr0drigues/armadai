@@ -204,6 +204,14 @@ impl Compiler for LegacyCompiler {
                 Some(super::report::UI_CLAUDE_ONLY),
             );
         }
+        if project.manifest.ui.panel {
+            r.push(
+                t,
+                "ui.panel",
+                Status::NotCompiled,
+                Some(super::report::UI_CLAUDE_ONLY),
+            );
+        }
         for id in project.automations.keys() {
             r.push(
                 t,

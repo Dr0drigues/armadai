@@ -1,0 +1,311 @@
+=== CLAUDE.md ===
+<!-- armadai:begin -->
+LEAD_SYSTEM_MARKER — you coordinate the team.
+
+## Instructions
+
+LEAD_INSTRUCTIONS_MARKER — delegate, then synthesize.
+
+## Delegation
+
+Delegate with the Agent tool, naming the subagent by its id.
+
+### Agents
+
+- `dev`: Writes code: "small" functions
+
+### Flow `ship`
+
+Steps:
+
+- `build` (agent `dev`, states: blocked)
+- `plan` (agent `lead`)
+
+Transitions:
+
+- `plan` -> `build`
+- `build` -> `plan` when `blocked`
+<!-- armadai:end -->
+
+=== .claude/agents/dev.md ===
+---
+name: dev
+description: "Writes code: \"small\" functions"
+model: sonnet
+disallowedTools: WebFetch, WebSearch
+skills:
+- review
+---
+DEV_SYSTEM_MARKER — you write the code.
+
+### Style
+
+DEV_SUBSECTION_MARKER — small functions.
+
+## Verdict
+
+End your reply with exactly one line `STATE: <state>`, where <state> is one of: blocked.
+
+=== .claude/settings.json ===
+{
+  "enabledPlugins": {
+    "armadai-ui@armadai-ui": true
+  },
+  "extraKnownMarketplaces": {
+    "armadai-ui": {
+      "source": {
+        "source": "directory",
+        "path": "./.armadai/plugins/armadai-ui"
+      }
+    }
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cargo fmt"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __claude-policy-gate"
+          }
+        ]
+      },
+      {
+        "matcher": "SubagentHandback",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __record-flow-event",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __record-flow-event",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __record-flow-event",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "UserPromptExpansion": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __record-flow-event",
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}
+
+=== .claude/skills/review/SKILL.md ===
+---
+name: review
+description: Review checklist
+---
+REVIEW_MARKER
+
+=== .armadai/plugins/armadai-ui/.claude-plugin/marketplace.json ===
+{
+  "name": "armadai-ui",
+  "owner": {
+    "name": "ArmadAI"
+  },
+  "plugins": [
+    {
+      "name": "armadai-ui",
+      "source": ".",
+      "description": "Flow progress from ArmadAI, in Claude Code"
+    }
+  ]
+}
+
+=== .armadai/plugins/armadai-ui/.claude-plugin/plugin.json ===
+{
+  "name": "armadai-ui",
+  "description": "Flow progress from ArmadAI, in Claude Code"
+}
+
+=== .armadai/plugins/armadai-ui/hooks/hooks.json ===
+{
+  "modules": [
+    "./register.js"
+  ]
+}
+
+=== .armadai/plugins/armadai-ui/hooks/register.js ===
+// The ArmadAI panel mod, written as is by `armadai link` for `ui.panel: true`.
+// Do not edit it: change project.yaml and run `armadai link` again.
+// It runs `armadai flow status --json` every 2 seconds and lists the Markdown files
+// of the folders in panel.json (`ui.documents`) changed since the session began.
+const PANE = 'armadai-flows'
+const SCHEMA = 'armadai.flow-status/1'
+const EVERY_MS = 2000
+const MAX_DOCUMENTS = 20
+const MAX_DEPTH = 4
+
+// What the pane draws: set by `refresh`, read by `ui.render`.
+let view = { message: 'Reading the flows...', runs: [], documents: [] }
+
+// The .md files under `dir` (relative to the project) with their mtime.
+async function walk($, dir, depth) {
+  let entries = []
+  try {
+    entries = await $.fs.list(dir)
+  } catch {
+    return [] // a folder that does not exist (yet) lists nothing
+  }
+  const found = []
+  for (const entry of entries) {
+    const path = dir + '/' + entry.name
+    if (entry.kind === 'file' && entry.name.endsWith('.md')) {
+      found.push({ path, mtimeMs: entry.mtimeMs })
+    } else if (entry.kind === 'dir' && depth < MAX_DEPTH) {
+      found.push(...(await walk($, path, depth + 1)))
+    }
+  }
+  return found
+}
+
+async function documents($) {
+  let folders = ['docs']
+  try {
+    const panel = JSON.parse(await $.fs.read($.plugin.root + '/panel.json'))
+    if (Array.isArray(panel.documents)) folders = panel.documents
+  } catch {
+    // no panel.json: the default folder
+  }
+  const since = (await $.session.usage()).startedAt
+  const all = []
+  for (const folder of folders) all.push(...(await walk($, folder, 0)))
+  return all
+    .filter(doc => doc.mtimeMs >= since)
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)
+    .slice(0, MAX_DOCUMENTS)
+    .map(doc => doc.path)
+}
+
+async function status($) {
+  const { stdout } = await $.process.run(['armadai', 'flow', 'status', '--json'])
+  const json = JSON.parse(stdout)
+  if (json.schema !== SCHEMA) {
+    return {
+      message:
+        'armadai flow status --json gave schema ' +
+        json.schema +
+        '; this panel reads ' +
+        SCHEMA +
+        '. Run armadai link again.',
+      runs: [],
+    }
+  }
+  return { message: null, runs: json.runs }
+}
+
+async function refresh($) {
+  let next
+  try {
+    next = await status($)
+  } catch (error) {
+    next = { message: 'armadai flow status --json failed: ' + error.message, runs: [] }
+  }
+  try {
+    next.documents = await documents($)
+  } catch {
+    next.documents = []
+  }
+  view = next
+  $.ui.invalidate('ui.render')
+}
+
+export function register(on) {
+  on('session.start', async ($, e, next) => {
+    await $.command.register({
+      name: 'armadai-panel',
+      description: 'Open the ArmadAI panel: flows and recent documents',
+    })
+    void $.ui.open({ id: PANE, title: 'ArmadAI' })
+    void refresh($)
+    $.clock.every(EVERY_MS, () => refresh($))
+    return next(e)
+  })
+
+  on('command.run', { command: 'armadai-panel' }, async $ => {
+    await $.ui.open({ id: PANE, title: 'ArmadAI' })
+    return { text: 'ArmadAI panel opened.' }
+  })
+
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    const { Box, Text } = $.ui.resolve(e)
+    const rows = []
+    if (view.message) rows.push(h(Text, { color: 'red' }, view.message))
+    for (const run of view.runs) {
+      rows.push(h(Text, { bold: true }, run.flow + ' (' + run.status + ')'))
+      for (const step of run.steps) {
+        rows.push(h(Text, null, step.sign + ' ' + step.step + (step.state ? ' (' + step.state + ')' : '')))
+      }
+    }
+    if (!view.message && view.runs.length === 0) {
+      rows.push(h(Text, { dimColor: true }, 'No run of a declared flow in this session yet.'))
+    }
+    rows.push(h(Text, { bold: true }, 'Documents'))
+    if (view.documents.length === 0) rows.push(h(Text, { dimColor: true }, 'None changed in this session.'))
+    for (const path of view.documents) rows.push(h(Text, null, path))
+    return h(Box, { flexDirection: 'column' }, ...rows)
+  })
+}
+
+=== .armadai/plugins/armadai-ui/panel.json ===
+{
+  "documents": [
+    "docs",
+    "notes/specs"
+  ]
+}
+
+=== report ===
+claude: agent dev: compiled
+claude: agent dev capability shell=ask: approximated (Claude Code asks per project/session permission, not per agent)
+claude: agent dev capability web=deny: compiled (disallowedTools)
+claude: agent dev skills: compiled (preloaded through the subagent `skills` field)
+claude: agent lead: compiled (coordinator, rendered into CLAUDE.md)
+claude: agent lead tier: not-compiled (the coordinator runs as the main session (CLAUDE.md), not as a subagent)
+claude: agents tags: not-compiled (informational, no Claude Code field; 1 agent: dev)
+claude: agents temperature: not-compiled (no equivalent in Claude Code subagents; 1 agent: dev)
+claude: automation fmt: compiled (hook PostToolUse in .claude/settings.json)
+claude: flow recording: compiled (hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback), UserPromptExpansion in .claude/settings.json)
+claude: flow ship: approximated (rendered as guidance in CLAUDE.md; delegation topology enforced by the gate)
+claude: flow ship step build: approximated (states and on_failure rendered as guidance)
+claude: policy delegation=strict: compiled (enforced: delegation topology, by the PreToolUse gate)
+claude: skill review: compiled
+claude: ui.panel: approximated (mod in .armadai/plugins/armadai-ui: runs JavaScript and the armadai command with your permissions; needs Claude Code 2.1.287 or later, off under --safe-mode, disableAllHooks or claude -p)

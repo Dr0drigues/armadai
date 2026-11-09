@@ -220,7 +220,8 @@ fn prepare(
         let rel = p.output_dir.join("settings.json");
         let hooks = claude_settings::hook_entries(project)?;
         let mut keys = claude_settings::native_settings(project)?;
-        if project.manifest.ui.subagent_status_line {
+        let ui = &project.manifest.ui;
+        if ui.subagent_status_line || ui.panel {
             let existing = std::fs::read_to_string(root.join(&rel)).ok();
             let previous = match p.previous_patch(&rel).map(|f| &f.kind) {
                 Some(PatchKind::SettingsHooks(o)) => o.clone(),
@@ -236,61 +237,74 @@ fn prepare(
                     e.produced_by.kind == manifest::ProducedByKind::Plugin
                         && e.outcome == Outcome::Created
                 });
-            match clash {
+            // one line for each key that asks for the plugin: (status, reason) by key
+            let (sub, panel): ((Status, String), (Status, String)) = match clash {
                 Some(path) => {
                     // a plugin the settings do not load would be a file nobody reads
                     drop_plugin(&mut p, &mut keys);
-                    let why = format!(
-                        "key {path} of .claude/settings.json already has another value; \
-                         link leaves it"
-                    );
-                    p.report.push(
-                        target,
-                        "ui.subagent_status_line",
+                    let line = (
                         Status::NotCompiled,
-                        Some(&why),
+                        format!(
+                            "key {path} of .claude/settings.json already has another value; \
+                             link leaves it"
+                        ),
                     );
+                    (line.clone(), line)
                 }
                 None => {
                     let found = if recorded {
                         claude_settings::FoundPlugin::Absent
                     } else {
-                        claude_settings::found_plugin(root, existing.as_deref())?
+                        claude_settings::found_plugin(root, existing.as_deref(), ui)?
                     };
                     match found {
-                        claude_settings::FoundPlugin::Absent => p.report.push(
-                            target,
-                            "ui.subagent_status_line",
-                            Status::Compiled,
-                            Some(
+                        claude_settings::FoundPlugin::Absent => (
+                            (
+                                Status::Compiled,
                                 "plugin armadai-ui in .armadai/plugins/armadai-ui, enabled in \
                                  .claude/settings.json; Claude Code loads it once you trust \
-                                 the folder",
+                                 the folder"
+                                    .to_string(),
+                            ),
+                            (
+                                // never `compiled`: link cannot know whether the mod loads
+                                Status::Approximated,
+                                "mod in .armadai/plugins/armadai-ui: runs JavaScript and the \
+                                 armadai command with your permissions; needs Claude Code \
+                                 2.1.287 or later, off under --safe-mode, disableAllHooks or \
+                                 claude -p"
+                                    .to_string(),
                             ),
                         ),
                         claude_settings::FoundPlugin::Identical => {
                             drop_plugin(&mut p, &mut keys);
-                            p.report.push(
-                                target,
-                                "ui.subagent_status_line",
+                            let line = (
                                 Status::Approximated,
-                                Some("existing identical plugin kept, not owned: unlink leaves it"),
+                                "existing identical plugin kept, not owned: unlink leaves it"
+                                    .to_string(),
                             );
+                            (line.clone(), line)
                         }
                         claude_settings::FoundPlugin::Differs(element) => {
                             drop_plugin(&mut p, &mut keys);
-                            let why = format!(
-                                "existing plugin differs from what link writes at {element}, \
-                                 not owned: link leaves it; remove it to let link write it"
-                            );
-                            p.report.push(
-                                target,
-                                "ui.subagent_status_line",
+                            let line = (
                                 Status::NotCompiled,
-                                Some(&why),
+                                format!(
+                                    "existing plugin differs from what link writes at {element}, \
+                                     not owned: link leaves it; remove it to let link write it"
+                                ),
                             );
+                            (line.clone(), line)
                         }
                     }
+                }
+            };
+            for (on, element, (status, why)) in [
+                (ui.subagent_status_line, "ui.subagent_status_line", sub),
+                (ui.panel, "ui.panel", panel),
+            ] {
+                if on {
+                    p.report.push(target, element, status, Some(&why));
                 }
             }
         }
@@ -536,7 +550,19 @@ fn not_written(p: &mut Prepared, root: &Path, path: &Path) {
         manifest::ProducedByKind::Skill => format!("skill {}", a.produced_by.name),
         manifest::ProducedByKind::Command => format!("command {}", a.produced_by.name),
         manifest::ProducedByKind::Native => format!("native {}", a.produced_by.name),
-        manifest::ProducedByKind::Plugin => "ui.subagent_status_line".to_string(),
+        manifest::ProducedByKind::Plugin => {
+            // the mod's files belong to `ui.panel`, the rest of the plugin to the other key
+            let name = a.produced_by.name.as_str();
+            let is_mod = name.ends_with("hooks.json")
+                || name.ends_with("register.js")
+                || name.ends_with("panel.json");
+            if is_mod {
+                "ui.panel"
+            } else {
+                "ui.subagent_status_line"
+            }
+            .to_string()
+        }
         _ => format!("agent {}", a.produced_by.name),
     };
     let rel = p.rel(a);

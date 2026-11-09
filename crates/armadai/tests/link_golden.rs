@@ -164,11 +164,33 @@ mod tests {
     /// plugin keys of `.claude/settings.json`, the plugin folder, and the report lines.
     #[test]
     fn the_ui_status_line_matches_its_golden() {
+        ui_golden(
+            "ui:\n  status_line: true\n  subagent_status_line: true\n",
+            "claude-ui",
+            &[
+                "\"statusLine\"",
+                "=== .armadai/plugins/armadai-ui/settings.json",
+            ],
+        );
+    }
+
+    /// The same project with `ui.panel: true` and `ui.documents`: the plugin with the
+    /// mod (`hooks/hooks.json`, `hooks/register.js`, `panel.json`) and its report line.
+    #[test]
+    fn the_ui_panel_matches_its_golden() {
+        ui_golden(
+            "ui:\n  panel: true\n  documents: [docs, notes/specs]\n",
+            "claude-ui-panel",
+            &["=== .armadai/plugins/armadai-ui/hooks/register.js"],
+        );
+    }
+
+    fn ui_golden(ui: &str, golden: &str, present: &[&str]) {
         let dir = project();
         let root = dir.path().join("project");
         std::fs::write(
             root.join(".armadai/project.yaml"),
-            "schema_version: 1\ncoordinator: lead\npolicy:\n  delegation: strict\n  free_agents: [Explore]\nui:\n  status_line: true\n  subagent_status_line: true\n",
+            format!("schema_version: 1\ncoordinator: lead\npolicy:\n  delegation: strict\n  free_agents: [Explore]\n{ui}"),
         )
         .unwrap();
         let output = Command::cargo_bin("armadai")
@@ -196,12 +218,10 @@ mod tests {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let report = stdout.split_once("Conformance report:\n").unwrap().1;
         rendered.push_str(&format!("=== report ===\n{report}"));
-        assert!(rendered.contains("\"statusLine\""), "{rendered}");
-        assert!(
-            rendered.contains("=== .armadai/plugins/armadai-ui/settings.json"),
-            "{rendered}"
-        );
-        check_golden("claude-ui", &rendered);
+        for p in present {
+            assert!(rendered.contains(p), "{p} missing:\n{rendered}");
+        }
+        check_golden(golden, &rendered);
     }
 
     /// `rendered` against `golden/link/<name>.txt`, or written there under
