@@ -271,7 +271,7 @@ fn prepare(
                                 Status::Approximated,
                                 "mod in .armadai/plugins/armadai-ui: runs JavaScript and the \
                                  armadai command with your permissions; needs Claude Code \
-                                 2.1.287 or later, off under --safe-mode, disableAllHooks or \
+                                 2.1.318 or later, off under --safe-mode, disableAllHooks or \
                                  claude -p"
                                     .to_string(),
                             ),

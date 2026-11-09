@@ -308,4 +308,4 @@ claude: flow ship: approximated (rendered as guidance in CLAUDE.md; delegation t
 claude: flow ship step build: approximated (states and on_failure rendered as guidance)
 claude: policy delegation=strict: compiled (enforced: delegation topology, by the PreToolUse gate)
 claude: skill review: compiled
-claude: ui.panel: approximated (mod in .armadai/plugins/armadai-ui: runs JavaScript and the armadai command with your permissions; needs Claude Code 2.1.287 or later, off under --safe-mode, disableAllHooks or claude -p)
+claude: ui.panel: approximated (mod in .armadai/plugins/armadai-ui: runs JavaScript and the armadai command with your permissions; needs Claude Code 2.1.318 or later, off under --safe-mode, disableAllHooks or claude -p)

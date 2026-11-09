@@ -82,7 +82,7 @@ const PLUGIN: &str = ".armadai/plugins/armadai-ui";
 const MOD_JS: &str = include_str!("../src/compile/ui/armadai-ui-panel.js");
 
 const PANEL_LINE: &str = "claude: ui.panel: approximated (mod in .armadai/plugins/armadai-ui: \
-runs JavaScript and the armadai command with your permissions; needs Claude Code 2.1.287 or \
+runs JavaScript and the armadai command with your permissions; needs Claude Code 2.1.318 or \
 later, off under --safe-mode, disableAllHooks or claude -p)";
 
 const HOOKS_JSON: &str = "{\n  \"modules\": [\n    \"./register.js\"\n  ]\n}\n";
