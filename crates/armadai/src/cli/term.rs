@@ -1,10 +1,12 @@
 //! The terminal side of `flow status --watch`: its size, the hidden cursor and
-//! the signal that restores it. The only module of the binary with `unsafe`:
+//! the signal that restores it. The only module of the binary with `unsafe`, tests aside:
 //! each block says the invariant it relies on.
 
 use crate::flow_status::watch::Size;
 
+#[cfg(unix)]
 const HIDE: &str = "\x1b[?25l";
+#[cfg(unix)]
 const SHOW: &str = "\x1b[?25h";
 
 /// The terminal size: `COLUMNS`/`LINES`, else the size `ioctl(TIOCGWINSZ)` gives
@@ -48,39 +50,54 @@ fn ioctl_size() -> Option<(u16, u16)> {
 }
 
 /// Hides the cursor while alive. On unix it also catches SIGINT to show the
-/// cursor before dying of the signal.
+/// cursor before dying of the signal; elsewhere it does nothing (the animation
+/// runs with the cursor visible).
 pub struct HiddenCursor;
 
 impl HiddenCursor {
+    #[cfg(unix)]
     pub fn new() -> std::io::Result<Self> {
         use std::io::Write;
-        let mut out = std::io::stdout().lock();
-        out.write_all(HIDE.as_bytes())?;
-        out.flush()?;
-        #[cfg(unix)]
         // SAFETY: `on_sigint` is an `extern "C" fn(c_int)`, the handler type
         // `signal` expects, and it only calls async-signal-safe functions.
+        // shortcut: `Drop` puts SIG_DFL back, not the previous disposition, so a
+        // process started with SIGINT ignored dies of it after `--watch`; upgrade
+        // with `sigaction` if that matters.
         unsafe {
             libc::signal(
                 libc::SIGINT,
                 on_sigint as extern "C" fn(libc::c_int) as libc::sighandler_t,
             );
         }
+        // the handler is in place before the cursor goes: a Ctrl-C from here on shows it again;
+        // `me` is dropped (cursor shown, SIG_DFL) if the write fails
+        let me = HiddenCursor;
+        let mut out = std::io::stdout().lock();
+        out.write_all(HIDE.as_bytes())?;
+        out.flush()?;
+        Ok(me)
+    }
+
+    #[cfg(not(unix))]
+    pub fn new() -> std::io::Result<Self> {
         Ok(HiddenCursor)
     }
 }
 
+#[cfg(unix)]
 impl Drop for HiddenCursor {
     fn drop(&mut self) {
         use std::io::Write;
-        #[cfg(unix)]
+        // the cursor first: a Ctrl-C between the two lines still finds the handler
+        {
+            let mut out = std::io::stdout().lock();
+            let _ = out.write_all(SHOW.as_bytes());
+            let _ = out.flush();
+        }
         // SAFETY: SIG_DFL is a valid disposition for SIGINT.
         unsafe {
             libc::signal(libc::SIGINT, libc::SIG_DFL);
         }
-        let mut out = std::io::stdout().lock();
-        let _ = out.write_all(SHOW.as_bytes());
-        let _ = out.flush();
     }
 }
 
