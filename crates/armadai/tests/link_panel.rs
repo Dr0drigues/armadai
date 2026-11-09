@@ -337,3 +337,58 @@ fn a_mod_file_edited_after_the_link_is_kept_and_reported_under_the_panel_key() {
         "// mine\n"
     );
 }
+
+const SIX: [&str; 6] = [
+    ".claude-plugin/marketplace.json",
+    ".claude-plugin/plugin.json",
+    "hooks/hooks.json",
+    "hooks/register.js",
+    "panel.json",
+    "settings.json",
+];
+
+fn rewrite(env: &Env, ui: &str) {
+    std::fs::write(env.root().join(".armadai/project.yaml"), project(ui)).unwrap();
+}
+
+#[test]
+fn adding_the_panel_to_a_plugin_already_linked_writes_the_mod_and_keeps_the_rest() {
+    let env = Env::new(&project("  subagent_status_line: true\n"), &[FLOW]);
+    env.ok(&["link", "--target", "claude"]);
+    let settings = env.settings();
+    rewrite(&env, "  subagent_status_line: true\n  panel: true\n");
+    let report = env.ok(&["link", "--target", "claude"]);
+    assert_eq!(lines(&report, "ui.panel"), [PANEL_LINE]);
+    assert_eq!(env.plugin_files(), SIX);
+    assert_eq!(env.read(&format!("{PLUGIN}/hooks/register.js")), MOD_JS);
+    assert_eq!(env.settings(), settings);
+    // and unlink takes the whole plugin back, the mod included
+    env.ok(&["unlink", "--target", "claude"]);
+    assert!(!env.root().join(".armadai/plugins").exists());
+}
+
+#[test]
+fn removing_the_other_key_keeps_the_mod_and_the_settings_entries() {
+    let env = Env::new(
+        &project("  subagent_status_line: true\n  panel: true\n"),
+        &[FLOW],
+    );
+    env.ok(&["link", "--target", "claude"]);
+    let settings = env.settings();
+    rewrite(&env, "  panel: true\n");
+    let report = env.ok(&["link", "--target", "claude"]);
+    assert_eq!(lines(&report, "ui.panel"), [PANEL_LINE]);
+    assert_eq!(
+        lines(&report, "ui.subagent_status_line"),
+        Vec::<&str>::new()
+    );
+    // only the plugin's own settings.json (the other key's) goes
+    assert_eq!(
+        env.plugin_files(),
+        SIX.iter()
+            .filter(|f| **f != "settings.json")
+            .copied()
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(env.settings(), settings);
+}
