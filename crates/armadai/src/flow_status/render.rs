@@ -15,28 +15,40 @@ pub fn render(runs: &[Run], session: &str) -> String {
         out += "\nno run of a declared flow in this session yet\n";
     }
     for run in ordered(runs) {
-        out += &format!("\n{}  {}\n", run.flow, status_word(run));
-        let w = run.steps.iter().map(|v| v.step.len()).max().unwrap_or(0);
-        for v in &run.steps {
-            out += format!("  {} {:<w$}  {}", v.mark.sign(), v.step, status_text(v)).trim_end();
-            out.push('\n');
-        }
-        for (from, to, n) in &run.loops {
-            out += &format!("  {from} → {to} : {n}\n");
-        }
-        for (ts, from, to, state) in &run.transitions {
-            let state = state
-                .as_ref()
-                .map(|s| format!("  ({s})"))
-                .unwrap_or_default();
-            out += &format!("  {}  {from} → {to}{state}\n", utc(*ts, "%H:%M:%S"));
-        }
+        out += &format!("\n{}\n{}", run_heading(run), run_body(run));
+    }
+    out
+}
+
+/// `{flow}  {status word}`.
+pub(super) fn run_heading(run: &Run) -> String {
+    format!("{}  {}", run.flow, status_word(run))
+}
+
+/// The step lines, the links taken more than once and the timed transitions,
+/// each line ending in `\n`.
+pub(super) fn run_body(run: &Run) -> String {
+    let mut out = String::new();
+    let w = run.steps.iter().map(|v| v.step.len()).max().unwrap_or(0);
+    for v in &run.steps {
+        out += format!("  {} {:<w$}  {}", v.mark.sign(), v.step, status_text(v)).trim_end();
+        out.push('\n');
+    }
+    for (from, to, n) in &run.loops {
+        out += &format!("  {from} → {to} : {n}\n");
+    }
+    for (ts, from, to, state) in &run.transitions {
+        let state = state
+            .as_ref()
+            .map(|s| format!("  ({s})"))
+            .unwrap_or_default();
+        out += &format!("  {}  {from} → {to}{state}\n", utc(*ts, "%H:%M:%S"));
     }
     out
 }
 
 /// Finished and interrupted runs first, each group in start order.
-fn ordered(runs: &[Run]) -> Vec<&Run> {
+pub(super) fn ordered(runs: &[Run]) -> Vec<&Run> {
     let mut ordered: Vec<&Run> = runs.iter().collect();
     ordered.sort_by_key(|r| !(r.finished || r.interrupted));
     ordered

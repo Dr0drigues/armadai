@@ -6,3 +6,4 @@ pub mod line;
 pub mod record;
 pub mod render;
 pub mod runs;
+pub mod watch;
