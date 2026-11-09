@@ -289,6 +289,33 @@ flowchart TD
 }
 
 #[test]
+fn the_team_view_in_ascii_is_a_list() {
+    let env = Env::new(ORDERED);
+    let (code, out, _) = env.run(
+        &env.root(),
+        &["graph", "--view", "team", "--format", "ascii"],
+    );
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        out,
+        "team (delegation: strict, enforced by the gate)
+
+main thread (lead)
+  → dev, rev
+
+dev  flows: ship
+  → rev
+
+doc
+
+rev  flows: ship
+
+free agents, callable from anywhere: Explore
+"
+    );
+}
+
+#[test]
 fn the_team_view_in_dot_and_json() {
     let env = Env::new(ORDERED);
     let (_, out, _) = env.run(&env.root(), &["graph", "--view", "team", "--format", "dot"]);

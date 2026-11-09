@@ -393,19 +393,19 @@ flowchart TD
   n_reviewer --> n_release
 ```
 
-- In ASCII, the delegations are taken in the order of the edges (the main thread first, then
-  the agents by id). The main thread counts as already drawn; each delegation first counts its
-  caller as drawn, then is drawn only if its target has not appeared yet, as a caller or as a
-  target, in an earlier delegation. The others are listed under `links not drawn:`, by agent id.
-  An agent that delegates before any delegation reaches it is therefore drawn without an incoming
-  arrow, on the main thread's row.
+- In ASCII, the team is a list that fits 80 columns, not boxes: the main thread and the agents
+  it may delegate to, then one entry per agent (`id  flows: a, b`, the agents it may delegate to
+  under it, `→ x, y`), a blank line between two entries. A line that is too long wraps, indented;
+  a word longer than the line is cut at the margin. An id longer than 24 characters is alone on
+  its line, its flows under it. Every delegation is shown, a delegation to oneself included.
 - The first line says whether the gate enforces the drawing (`delegation: strict, enforced by
   the gate`) or not (`delegation: off, not enforced`).
 - A node is `agent · flows`, the flows where the agent runs a step. With a coordinator, the main
   thread node is `main thread (<coordinator>)`.
 - `policy.free_agents` are drawn as a group, `free agents, callable from anywhere`, without
-  edges to them; in ASCII their label ends with ` (free)`. A free agent that is also an agent of
-  the project is drawn once, in this group, with its own outgoing edges.
+  edges to them; in ASCII they are one line, `free agents, callable from anywhere: a, b`. A free
+  agent that is also an agent of the project is drawn once, in this group, with its own outgoing
+  edges (in ASCII, as an entry under that line).
 
 ### JSON
 

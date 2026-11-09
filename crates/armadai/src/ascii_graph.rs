@@ -1,4 +1,4 @@
-//! ASCII boxes for a flow or for the team, as pure functions of the graphs of
+//! ASCII boxes for a flow, and a list that fits 80 columns for the team, as pure functions of the graphs of
 //! `armadai-model` (no terminal, no colour: reusable by `flow status --watch`).
 //!
 //! `ascii-dag` only draws acyclic graphs well, and one arrow per pair of boxes, so it
@@ -72,46 +72,126 @@ pub fn flow_to_ascii(g: &armadai_model::FlowGraph) -> String {
     format!("flow: {}\n{}", g.id, draw(&labels, &drawn, &not_drawn))
 }
 
-pub fn team_to_ascii(g: &armadai_model::TeamGraph) -> String {
-    let main = g.main_label();
-    let mut ids: Vec<Option<&str>> = vec![None];
-    let mut labels = vec![main.clone()];
-    for (a, free) in
-        (g.agents.iter().map(|a| (a, false))).chain(g.free_agents.iter().map(|a| (a, true)))
-    {
-        ids.push(Some(&a.id));
-        // the group of free agents is a subgraph in Mermaid; a box has none
-        labels.push(if free {
-            format!("{} (free)", a.label())
+const WIDTH: usize = 80;
+/// The id column of the team list: a longer id is written alone on its line.
+const ID_COLUMN: usize = 24;
+
+fn cols(s: &str) -> usize {
+    s.chars().count()
+}
+
+/// `first`, then the items joined by `, `, wrapped at `WIDTH` columns with `rest` as the
+/// indent of the next lines. A word that does not fit a line alone is cut at the margin.
+fn wrap(first: &str, rest: &str, items: &[String]) -> String {
+    let mut lines = vec![first.to_string()];
+    let mut fresh = true; // nothing but the indent on the current line
+    for (i, item) in items.iter().enumerate() {
+        let word = if i + 1 < items.len() {
+            format!("{item},")
         } else {
-            a.label()
-        });
-    }
-    // In the order of `edges`: the main thread counts as drawn, each edge first counts its
-    // caller as drawn, then is drawn only if its target has not appeared yet, as a caller or
-    // as a target, in an earlier edge. Each drawn edge reaches a new box, so the drawing is
-    // acyclic; the others are listed.
-    let name = |id: Option<&str>| id.map_or(main.clone(), String::from);
-    let mut seen = vec![false; ids.len()];
-    seen[0] = true;
-    let (mut drawn, mut not_drawn): (Vec<Edge<'_>>, Vec<String>) = (Vec::new(), Vec::new());
-    for e in &g.edges {
-        let pos = |id: Option<&str>| ids.iter().position(|i| *i == id);
-        match (pos(e.from.as_deref()), pos(Some(e.to.as_str()))) {
-            (Some(f), Some(t)) => {
-                seen[f] = true;
-                if seen[t] {
-                    not_drawn.push(link_line(&name(e.from.as_deref()), &e.to, None));
-                } else {
-                    seen[t] = true;
-                    drawn.push((f, t, None));
-                }
+            item.clone()
+        };
+        let cur = lines.last().unwrap();
+        let sep = usize::from(!fresh);
+        if cols(cur) + sep + cols(&word) <= WIDTH {
+            let cur = lines.last_mut().unwrap();
+            if !fresh {
+                cur.push(' ');
             }
-            // an end that is no box of the graph: listed, never dropped
-            _ => not_drawn.push(link_line(&name(e.from.as_deref()), &e.to, None)),
+            cur.push_str(&word);
+        } else {
+            // the word starts a line, and is cut at the margin if it is longer
+            let mut line = if fresh {
+                lines.pop().unwrap()
+            } else {
+                rest.to_string()
+            };
+            let mut chars = word.chars().peekable();
+            loop {
+                let room = WIDTH - cols(&line);
+                line.extend(chars.by_ref().take(room));
+                lines.push(std::mem::take(&mut line));
+                if chars.peek().is_none() {
+                    break;
+                }
+                line = rest.to_string();
+            }
+        }
+        fresh = false;
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
+}
+
+/// One agent: its id and flows on a line, the agents it delegates to under it.
+fn team_entry(id: &str, width: usize, flows: &[String], targets: &[String]) -> String {
+    let mut out = String::new();
+    if flows.is_empty() {
+        out.push_str(&wrap("", "", &[id.to_string()]));
+    } else if cols(id) > ID_COLUMN {
+        out.push_str(&wrap("", "", &[id.to_string()]));
+        out.push_str(&wrap("  flows: ", "         ", flows));
+    } else {
+        let head = format!("{id:<width$}  flows: ");
+        let indent = " ".repeat(cols(&head));
+        out.push_str(&wrap(&head, &indent, flows));
+    }
+    if !targets.is_empty() {
+        out.push_str(&wrap("  → ", "    ", targets));
+    }
+    out
+}
+
+/// The team as a list that fits 80 columns: the main thread, then one entry per agent
+/// with its flows and the agents it may delegate to, then the free agents.
+pub fn team_to_ascii(g: &armadai_model::TeamGraph) -> String {
+    let targets = |from: Option<&str>| -> Vec<String> {
+        (g.edges.iter())
+            .filter(|e| e.from.as_deref() == from)
+            .map(|e| e.to.clone())
+            .collect()
+    };
+    let mut callers: Vec<(&str, &[String])> = (g.agents.iter())
+        .map(|a| (a.id.as_str(), a.flows.as_slice()))
+        .collect();
+    // a caller that is no agent of the graph is listed, never dropped
+    for e in &g.edges {
+        if let Some(f) = e.from.as_deref()
+            && !callers.iter().any(|c| c.0 == f)
+            && !g.free_agents.iter().any(|a| a.id == f)
+        {
+            callers.push((f, &[]));
         }
     }
-    format!("{}\n{}", g.policy_note(), draw(&labels, &drawn, &not_drawn))
+    let width = (callers.iter().map(|c| cols(c.0)))
+        .filter(|&n| n <= ID_COLUMN)
+        .max()
+        .unwrap_or(0);
+    let mut out = format!("{}\n\n", g.policy_note());
+    out.push_str(&wrap("", "", &[g.main_label()]));
+    let main_targets = targets(None);
+    if !main_targets.is_empty() {
+        out.push_str(&wrap("  → ", "    ", &main_targets));
+    }
+    for (id, flows) in callers {
+        out.push('\n');
+        out.push_str(&team_entry(id, width, flows, &targets(Some(id))));
+    }
+    if !g.free_agents.is_empty() {
+        let ids: Vec<String> = g.free_agents.iter().map(|a| a.id.clone()).collect();
+        out.push('\n');
+        out.push_str(&wrap("free agents, callable from anywhere: ", "    ", &ids));
+        // a free agent of the project has flows and delegations of its own
+        for a in &g.free_agents {
+            let t = targets(Some(&a.id));
+            if !a.flows.is_empty() || !t.is_empty() {
+                out.push('\n');
+                out.push_str(&team_entry(&a.id, width, &a.flows, &t));
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -246,140 +326,167 @@ links not drawn:
         );
     }
 
-    #[test]
-    fn the_team_in_boxes() {
-        let a = |id: &str, flows: &[&str]| armadai_model::TeamAgent {
+    fn ag(id: &str, flows: &[&str]) -> armadai_model::TeamAgent {
+        armadai_model::TeamAgent {
             id: id.into(),
             flows: flows.iter().map(|f| f.to_string()).collect(),
-        };
-        let e = |from: Option<&str>, to: &str| armadai_model::TeamEdge {
+        }
+    }
+
+    fn ed(from: Option<&str>, to: &str) -> armadai_model::TeamEdge {
+        armadai_model::TeamEdge {
             from: from.map(String::from),
             to: to.into(),
-        };
-        let g = armadai_model::TeamGraph {
+        }
+    }
+
+    fn team(
+        agents: Vec<armadai_model::TeamAgent>,
+        edges: Vec<armadai_model::TeamEdge>,
+        free: Vec<armadai_model::TeamAgent>,
+    ) -> armadai_model::TeamGraph {
+        armadai_model::TeamGraph {
             delegation: "strict".into(),
             coordinator: Some("lead".into()),
-            agents: vec![a("dev", &["ship"]), a("rev", &["ship"])],
-            edges: vec![
-                e(None, "dev"),
-                e(None, "rev"),
-                e(Some("dev"), "rev"),
-                e(Some("rev"), "dev"),
+            agents,
+            edges,
+            free_agents: free,
+        }
+    }
+
+    #[test]
+    fn the_team_is_a_list_main_thread_first_then_one_entry_per_agent() {
+        let g = team(
+            vec![ag("dev", &["ship", "fix"]), ag("rev", &["ship"])],
+            vec![
+                ed(None, "dev"),
+                ed(None, "rev"),
+                ed(Some("dev"), "rev"),
+                ed(Some("rev"), "dev"),
+                ed(Some("rev"), "rev"),
             ],
-            free_agents: vec![a("Explore", &[]), a("helper", &["task"])],
-        };
+            vec![ag("Explore", &[])],
+        );
         assert_eq!(
             team_to_ascii(&g),
             "team (delegation: strict, enforced by the gate)
-  [main thread (lead)]   [Explore (free)]   [helper · task (free)]
-            └─────────────┬──────────────┐
-                          ↓              ↓
-                    [dev · ship]   [rev · ship]
 
-links not drawn:
-  dev → rev
-  rev → dev
+main thread (lead)
+  → dev, rev
+
+dev  flows: ship, fix
+  → rev
+
+rev  flows: ship
+  → dev, rev
+
+free agents, callable from anywhere: Explore
 "
         );
     }
 
     #[test]
-    fn a_caller_met_first_is_not_a_target_again() {
-        // `team_graph` of a project without coordinator and with the flow s1(z) -> s2(a) -> s3(b):
-        // `a` delegates (a -> b) before `z -> a` is met
-        let ag = |id: &str| armadai_model::TeamAgent {
-            id: id.into(),
-            flows: vec!["f".into()],
-        };
-        let e = |f: Option<&str>, t: &str| armadai_model::TeamEdge {
-            from: f.map(String::from),
-            to: t.into(),
-        };
-        let g = armadai_model::TeamGraph {
-            delegation: "off".into(),
-            coordinator: None,
-            agents: vec![ag("a"), ag("b"), ag("z")],
-            edges: vec![e(None, "z"), e(Some("a"), "b"), e(Some("z"), "a")],
-            free_agents: vec![],
-        };
+    fn an_agent_without_flow_or_delegation_is_its_id_alone() {
+        let g = team(vec![ag("solo", &[])], vec![], vec![]);
         assert_eq!(
             team_to_ascii(&g),
-            "team (delegation: off, not enforced)
-  [main thread]   [a · f]
-        │         ┌──┘
-        ↓         ↓
-     [z · f]   [b · f]
+            "team (delegation: strict, enforced by the gate)
 
-links not drawn:
-  z → a
+main thread (lead)
+
+solo
 "
         );
     }
 
     #[test]
-    fn a_mutual_delegation_is_not_drawn_as_a_cycle() {
-        let ag = |id: &str| armadai_model::TeamAgent {
-            id: id.into(),
-            flows: vec![],
-        };
-        let e = |f: &str, t: &str| armadai_model::TeamEdge {
-            from: Some(f.into()),
-            to: t.into(),
-        };
-        let g = armadai_model::TeamGraph {
-            delegation: "off".into(),
-            coordinator: None,
-            agents: vec![ag("a"), ag("b")],
-            edges: vec![e("a", "b"), e("b", "a")],
-            free_agents: vec![],
-        };
+    fn an_id_longer_than_the_column_is_alone_on_its_line() {
+        let long = "a-very-long-agent-identifier";
+        let g = team(vec![ag(long, &["f"]), ag("b", &["f"])], vec![], vec![]);
         assert_eq!(
             team_to_ascii(&g),
-            "team (delegation: off, not enforced)
-  [main thread]   [a]
-           ┌───────┘
-           ↓
-          [b]
+            format!(
+                "team (delegation: strict, enforced by the gate)
 
-links not drawn:
-  b → a
+main thread (lead)
+
+{long}
+  flows: f
+
+b  flows: f
 "
+            )
         );
     }
 
     #[test]
-    fn a_team_edge_with_an_unknown_end_is_listed() {
-        let g = armadai_model::TeamGraph {
-            delegation: "off".into(),
-            coordinator: None,
-            agents: vec![armadai_model::TeamAgent {
-                id: "dev".into(),
-                flows: vec![],
-            }],
-            edges: vec![
-                armadai_model::TeamEdge {
-                    from: None,
-                    to: "dev".into(),
-                },
-                armadai_model::TeamEdge {
-                    from: Some("dev".into()),
-                    to: "ghost".into(),
-                },
+    fn a_free_agent_of_the_project_has_its_own_entry_and_an_unknown_caller_is_kept() {
+        let g = team(
+            vec![ag("dev", &["f"])],
+            vec![
+                ed(Some("dev"), "ghost"),
+                ed(Some("ghost"), "dev"),
+                ed(Some("fr"), "dev"),
             ],
-            free_agents: vec![],
-        };
+            vec![ag("fr", &["g"]), ag("Explore", &[])],
+        );
         assert_eq!(
             team_to_ascii(&g),
-            "team (delegation: off, not enforced)
-  [main thread]
-        │
-        ↓
-      [dev]
+            "team (delegation: strict, enforced by the gate)
 
-links not drawn:
-  dev → ghost
+main thread (lead)
+
+dev    flows: f
+  → ghost
+
+ghost
+  → dev
+
+free agents, callable from anywhere: fr, Explore
+
+fr     flows: g
+  → dev
 "
         );
+    }
+
+    #[test]
+    fn a_long_list_wraps_and_nothing_goes_past_80_columns() {
+        let many: Vec<String> = (0..30).map(|i| format!("agent-number-{i:02}")).collect();
+        let word = "x".repeat(100);
+        let long_id = "i".repeat(100);
+        let agents: Vec<_> = (many.iter().map(String::as_str))
+            .map(|n| {
+                ag(
+                    n,
+                    &[
+                        "flow-one",
+                        "flow-two",
+                        "flow-three",
+                        "flow-four",
+                        "flow-five",
+                    ],
+                )
+            })
+            .chain([ag(&word, &[word.as_str()]), ag(&long_id, &[])])
+            .collect();
+        let edges: Vec<_> = (many.iter().map(String::as_str))
+            .chain([word.as_str()])
+            .map(|n| ed(None, n))
+            .chain(many.iter().map(|n| ed(Some(&word), n)))
+            .collect();
+        let out = team_to_ascii(&team(agents, edges, vec![ag(&word, &[])]));
+        for l in out.lines() {
+            assert!(
+                l.chars().count() <= 80,
+                "{} columns: {l}",
+                l.chars().count()
+            );
+        }
+        // a cut word is cut, not dropped
+        // as agent, in its flows, as a target of the main thread, in the free list and as a free entry
+        assert_eq!(out.matches('x').count(), 100 * 5);
+        assert!(out.contains("agent-number-29"), "{out}");
     }
 
     #[test]
