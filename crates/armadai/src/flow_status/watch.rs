@@ -56,7 +56,7 @@ pub fn frame(project: &Project, runs: &[Run], session: &str, tick: u64, size: Si
     // the first line is `flow: <id>`, the heading says it already
     let drawing = drawing.split_once('\n').map_or("", |(_, rest)| rest);
     let mut out = format!(
-        "session {session} (UTC)\n\n{}\n{drawing}{}",
+        "session {session} (UTC)\n\n{}\n{drawing}\n{}",
         run_heading(run),
         run_body(run)
     );
@@ -156,7 +156,7 @@ mod tests {
         let p = project(&[("deliver", DELIVER)]);
         let out = frame(&p, &[deliver_run()], "s1", 0, BIG);
         // the boxes and edges of `armadai graph --format ascii deliver`, each label
-        // widened by its mark and its cell; the full block of `render` follows
+        // widened by its mark and its cell; a blank line, then the full block of `render`
         assert_eq!(
             out,
             "session s1 (UTC)
@@ -176,6 +176,7 @@ deliver  in progress
 
 links not drawn:
   guard → build (rejected)
+
   ✓ design
   ✓ build
   ● guard     running
