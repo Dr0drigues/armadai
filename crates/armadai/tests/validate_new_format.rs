@@ -191,5 +191,8 @@ fn a_bad_ui_document_folder_exits_1_with_the_exact_line() {
         dir.path().display()
     );
     assert!(out.lines().any(|l| l == line), "{out}");
-    assert!(out.contains("1 error(s), 0 warning(s)"), "{out}");
+    assert!(
+        out.lines().any(|l| l == "1 error(s), 0 warning(s)"),
+        "{out}"
+    );
 }
