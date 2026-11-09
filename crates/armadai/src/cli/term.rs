@@ -50,28 +50,39 @@ fn ioctl_size() -> Option<(u16, u16)> {
 }
 
 /// Hides the cursor while alive. On unix it also catches SIGINT to show the
-/// cursor before dying of the signal; elsewhere it does nothing (the animation
-/// runs with the cursor visible).
-pub struct HiddenCursor;
+/// cursor before dying of the signal, unless the process was started with SIGINT
+/// ignored (or set to a handler): then it is left as it is. Elsewhere it does
+/// nothing (the animation runs with the cursor visible).
+pub struct HiddenCursor {
+    /// Whether `on_sigint` was put in place, so `Drop` takes it out.
+    #[cfg(unix)]
+    caught: bool,
+}
 
 impl HiddenCursor {
     #[cfg(unix)]
     pub fn new() -> std::io::Result<Self> {
         use std::io::Write;
-        // SAFETY: `on_sigint` is an `extern "C" fn(c_int)`, the handler type
-        // `signal` expects, and it only calls async-signal-safe functions.
-        // shortcut: `Drop` puts SIG_DFL back, not the previous disposition, so a
-        // process started with SIGINT ignored dies of it after `--watch`; upgrade
-        // with `sigaction` if that matters.
-        unsafe {
-            libc::signal(
-                libc::SIGINT,
-                on_sigint as extern "C" fn(libc::c_int) as libc::sighandler_t,
-            );
-        }
+        // SAFETY: `old` is a zeroed `sigaction`, a valid value for the C struct, which
+        // `sigaction` fills in (the null new action leaves the disposition unchanged).
+        // `on_sigint` is an `extern "C" fn(c_int)`, the handler type `signal` expects,
+        // and it only calls async-signal-safe functions. Reading before setting leaves
+        // no window in which a SIGINT meant to be ignored would kill the process.
+        let caught = unsafe {
+            let mut old: libc::sigaction = std::mem::zeroed();
+            let read = libc::sigaction(libc::SIGINT, std::ptr::null(), &mut old);
+            let default = read == 0 && old.sa_sigaction == libc::SIG_DFL;
+            if default {
+                libc::signal(
+                    libc::SIGINT,
+                    on_sigint as extern "C" fn(libc::c_int) as libc::sighandler_t,
+                );
+            }
+            default
+        };
         // the handler is in place before the cursor goes: a Ctrl-C from here on shows it again;
-        // `me` is dropped (cursor shown, SIG_DFL) if the write fails
-        let me = HiddenCursor;
+        // `me` is dropped (cursor shown, SIG_DFL back if it was ours) if the write fails
+        let me = HiddenCursor { caught };
         let mut out = std::io::stdout().lock();
         out.write_all(HIDE.as_bytes())?;
         out.flush()?;
@@ -80,7 +91,7 @@ impl HiddenCursor {
 
     #[cfg(not(unix))]
     pub fn new() -> std::io::Result<Self> {
-        Ok(HiddenCursor)
+        Ok(HiddenCursor {})
     }
 }
 
@@ -94,9 +105,11 @@ impl Drop for HiddenCursor {
             let _ = out.write_all(SHOW.as_bytes());
             let _ = out.flush();
         }
-        // SAFETY: SIG_DFL is a valid disposition for SIGINT.
-        unsafe {
-            libc::signal(libc::SIGINT, libc::SIG_DFL);
+        if self.caught {
+            // SAFETY: SIG_DFL is a valid disposition for SIGINT, and the one it had before.
+            unsafe {
+                libc::signal(libc::SIGINT, libc::SIG_DFL);
+            }
         }
     }
 }

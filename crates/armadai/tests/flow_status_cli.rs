@@ -1330,3 +1330,40 @@ fn ctrl_c_outside_a_terminal_still_kills_by_sigint() {
     );
     assert_eq!(w.status.signal(), Some(2), "{:?}", w.status);
 }
+
+#[cfg(unix)]
+#[test]
+fn ctrl_c_ignored_by_the_parent_stays_ignored() {
+    use std::io::Read;
+    let env = Env::new();
+    looping(&env, "s1", T0);
+    // a signal ignored survives `exec`: the watch starts with SIGINT ignored
+    let mut child = std::process::Command::new("/bin/sh")
+        .args(["-c", "trap '' INT; exec \"$0\" flow status --watch"])
+        .arg(env!("CARGO_BIN_EXE_armadai"))
+        .current_dir(env.root())
+        .env("ARMADAI_CONFIG_DIR", env.dir.path().join("config"))
+        .env("HOME", env.dir.path())
+        .env("NO_COLOR", "1")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let mut first = vec![0u8; LOOPING.len()];
+    stdout.read_exact(&mut first).unwrap(); // the first image: the watch is running
+    let sent = std::process::Command::new("/bin/kill")
+        .args(["-INT", &child.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(sent.success());
+    // long enough for a process that does not ignore the signal to die of it
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    let alive = child.try_wait().unwrap().is_none();
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert!(
+        alive,
+        "SIGINT was ignored by the parent, the watch must ignore it too"
+    );
+}

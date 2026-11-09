@@ -211,6 +211,14 @@ pub fn execute(cmd: FlowCommand) -> anyhow::Result<()> {
 /// or a step runs, so the spinner turns four times a second.
 const PACE: std::time::Duration = std::time::Duration::from_millis(250);
 
+/// How often `--watch` in a terminal looks for a newer session (no `--session`).
+const LATEST_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The image to write: `None` when it is the one written last (never write it twice).
+fn to_write<'a>(last: Option<&str>, image: &'a str) -> Option<&'a str> {
+    (last != Some(image)).then_some(image)
+}
+
 struct View {
     root: PathBuf,
     project: Project,
@@ -230,7 +238,17 @@ impl View {
     /// file) and its runs, filtered by the flow id; the one reading of the
     /// log `text` and `--json` share.
     fn snapshot(&self) -> (Option<(String, Vec<FlowEvent>)>, Vec<Run>) {
-        let (Some(session), path) = self.log() else {
+        let (session, path) = self.log();
+        self.snapshot_of(session, path)
+    }
+
+    /// `snapshot` of a session and log already found.
+    fn snapshot_of(
+        &self,
+        session: Option<String>,
+        path: Option<PathBuf>,
+    ) -> (Option<(String, Vec<FlowEvent>)>, Vec<Run>) {
+        let Some(session) = session else {
             return (None, Vec::new());
         };
         let events = (path.filter(|p| p.is_file()))
@@ -263,15 +281,35 @@ impl View {
             anstream::AutoStream::choice(&std::io::stdout()) != anstream::ColorChoice::Never;
         let mut key: Option<(Option<String>, Option<u64>)> = None;
         let mut cached: Option<(String, Vec<Run>)> = None;
+        let mut last: Option<String> = None;
+        let mut last_size = None;
+        // the latest session is looked for (a `read_dir` and a `stat` per log) once a
+        // second at most, like `master`; between two looks only its log is `stat`ed
+        let mut latest: Option<(std::time::Instant, Option<String>)> = None;
         let (mut tick, mut first) = (0u64, true);
         loop {
-            let (session, path) = self.log();
+            let session = match &self.session {
+                Some(s) => Some(s.clone()),
+                None => {
+                    let stale = latest
+                        .as_ref()
+                        .is_none_or(|(at, _)| at.elapsed() >= LATEST_EVERY);
+                    if stale {
+                        latest = Some((
+                            std::time::Instant::now(),
+                            render::latest_session(&self.root),
+                        ));
+                    }
+                    latest.as_ref().and_then(|(_, s)| s.clone())
+                }
+            };
+            let path = session.as_deref().and_then(|s| log_path(&self.root, s));
             let len = (path.as_ref())
                 .and_then(|p| std::fs::metadata(p).ok())
                 .map(|m| m.len());
             let changed = key.as_ref() != Some(&(session.clone(), len));
             if changed {
-                cached = match (self.snapshot(), path) {
+                cached = match (self.snapshot_of(session.clone(), path.clone()), path) {
                     ((Some((id, _)), runs), Some(p)) if p.is_file() => Some((id, runs)),
                     _ => None,
                 };
@@ -280,25 +318,31 @@ impl View {
             let running = cached.as_ref().is_some_and(|(_, runs)| {
                 open_run(runs).is_some_and(|r| r.steps.iter().any(|v| v.mark == Mark::Running))
             });
-            if changed || running {
+            // a terminal resized while nothing happens still gets an image of its size
+            let size = term::size();
+            if changed || running || last_size != Some(size) {
                 let image = match &cached {
-                    Some((id, runs)) => watch::frame(&self.project, runs, id, tick, term::size()),
+                    Some((id, runs)) => watch::frame(&self.project, runs, id, tick, size),
                     None => format!("{NO_ACTIVITY}\n"),
                 };
-                let mut buf = String::from(if first { "\x1b[2J\x1b[H" } else { "\x1b[H" });
-                for line in image.lines() {
-                    let painted = paint_image_line(line);
-                    match colour {
-                        true => buf += &painted,
-                        false => buf += &anstream::adapter::strip_str(&painted).to_string(),
+                if let Some(image) = to_write(last.as_deref(), &image) {
+                    let mut buf = String::from(if first { "\x1b[2J\x1b[H" } else { "\x1b[H" });
+                    for line in image.lines() {
+                        let painted = paint_image_line(line);
+                        match colour {
+                            true => buf += &painted,
+                            false => buf += &anstream::adapter::strip_str(&painted).to_string(),
+                        }
+                        buf += "\x1b[K\n";
                     }
-                    buf += "\x1b[K\n";
+                    buf += "\x1b[J";
+                    let mut out = std::io::stdout().lock();
+                    out.write_all(buf.as_bytes())?;
+                    out.flush()?;
+                    first = false;
+                    last = Some(image.to_string());
                 }
-                buf += "\x1b[J";
-                let mut out = std::io::stdout().lock();
-                out.write_all(buf.as_bytes())?;
-                out.flush()?;
-                first = false;
+                last_size = Some(size);
                 if running {
                     tick += 1;
                 }
@@ -350,10 +394,27 @@ fn paint_line(line: &str) -> String {
     format!("{s}{line}{s:#}")
 }
 
-/// A line of the animated image: a line of boxes gets its marks painted, any other
+const MARKS: [Mark; 7] = [
+    Mark::Done,
+    Mark::Running,
+    Mark::Pending,
+    Mark::Unsure,
+    Mark::Unexpected,
+    Mark::Relay,
+    Mark::NotRun,
+];
+
+/// A line of the animated image: a line with a box (`[`, a sign, a space) gets its marks painted, any other
 /// line is painted as `list` paints it.
 fn paint_image_line(line: &str) -> String {
-    if line.trim_start().starts_with('[') {
+    let box_at = |(i, _): (usize, &str)| {
+        MARKS.iter().any(|m| {
+            line[i + 1..]
+                .strip_prefix(m.sign())
+                .is_some_and(|rest| rest.starts_with(' '))
+        })
+    };
+    if line.match_indices('[').any(box_at) {
         paint_boxes(line)
     } else {
         paint_line(line)
@@ -362,15 +423,6 @@ fn paint_image_line(line: &str) -> String {
 
 /// The sign right after each `[` of a line of boxes, in the style of its mark.
 fn paint_boxes(line: &str) -> String {
-    const MARKS: [Mark; 7] = [
-        Mark::Done,
-        Mark::Running,
-        Mark::Pending,
-        Mark::Unsure,
-        Mark::Unexpected,
-        Mark::Relay,
-        Mark::NotRun,
-    ];
     let mut out = String::new();
     let mut rest = line;
     while let Some(at) = rest.find('[') {
@@ -569,6 +621,32 @@ mod tests {
             paint_boxes("[○ c ✓  ]"),
             format!("[{} c ✓  ]", paint(style::muted(), "○"))
         );
+    }
+
+    #[test]
+    fn a_box_after_an_edge_is_painted() {
+        assert_eq!(
+            paint_image_line("  │   [● c (z) |]"),
+            format!("  │   [{} c (z) |]", paint(style::running(), "●"))
+        );
+        // a `[` and a sign that are no box (no space after the sign) paint nothing
+        assert_eq!(paint_image_line("  see [✓x]"), paint_line("  see [✓x]"));
+        // a step line is a list line: painted by its first sign, as `list` does
+        assert_eq!(
+            paint_image_line("  ● guard     running"),
+            paint_line("  ● guard     running")
+        );
+        assert_eq!(
+            paint_image_line("  ● guard     running"),
+            paint(style::running(), "  ● guard     running")
+        );
+    }
+
+    #[test]
+    fn an_identical_image_is_not_written() {
+        assert_eq!(to_write(None, "a\n"), Some("a\n"));
+        assert_eq!(to_write(Some("a\n"), "a\n"), None);
+        assert_eq!(to_write(Some("a\n"), "b\n"), Some("b\n"));
     }
 
     #[test]
