@@ -115,6 +115,15 @@ fn md_format_wraps_each_flow_in_a_heading_and_a_mermaid_block() {
 }
 
 #[test]
+fn md_format_with_the_team_view_is_a_heading_and_the_team_mermaid() {
+    let env = Env::new(ORDERED);
+    let (_, mermaid, _) = env.run(&env.root(), &["graph", "--view", "team"]);
+    let (code, out, _) = env.run(&env.root(), &["graph", "--view", "team", "--format", "md"]);
+    assert_eq!(code, Some(0));
+    assert_eq!(out, md_block("team", &mermaid));
+}
+
+#[test]
 fn md_format_of_an_unknown_flow_is_the_same_error() {
     let env = Env::new(PROJECT);
     let (code, out, err) = env.run(&env.root(), &["graph", "shipp", "--format", "md"]);
@@ -559,7 +568,7 @@ fn open_refuses_a_format_other_than_mermaid() {
     // an empty PATH: a regression must fail here, never reach the real browser
     let empty = env.dir.path().join("empty");
     std::fs::create_dir_all(&empty).unwrap();
-    for format in ["dot", "json", "ascii"] {
+    for format in ["dot", "json", "ascii", "md"] {
         let (code, out, err) =
             env.run_with_path(&empty, &["graph", "review", "--open", "--format", format]);
         assert_eq!(code, Some(1), "{format}");
