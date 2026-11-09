@@ -51,6 +51,8 @@ pub fn frame(project: &Project, runs: &[Run], session: &str, tick: u64, size: Si
             };
             (format!("{} ", v.mark.sign()), after)
         }
+        // shortcut: unreachable today, `runs` makes a view for every step of the flow
+        // (`step_order`); kept so a step without a view is drawn, never a panic.
         None => ("  ".into(), "  ".into()),
     });
     // the first line is `flow: <id>`, the heading says it already
@@ -77,6 +79,7 @@ mod tests {
     const DELIVER: &str = "steps:\n  design: { agent: architect }\n  build: { agent: dev }\n  guard: { agent: qa, states: [approved, rejected] }\n  validate: { agent: ops }\nlinks:\n  - { from: design, to: build }\n  - { from: build, to: guard }\n  - { from: guard, to: build, when: rejected }\n  - { from: guard, to: validate, when: approved }\n";
     const PIPELINE: &str = "steps:\n  a: { agent: a }\n  b: { agent: b }\n  c: { agent: c }\nlinks:\n  - { from: a, to: b }\n  - { from: b, to: c }\n";
     const PBV: &str = "steps:\n  plan: { agent: a }\n  build: { agent: b }\n  check: { agent: c }\nlinks:\n  - { from: plan, to: build }\n  - { from: build, to: check }\n  - { from: check, to: build, when: failed }\n";
+    const FAN_OUT: &str = "steps:\n  a: { agent: a }\n  b: { agent: b }\n  c: { agent: c }\nlinks:\n  - { from: a, to: b }\n  - { from: a, to: c }\n";
     const SEVEN: &str = "steps:\n  a: { agent: a }\n  b: { agent: b }\n  c: { agent: c }\n  d: { agent: d }\n  e: { agent: e }\n  f: { agent: f }\n  g: { agent: g }\nlinks:\n  - { from: a, to: b }\n  - { from: b, to: c }\n  - { from: c, to: d }\n  - { from: d, to: e }\n  - { from: e, to: f }\n  - { from: f, to: g }\n";
     const BIG: Size = Size {
         cols: 200,
@@ -185,12 +188,12 @@ links not drawn:
         );
     }
 
-    #[test]
-    fn two_ticks_differ_only_by_the_spinner() {
-        let p = project(&[("deliver", DELIVER)]);
+    /// Two ticks of `run`: same shape, one character apart (`|` then `/`), on the
+    /// line of the box of `running`.
+    fn assert_ticks_differ_once(p: &Project, run: &Run, running: &str) {
         let (a, b) = (
-            frame(&p, &[deliver_run()], "s1", 0, BIG),
-            frame(&p, &[deliver_run()], "s1", 1, BIG),
+            frame(p, std::slice::from_ref(run), "s1", 0, BIG),
+            frame(p, std::slice::from_ref(run), "s1", 1, BIG),
         );
         assert_eq!(a.lines().count(), b.lines().count());
         let mut diffs = Vec::new();
@@ -204,7 +207,23 @@ links not drawn:
         }
         assert_eq!(diffs.len(), 1, "{diffs:?}");
         assert_eq!((diffs[0].0, diffs[0].1), ('|', '/'));
-        assert!(diffs[0].2.contains("guard"), "{diffs:?}");
+        assert!(diffs[0].2.contains(running), "{diffs:?}");
+    }
+
+    #[test]
+    fn two_ticks_differ_only_by_the_spinner() {
+        let p = project(&[("deliver", DELIVER), ("fan-out", FAN_OUT)]);
+        assert_ticks_differ_once(&p, &deliver_run(), "guard");
+        // two boxes on one line: only the running one turns
+        let fan = run(
+            "fan-out",
+            &[
+                ("a", Mark::Done),
+                ("b", Mark::Running),
+                ("c", Mark::Pending),
+            ],
+        );
+        assert_ticks_differ_once(&p, &fan, "[● b");
     }
 
     #[test]
