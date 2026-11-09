@@ -679,3 +679,18 @@ fn ui_documents_good_folders_are_accepted() {
     let dir = ui_project("{ documents: [docs, notes/specs, .github/docs, .gitignored] }");
     assert!(armadai_model::validate(dir.path()).is_empty());
 }
+
+#[test]
+fn ui_documents_diagnostic_sits_on_the_faulty_entry() {
+    // the faulty entry is the second one: `ui: { documents: [docs, ../up] }`, `../up` at column 25
+    let dir = ui_project("{ documents: [docs, ../up] }");
+    let ds = armadai_model::validate(dir.path());
+    assert_eq!(ds.len(), 1, "{ds:?}");
+    let rendered = ds[0]
+        .render()
+        .replace(dir.path().to_str().unwrap(), "<root>");
+    assert_eq!(
+        rendered.lines().next().unwrap(),
+        "<root>/.armadai/project.yaml:2:25: error[bad-document-folder]: ui.documents entry `../up` must be a folder inside the project, outside .armadai/ and .git/"
+    );
+}
