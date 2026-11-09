@@ -556,7 +556,12 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
         o.err(
             man,
             "bad-document-folder",
-            (!d.is_empty()).then_some((d.as_str(), false)),
+            // an empty entry has no token to find: sit on the `documents` key
+            Some(if d.is_empty() {
+                ("documents", true)
+            } else {
+                (d.as_str(), false)
+            }),
             format!("ui.documents entry `{d}` must be a folder inside the project, outside .armadai/ and .git/"),
             Some("name a folder of the project such as `docs`".into()),
         );

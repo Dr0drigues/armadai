@@ -672,6 +672,9 @@ fn ui_documents_bad_folders_are_refused() {
     assert_eq!(ds.len(), 1, "{ds:?}");
     assert_eq!(ds[0].code, "bad-document-folder");
     assert!(ds[0].message.starts_with("ui.documents entry `` must"));
+    // an empty entry has no text to point at: the diagnostic sits on the `documents` key
+    // (`ui: { documents: ...`, key at column 7 of line 2)
+    assert_eq!((ds[0].line, ds[0].column), (Some(2), Some(7)));
 }
 
 #[test]
