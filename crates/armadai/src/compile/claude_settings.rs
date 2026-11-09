@@ -275,6 +275,13 @@ pub fn plugin_files(ui: &armadai_model::types::Ui) -> Vec<(std::path::PathBuf, S
     out
 }
 
+/// The paths (relative to the project root) of the files only `ui.panel` writes.
+pub fn is_mod_file(rel: &str) -> bool {
+    ["hooks/hooks.json", "hooks/register.js", "panel.json"]
+        .iter()
+        .any(|f| std::path::Path::new(super::PLUGIN_DIR).join(f) == std::path::Path::new(rel))
+}
+
 /// The JavaScript of the panel mod, written as is.
 pub const PANEL_MOD: &str = include_str!("ui/armadai-ui-panel.js");
 
@@ -1410,6 +1417,25 @@ mod tests {
             let got = keep_users_plugin(existing, &mut keys, prev).unwrap();
             assert_eq!(got.as_deref(), want, "case {i}");
             assert_eq!(keys.is_empty(), want.is_some(), "case {i}");
+        }
+    }
+
+    #[test]
+    fn only_the_three_exact_paths_are_mod_files() {
+        let p = super::super::PLUGIN_DIR;
+        for f in ["hooks/hooks.json", "hooks/register.js", "panel.json"] {
+            assert!(is_mod_file(&format!("{p}/{f}")), "{f}");
+        }
+        // same endings, other places or other names
+        for rel in [
+            format!("{p}/.claude-plugin/panel.json"),
+            format!("{p}/settings.json"),
+            format!("{p}/.claude-plugin/plugin.json"),
+            "other/hooks/register.js".to_string(),
+            format!("{p}/hooks/register.js.bak"),
+            "panel.json".to_string(),
+        ] {
+            assert!(!is_mod_file(&rel), "{rel}");
         }
     }
 

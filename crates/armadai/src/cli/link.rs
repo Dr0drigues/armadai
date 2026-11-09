@@ -552,10 +552,7 @@ fn not_written(p: &mut Prepared, root: &Path, path: &Path) {
         manifest::ProducedByKind::Native => format!("native {}", a.produced_by.name),
         manifest::ProducedByKind::Plugin => {
             // the mod's files belong to `ui.panel`, the rest of the plugin to the other key
-            let name = a.produced_by.name.as_str();
-            let is_mod = name.ends_with("hooks.json")
-                || name.ends_with("register.js")
-                || name.ends_with("panel.json");
+            let is_mod = claude_settings::is_mod_file(a.produced_by.name.as_str());
             if is_mod {
                 "ui.panel"
             } else {
