@@ -128,6 +128,31 @@ follow. All times
 are UTC. A finished run stays listed, finished and interrupted runs first, each group in the order
 they started.
 
+- Without a recorded command, two flows whose entry step is shared are shown as `a | b` until
+  their steps diverge. With one, the run is the flow the command names.
+- A session can start a flow mid-way (for example at `frame`, its `refine` done in an earlier
+  session): when no flow holding the agent has a run open (or its last one finished), a step
+  of the flow opens a run where it starts, the steps before it shown `-`. Flows sharing that
+  step are shown as `a | b` as above; an agent holding two steps of one flow opens one run with
+  both steps `?` (ambiguous step) and only the steps before both shown `-`. Its entry step started later opens a new run. A step right after a
+  coordinator's step in mid-flow is the exception (see the limits).
+- An entry step that nothing leads back to, started again, closes the open run of its flow
+  (kept, unfinished) and opens a new one. An entry step a loop leads back to does so only when
+  the open run is stuck (nothing running, its last step `?` or `✗`).
+- A `?` or `✗` step never ends a run.
+- A step that links of several open runs lead to (an agent shared by two flows) goes to the run
+  whose link is the most recent: the one whose source step stopped last. For example, `guide`
+  left at `build` after `guard` rejected, then `implementer` (in `deliver` only) builds: the
+  next `guardian` follows `deliver`. A link older than one another run already took to that
+  step leads nowhere: a later `guardian` is not shown in `guide`. A link exactly as recent
+  (same second) as the one already taken elsewhere is still taken. Flows still shown together
+  (`deliver | guide`) are never split by this rule: their candidates keep moving together until
+  a step only one of them holds.
+- The project root is resolved as the hooks resolve it, so the command works from a
+  subdirectory and from a git worktree. A worktree without its own `.armadai/` writes and reads
+  the logs of the main checkout; a worktree with its own `.armadai/` writes and reads its own
+  `state/`.
+
 In a terminal, `--watch` draws the run in progress in boxes (the drawing of `armadai graph --format ascii`), each step with its mark, and a spinner (`| / - \`) after the running step. The last run still open is drawn (the one `--line` names), and the other runs are counted on one line under it (`+ 2 other runs: armadai flow status`). The view is redrawn within 250 ms of a new event, without clearing the screen, and stays still while no step runs and the terminal keeps its size. When the drawing does not fit the terminal (`COLUMNS` and `LINES`, else the terminal's size, else 80×24), that run is listed instead of drawn, with the same count line. A flow shown as `a | b` is listed too. The cursor is hidden while watching and shown again on exit, Ctrl-C included. Outside a terminal (a pipe, a file), `--watch` prints the list again on each new event, with no cursor or erase sequence, even with `--color always`.
 
 Under the drawing, after a blank line, comes the block of the run as listed above (its steps, the links taken more than once, its transitions):
@@ -156,31 +181,6 @@ links not drawn:
   ● guard     running
   ○ validate  pending
 ```
-
-- Without a recorded command, two flows whose entry step is shared are shown as `a | b` until
-  their steps diverge. With one, the run is the flow the command names.
-- A session can start a flow mid-way (for example at `frame`, its `refine` done in an earlier
-  session): when no flow holding the agent has a run open (or its last one finished), a step
-  of the flow opens a run where it starts, the steps before it shown `-`. Flows sharing that
-  step are shown as `a | b` as above; an agent holding two steps of one flow opens one run with
-  both steps `?` (ambiguous step) and only the steps before both shown `-`. Its entry step started later opens a new run. A step right after a
-  coordinator's step in mid-flow is the exception (see the limits).
-- An entry step that nothing leads back to, started again, closes the open run of its flow
-  (kept, unfinished) and opens a new one. An entry step a loop leads back to does so only when
-  the open run is stuck (nothing running, its last step `?` or `✗`).
-- A `?` or `✗` step never ends a run.
-- A step that links of several open runs lead to (an agent shared by two flows) goes to the run
-  whose link is the most recent: the one whose source step stopped last. For example, `guide`
-  left at `build` after `guard` rejected, then `implementer` (in `deliver` only) builds: the
-  next `guardian` follows `deliver`. A link older than one another run already took to that
-  step leads nowhere: a later `guardian` is not shown in `guide`. A link exactly as recent
-  (same second) as the one already taken elsewhere is still taken. Flows still shown together
-  (`deliver | guide`) are never split by this rule: their candidates keep moving together until
-  a step only one of them holds.
-- The project root is resolved as the hooks resolve it, so the command works from a
-  subdirectory and from a git worktree. A worktree without its own `.armadai/` writes and reads
-  the logs of the main checkout; a worktree with its own `.armadai/` writes and reads its own
-  `state/`.
 
 ## In a status bar
 

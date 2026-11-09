@@ -1331,6 +1331,7 @@ fn ctrl_c_outside_a_terminal_still_kills_by_sigint() {
     assert_eq!(w.status.signal(), Some(2), "{:?}", w.status);
 }
 
+// Covers the path outside a terminal only; the path in a terminal is checked in a pty (real trial).
 #[cfg(unix)]
 #[test]
 fn ctrl_c_ignored_by_the_parent_stays_ignored() {
