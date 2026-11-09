@@ -612,3 +612,70 @@ fn ui_subagent_status_line_must_be_a_boolean() {
     let d = &l.diagnostics[0];
     assert_eq!((d.code, d.line), ("invalid-yaml", Some(2)));
 }
+
+#[test]
+fn ui_panel_and_documents_load() {
+    let dir = ui_project("{ panel: true, documents: [docs, notes/specs] }");
+    let l = load_project(dir.path());
+    assert!(l.diagnostics.is_empty(), "{:?}", l.diagnostics);
+    let ui = l.project.unwrap().manifest.ui;
+    assert!(ui.panel);
+    assert_eq!(
+        ui.documents,
+        Some(vec!["docs".into(), "notes/specs".into()])
+    );
+    let l = load_project(ui_project("{ documents: [] }").path());
+    assert_eq!(l.project.unwrap().manifest.ui.documents, Some(vec![]));
+}
+
+#[test]
+fn ui_panel_must_be_a_boolean() {
+    let dir = ui_project("{ panel: maybe }");
+    let l = load_project(dir.path());
+    assert_eq!(l.diagnostics.len(), 1, "{:?}", l.diagnostics);
+    assert_eq!(
+        (l.diagnostics[0].code, l.diagnostics[0].line),
+        ("invalid-yaml", Some(2))
+    );
+}
+
+#[test]
+fn ui_documents_bad_folders_are_refused() {
+    for bad in [
+        "/abs",
+        "../up",
+        "a/../b",
+        ".",
+        ".armadai/x",
+        ".ARMADAI/x",
+        ".git",
+        ".Git/hooks",
+        "./",
+    ] {
+        let dir = ui_project(&format!("{{ documents: [docs, \"{bad}\"] }}"));
+        let ds = armadai_model::validate(dir.path());
+        assert_eq!(ds.len(), 1, "{bad}: {ds:?}");
+        let rendered = ds[0]
+            .render()
+            .replace(dir.path().to_str().unwrap(), "<root>");
+        let shown = rendered.lines().next().unwrap();
+        assert!(
+            shown.ends_with(&format!("error[bad-document-folder]: ui.documents entry `{bad}` must be a folder inside the project, outside .armadai/ and .git/")),
+            "{shown}"
+        );
+        assert!(
+            shown.starts_with("<root>/.armadai/project.yaml:2:"),
+            "{shown}"
+        );
+    }
+    let ds = armadai_model::validate(ui_project("{ documents: [\"\"] }").path());
+    assert_eq!(ds.len(), 1, "{ds:?}");
+    assert_eq!(ds[0].code, "bad-document-folder");
+    assert!(ds[0].message.starts_with("ui.documents entry `` must"));
+}
+
+#[test]
+fn ui_documents_good_folders_are_accepted() {
+    let dir = ui_project("{ documents: [docs, notes/specs, .github/docs, .gitignored] }");
+    assert!(armadai_model::validate(dir.path()).is_empty());
+}
