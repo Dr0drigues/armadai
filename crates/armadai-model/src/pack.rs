@@ -52,6 +52,19 @@ pub fn merge_manifest_values(pack: &Value, project: &Value) -> Value {
     }
 }
 
+/// A grant level is one unit: the project's level replaces the pack's level of the same
+/// key, its `allow` is not completed with the pack's rules (a level never widens silently).
+fn replace_grants(merged: &mut Value, project: &Value) {
+    let Some(mine) = project.pointer("/policy/grants").and_then(Value::as_object) else {
+        return;
+    };
+    if let Some(Value::Object(out)) = merged.pointer_mut("/policy/grants") {
+        for (k, v) in mine {
+            out.insert(k.clone(), v.clone());
+        }
+    }
+}
+
 fn manifest_path() -> &'static Path {
     Path::new("project.yaml")
 }
@@ -104,7 +117,9 @@ pub fn overlay(
         }
         (Some(a), Some(mut p)) => {
             p.as_object_mut().map(|m| m.remove("pack"));
-            merge_manifest_values(&a, &p)
+            let mut merged = merge_manifest_values(&a, &p);
+            replace_grants(&mut merged, &p);
+            merged
         }
     };
     let text =
@@ -123,6 +138,26 @@ mod tests {
 
     fn y(s: &str) -> Value {
         crate::yaml::from_str(s).unwrap()
+    }
+
+    #[test]
+    fn a_project_grant_level_replaces_the_packs_whole() {
+        let pack = b"policy:\n  grants:\n    keep: { allow: [\"Bash(a)\"] }\n    swap: { description: p, allow: [\"Bash(p)\"], until: s }\n".to_vec();
+        let project = b"policy:\n  grants:\n    swap: { allow: [\"Bash(q)\"] }\n    add: { allow: [\"Bash(n)\"] }\n".to_vec();
+        let out = overlay(
+            &BTreeMap::from([(manifest_path().into(), pack)]),
+            &BTreeMap::from([(manifest_path().into(), project)]),
+        )
+        .unwrap();
+        let v = y(std::str::from_utf8(&out[manifest_path()].1).unwrap());
+        assert_eq!(
+            v,
+            json!({"policy": {"grants": {
+                "keep": {"allow": ["Bash(a)"]},
+                "swap": {"allow": ["Bash(q)"]},
+                "add": {"allow": ["Bash(n)"]},
+            }}})
+        );
     }
 
     #[test]

@@ -503,6 +503,86 @@ fn bad_folder(out: &str) -> bool {
         })
 }
 
+/// `policy.grants`: ids, non-empty `allow`, resolvable `until`, no rule that a native
+/// `deny` already names (a grant never lifts a `deny`).
+fn check_grants(o: &mut Out, project: &Project) {
+    let man = (Kind::Manifest, "project");
+    let denied: Vec<&str> = project
+        .manifest
+        .native
+        .get("claude")
+        .and_then(|c| c.get("permissions")?.get("deny")?.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+    // every `<flow>/<step>`, and who holds each bare step
+    let mut qualified = BTreeSet::new();
+    let mut holders: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (fid, f) in &project.flows {
+        for sid in f.steps.keys() {
+            qualified.insert(format!("{fid}/{sid}"));
+            holders.entry(sid).or_default().push(fid);
+        }
+    }
+    for (name, g) in &project.manifest.policy.grants {
+        if !is_valid_id(name) {
+            o.err(
+                man,
+                "bad-id",
+                Some((name, true)),
+                format!("grant id `{name}` is not a valid id"),
+                Some("ids match [a-z0-9][a-z0-9-]{0,63}".into()),
+            );
+        }
+        if g.allow.iter().all(|r| r.trim().is_empty()) {
+            o.err(
+                man,
+                "grant-empty-allow",
+                Some((name, true)),
+                format!("grant `{name}` allows nothing"),
+                Some("list at least one native rule in `allow`, e.g. `Bash(git push *)`".into()),
+            );
+        }
+        for rule in g.allow.iter().filter(|r| denied.contains(&r.as_str())) {
+            o.err(
+                man,
+                "grant-over-deny",
+                Some((rule, false)),
+                format!(
+                    "grant `{name}` allows `{rule}`, which `native.claude.permissions.deny` denies"
+                ),
+                Some("a grant never lifts a `deny`: drop the rule from one of them".into()),
+            );
+        }
+        let Some(until) = g.until.as_deref() else {
+            continue;
+        };
+        if until.contains('/') {
+            if !qualified.contains(until) {
+                let known: BTreeSet<&str> = qualified.iter().map(String::as_str).collect();
+                o.unknown_ref(man, "unknown-step", "step", until, &known);
+            }
+        } else {
+            match holders.get(until).map_or(0, Vec::len) {
+                0 => {
+                    let known: BTreeSet<&str> = holders.keys().copied().collect();
+                    o.unknown_ref(man, "unknown-step", "step", until, &known);
+                }
+                1 => {}
+                _ => o.err(
+                    man,
+                    "grant-ambiguous-until",
+                    Some((until, false)),
+                    format!(
+                        "`until: {until}` of grant `{name}` is a step of several flows ({})",
+                        holders[until].join(", ")
+                    ),
+                    Some(format!("write `<flow>/{until}`")),
+                ),
+            }
+        }
+    }
+}
+
 pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
     let mut o = Out {
         origins,
@@ -613,6 +693,7 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
             }
         }
     }
+    check_grants(&mut o, project);
     o.native_keys(man, m.native.keys());
     for a in m
         .coordinator

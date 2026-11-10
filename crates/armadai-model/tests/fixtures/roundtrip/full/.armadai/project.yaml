@@ -7,6 +7,11 @@ coordinator: lead
 policy:
   delegation: strict
   free_agents: [explorer]
+  grants:
+    push:
+      description: Push feature branches
+      allow:
+      - Bash(git push origin feature/*)
 native:
   claude:
     anything: [1, 2]

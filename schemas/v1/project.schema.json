@@ -7,6 +7,34 @@
       ],
       "type": "string"
     },
+    "Grant": {
+      "additionalProperties": false,
+      "description": "A named permission level: native permission rules a user may switch on for a while.",
+      "properties": {
+        "allow": {
+          "default": [],
+          "description": "Native permission rules, e.g. `Bash(git push origin feature/*)`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "until": {
+          "description": "Default end of the level: a step id, or `<flow>/<step>`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "PackRef": {
       "additionalProperties": false,
       "description": "A pack this project is built on (reference mode): its files come from the cache,\nthe project's own files overlay them.",
@@ -41,6 +69,13 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "grants": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Grant"
+          },
+          "description": "Named permission levels, activated by `armadai grant`.",
+          "type": "object"
         }
       },
       "type": "object"

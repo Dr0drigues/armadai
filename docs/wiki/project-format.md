@@ -42,6 +42,11 @@ coordinator: lead            # optional: agent id whose prompt becomes the root 
 policy:                      # optional
   delegation: strict         # off (default) | strict
   free_agents: [explorer, Explore]    # reachable from anywhere: project agent ids, or agents the target provides (Claude Code's Explore)
+  grants:                    # optional: named permission levels, switched on by `armadai grant`
+    push:
+      description: Push feature branches
+      allow: ["Bash(git push origin feature/*)"]   # native permission rules, at least one
+      until: publish         # optional default end: a step id, or <flow>/<step>
 native: { claude: {} }       # optional, opaque
 ui:                          # optional, opt-in interface keys
   status_line: true          # Claude Code only: a status bar with the flow progress (default false)
@@ -479,7 +484,7 @@ warning on stderr.
 | `ignored-file` | warning | A `.yml` file in `flows/` or `automations/` is not loaded | Rename it to `.yaml` |
 | `sequence-and-steps` | error | A flow has both `sequence` and `steps`/`links` | Keep one form |
 | `duplicate-step` | error | A `sequence` defines the same step id twice | Use `{ id: …, agent: … }` for the repeat |
-| `bad-id` | error | A file, folder or step id, a `vars` name, a slot name of an agent's `slots` or `pack.name`, does not match `[a-z0-9][a-z0-9-]{0,63}` | Rename it in kebab-case |
+| `bad-id` | error | A file, folder or step id, a `vars` name, a `policy.grants` key, a slot name of an agent's `slots` or `pack.name`, does not match `[a-z0-9][a-z0-9-]{0,63}` | Rename it in kebab-case |
 | `unknown-target` | error | A target in `targets`, `outputs` or a `native` key is not supported | Use `claude`, `codex`, `copilot` or `opencode` |
 | `bad-output` | error | An `outputs` value is absolute, climbs with `..`, is the project root, or points into `.armadai/` or `.git/` (any case) | Use a folder inside the project such as `.claude` (`link --output` can point elsewhere for one run) |
 | `bad-document-folder` | error | A `ui.documents` entry is empty, absolute, climbs with `..`, is the project root, or points into `.armadai/` or `.git/` | Name a folder of the project such as `docs` |
@@ -496,7 +501,10 @@ warning on stderr.
 | `unknown-skill-key` | warning | A skill's frontmatter has a key outside the standard | None needed if another tool uses it |
 | `empty-flow` | error | A flow has no step | Add steps or delete the file |
 | `duplicate-step-state` | error | `states` repeats a state or redeclares `done`/`failed` | Remove the duplicate |
-| `unknown-step` | error | A link's `from`/`to`, an `on_failure` or `start` names no step of the flow | Use an existing step id |
+| `unknown-step` | error | A link's `from`/`to`, an `on_failure`, a `start` or a grant's `until` names no step (of the flow; of any flow, or of `<flow>/<step>`, for `until`) | Use an existing step id |
+| `grant-empty-allow` | error | A `policy.grants` level has no `allow` rule (missing, empty or blank) | List at least one native rule |
+| `grant-ambiguous-until` | error | A grant's bare `until` step is held by several flows | Write `<flow>/<step>` |
+| `grant-over-deny` | error | A grant's rule is, character for character, a `native.claude.permissions.deny` rule | Drop it from one of them: a grant never lifts a `deny` |
 | `unknown-state` | error | A link's `when` is not a state of its `from` step | Add it to `states`, or use `done`/`failed` |
 | `self-link` | error | A link, or `on_failure`, goes from a step to itself | Point it at another step |
 | `duplicate-link` | error | The same link is declared twice | Remove one |
