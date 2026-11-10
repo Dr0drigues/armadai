@@ -141,6 +141,26 @@ impl Compiler for ClaudeCompiler {
                 ),
             );
         }
+        if !project.manifest.policy.grants.is_empty() {
+            plan.report.push(
+                T,
+                "policy grants",
+                Status::Compiled,
+                Some(
+                    "PermissionRequest hooks (armadai __claude-grant), one per rule; inactive \
+                     until armadai grant",
+                ),
+            );
+            plan.report.push(
+                T,
+                "grant state guard",
+                Status::Compiled,
+                Some(
+                    "deny rules Bash(armadai grant *) and Edit(/.armadai/state/grants.yaml) in \
+                     .claude/settings.json",
+                ),
+            );
+        }
         claude_settings::native_settings(project)?;
         if !claude_settings::native_keys(project)?.is_empty() {
             plan.report.push(
@@ -629,6 +649,39 @@ mod tests {
             text(&plan, "agents/dev.md"),
             "---\nname: dev\ndescription: d\n---\nYou build.\n",
             "no step with states: no instruction"
+        );
+    }
+
+    const FLOW_STEP: (&str, &[u8]) = (".armadai/flows/f.yaml", b"steps:\n  step: { agent: dev }\n");
+
+    #[test]
+    fn levels_are_reported_with_their_hooks_and_the_state_guard() {
+        let grants: (&str, &[u8]) = (".armadai/project.yaml", b"schema_version: 1\npolicy:\n  grants:\n    lvl:\n      allow: [\"Bash(echo *)\"]\n      until: step\n");
+        let plan = compile(&[grants, DEV, FLOW_STEP]).unwrap();
+        let l = |e: &str| {
+            let l = line(&plan, e);
+            (l.status, l.reason.clone())
+        };
+        assert_eq!(
+            l("policy grants"),
+            (
+                Status::Compiled,
+                Some("PermissionRequest hooks (armadai __claude-grant), one per rule; inactive until armadai grant".into())
+            )
+        );
+        assert_eq!(
+            l("grant state guard"),
+            (
+                Status::Compiled,
+                Some("deny rules Bash(armadai grant *) and Edit(/.armadai/state/grants.yaml) in .claude/settings.json".into())
+            )
+        );
+        let plan = compile(&[M, DEV]).unwrap();
+        assert!(
+            plan.report
+                .lines
+                .iter()
+                .all(|l| l.element != "policy grants" && l.element != "grant state guard")
         );
     }
 

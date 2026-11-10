@@ -267,6 +267,14 @@ fn compile_with(
             Some(super::report::UI_CLAUDE_ONLY),
         );
     }
+    if !project.manifest.policy.grants.is_empty() {
+        plan.report.push(
+            T,
+            "policy grants",
+            Status::NotCompiled,
+            Some(super::report::UI_CLAUDE_ONLY),
+        );
+    }
     if project.manifest.ui.status_line {
         plan.report.push(
             T,
@@ -694,6 +702,25 @@ mod tests {
                 .lines
                 .iter()
                 .all(|l| l.element != "delegation marker")
+        );
+    }
+
+    #[test]
+    fn levels_are_not_compiled_for_opencode() {
+        let grants: (&str, &[u8]) = (".armadai/project.yaml", b"schema_version: 1\npolicy:\n  grants:\n    lvl:\n      allow: [\"Bash(echo *)\"]\n      until: step\n");
+        let agent: (&str, &[u8]) = (".armadai/agents/dev.md", b"---\ndescription: d\n---\nB\n");
+        let flow: (&str, &[u8]) = (".armadai/flows/f.yaml", b"steps:\n  step: { agent: dev }\n");
+        let plan = compile(&[grants, agent, flow]).unwrap();
+        assert_eq!(
+            line(&plan, "policy grants"),
+            (Status::NotCompiled, Some("Claude Code only".into()))
+        );
+        let plan = compile(&[M, agent]).unwrap();
+        assert!(
+            plan.report
+                .lines
+                .iter()
+                .all(|l| l.element != "policy grants")
         );
     }
 

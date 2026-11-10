@@ -194,6 +194,14 @@ impl Compiler for LegacyCompiler {
                 Some(super::report::UI_CLAUDE_ONLY),
             );
         }
+        if !project.manifest.policy.grants.is_empty() {
+            r.push(
+                t,
+                "policy grants",
+                Status::NotCompiled,
+                Some(super::report::UI_CLAUDE_ONLY),
+            );
+        }
         if project.manifest.ui.status_line {
             r.push(
                 t,
@@ -377,6 +385,43 @@ mod tests {
                 line(&plan, "skill review-checklist").unwrap().status,
                 Status::Compiled
             );
+        }
+    }
+
+    #[test]
+    fn levels_are_not_compiled_for_codex_and_copilot() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".armadai/agents")).unwrap();
+        std::fs::write(
+            dir.path().join(".armadai/agents/dev.md"),
+            "---\ndescription: d\n---\nB\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join(".armadai/flows")).unwrap();
+        std::fs::write(
+            dir.path().join(".armadai/flows/f.yaml"),
+            "steps:\n  step: { agent: dev }\n",
+        )
+        .unwrap();
+        let manifest = dir.path().join(".armadai/project.yaml");
+        std::fs::write(&manifest, "schema_version: 1\n").unwrap();
+        let (none, _) = armadai_model::load_checked(dir.path()).unwrap();
+        std::fs::write(&manifest, String::from_utf8(b"schema_version: 1\npolicy:\n  grants:\n    lvl:\n      allow: [\"Bash(echo *)\"]\n      until: step\n".to_vec()).unwrap()).unwrap();
+        let (some, _) = armadai_model::load_checked(dir.path()).unwrap();
+        for t in TARGETS {
+            let plan = LegacyCompiler { target: t }
+                .compile(&some, dir.path(), dir.path())
+                .unwrap();
+            let l = line(&plan, "policy grants").unwrap_or_else(|| panic!("{t}: no line"));
+            assert_eq!(
+                (l.status, l.reason.as_deref()),
+                (Status::NotCompiled, Some("Claude Code only")),
+                "{t}"
+            );
+            let plan = LegacyCompiler { target: t }
+                .compile(&none, dir.path(), dir.path())
+                .unwrap();
+            assert!(line(&plan, "policy grants").is_none(), "{t}");
         }
     }
 

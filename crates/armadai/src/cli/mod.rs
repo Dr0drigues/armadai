@@ -379,6 +379,14 @@ pub enum Command {
     /// delegation topology. Hidden from help.
     #[command(hide = true, name = "__claude-policy-gate")]
     ClaudePolicyGate,
+    /// Internal: called by the Claude Code `PermissionRequest` hook of a
+    /// permission level (`policy.grants`). Reads the hook JSON from stdin and
+    /// allows the call only while the level is active. Hidden from help.
+    #[command(hide = true, name = "__claude-grant")]
+    ClaudeGrant {
+        /// The permission level
+        level: String,
+    },
     /// Internal: called by the Claude Code sub-agent hooks. Reads the hook
     /// JSON from stdin and appends the event to the session log under
     /// `.armadai/state/claude/`. Hidden from help.
@@ -519,6 +527,9 @@ pub fn handle(cli: Cli) -> anyhow::Result<()> {
             Ok(())
         }
         Command::ClaudePolicyGate => crate::claude_adapter::policy_gate::gate_from_stdin(),
+        Command::ClaudeGrant { level } => {
+            crate::claude_adapter::grant_hook::grant_from_stdin(&level)
+        }
         Command::RecordFlowEvent => crate::flow_status::record::record_from_stdin(),
         Command::ClaudeStatusline => flow::statusline_main(),
         Command::ClaudeSubagentStatusline => flow::subagent_statusline_main(),
@@ -567,6 +578,7 @@ mod tests {
         let hidden = hidden_subcommand_names();
         for name in [
             "__claude-policy-gate",
+            "__claude-grant",
             "__record-flow-event",
             "__claude-statusline",
             "__claude-subagent-statusline",

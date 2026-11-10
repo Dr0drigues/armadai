@@ -139,7 +139,35 @@ pub fn hook_entries(project: &Project) -> anyhow::Result<Vec<HookEntry>> {
             }
         }
     }
+    for e in grant_entries(project) {
+        if !out.contains(&e) {
+            out.push(e);
+        }
+    }
     Ok(out)
+}
+
+/// The two `deny` rules that keep an agent from switching a level on itself (D15, D16:
+/// a deny rule covers the call Claude usually makes, it is not a security boundary).
+pub const GRANT_GUARD_RULES: [&str; 2] =
+    ["Bash(armadai grant *)", "Edit(/.armadai/state/grants.yaml)"];
+
+/// One `PermissionRequest` entry per (level, rule), levels and rules in order: the
+/// matcher is the rule's tool name, `if` the rule itself (best effort, hooks doc D2-D4),
+/// the command `armadai __claude-grant <level>`. None without `policy.grants`.
+pub fn grant_entries(project: &Project) -> Vec<HookEntry> {
+    let mut out = Vec::new();
+    for (level, grant) in &project.manifest.policy.grants {
+        for rule in &grant.allow {
+            out.push(HookEntry {
+                event: "PermissionRequest".into(),
+                matcher: Some(crate::claude_adapter::grant_hook::rule_tool(rule).to_string()),
+                command: format!("armadai __claude-grant {level}"),
+                native: BTreeMap::from([("if".to_string(), Value::String(rule.clone()))]),
+            });
+        }
+    }
+    out
 }
 
 /// The flow recording hooks (`armadai __record-flow-event`), asynchronous so they never
@@ -331,7 +359,32 @@ pub fn native_settings(project: &Project) -> anyhow::Result<BTreeMap<String, Val
         }
         keys.insert("statusLine".into(), status_line_value());
     }
+    if !project.manifest.policy.grants.is_empty() {
+        guard_grant_state(&mut keys)?;
+    }
     Ok(keys)
+}
+
+/// Add [`GRANT_GUARD_RULES`] to `permissions.deny`, after the project's own rules.
+fn guard_grant_state(keys: &mut BTreeMap<String, Value>) -> anyhow::Result<()> {
+    let perms = keys
+        .entry("permissions".to_string())
+        .or_insert_with(|| Value::Object(Map::new()));
+    let Value::Object(perms) = perms else {
+        bail!("native.claude key `permissions` must be a mapping when policy.grants is set");
+    };
+    let deny = perms
+        .entry("deny")
+        .or_insert_with(|| Value::Array(Vec::new()));
+    let Value::Array(deny) = deny else {
+        bail!("native.claude key `permissions.deny` must be a list when policy.grants is set");
+    };
+    for rule in GRANT_GUARD_RULES {
+        if !deny.iter().any(|d| d.as_str() == Some(rule)) {
+            deny.push(Value::String(rule.into()));
+        }
+    }
+    Ok(())
 }
 
 /// The path of the first plugin key the user already set to another value (neither
@@ -977,6 +1030,127 @@ mod tests {
             ])
         );
         assert_eq!(owned2.entries, flow_status_entries());
+    }
+
+    fn grants_project(extra_manifest: &str) -> (tempfile::TempDir, Project) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".armadai/agents")).unwrap();
+        std::fs::write(
+            dir.path().join(".armadai/project.yaml"),
+            format!(
+                "schema_version: 1\npolicy:\n  grants:\n    zeta:\n      allow: [\"Read(/logs/*)\"]\n    auto-until-mr:\n      allow: [\"Bash(git push origin feature/*)\", \"Bash(git push:*)\"]\n      until: publish\n{extra_manifest}"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join(".armadai/agents/dev.md"),
+            "---\ndescription: d\n---\nB\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join(".armadai/flows")).unwrap();
+        std::fs::write(
+            dir.path().join(".armadai/flows/ev.yaml"),
+            "steps:\n  publish: { agent: dev }\n",
+        )
+        .unwrap();
+        let (p, _) = armadai_model::load_checked(dir.path()).unwrap();
+        (dir, p)
+    }
+
+    fn grant(tool: &str, level: &str, rule: &str) -> HookEntry {
+        HookEntry {
+            event: "PermissionRequest".into(),
+            matcher: Some(tool.into()),
+            command: format!("armadai __claude-grant {level}"),
+            native: BTreeMap::from([("if".to_string(), json!(rule))]),
+        }
+    }
+
+    #[test]
+    fn a_level_becomes_one_permission_request_hook_per_rule() {
+        let (_d, p) = grants_project("");
+        // levels in id order, rules in order
+        assert_eq!(
+            grant_entries(&p),
+            vec![
+                grant("Bash", "auto-until-mr", "Bash(git push origin feature/*)"),
+                grant("Bash", "auto-until-mr", "Bash(git push:*)"),
+                grant("Read", "zeta", "Read(/logs/*)"),
+            ]
+        );
+        let hooks = hook_entries(&p).unwrap();
+        assert_eq!(&hooks[hooks.len() - 3..], grant_entries(&p).as_slice());
+    }
+
+    #[test]
+    fn without_levels_there_is_no_grant_hook_and_no_guard_rule() {
+        let (_d, p) = {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
+            std::fs::write(
+                dir.path().join(".armadai/project.yaml"),
+                "schema_version: 1\n",
+            )
+            .unwrap();
+            let (p, _) = armadai_model::load_checked(dir.path()).unwrap();
+            (dir, p)
+        };
+        assert_eq!(grant_entries(&p), vec![]);
+        assert_eq!(hook_entries(&p).unwrap(), vec![]);
+        assert_eq!(native_settings(&p).unwrap(), BTreeMap::new());
+    }
+
+    #[test]
+    fn levels_add_the_two_guard_rules_after_the_projects_own_denies() {
+        let (_d, p) = grants_project(
+            "native:\n  claude:\n    permissions:\n      deny: [\"Bash(curl *)\"]\n",
+        );
+        assert_eq!(
+            native_settings(&p).unwrap()["permissions"],
+            json!({"deny": ["Bash(curl *)", "Bash(armadai grant *)", "Edit(/.armadai/state/grants.yaml)"]})
+        );
+        // a guard rule the project already denies is not added twice
+        let (_d, p) = grants_project(
+            "native:\n  claude:\n    permissions:\n      deny: [\"Bash(armadai grant *)\"]\n",
+        );
+        assert_eq!(
+            native_settings(&p).unwrap()["permissions"],
+            json!({"deny": ["Bash(armadai grant *)", "Edit(/.armadai/state/grants.yaml)"]})
+        );
+        // no native permissions: the guard alone
+        let (_d, p) = grants_project("");
+        assert_eq!(
+            native_settings(&p).unwrap()["permissions"],
+            json!({"deny": ["Bash(armadai grant *)", "Edit(/.armadai/state/grants.yaml)"]})
+        );
+    }
+
+    #[test]
+    fn grant_hooks_and_guard_rules_are_owned_and_unlink_gives_the_user_file_back() {
+        let (_d, p) = grants_project("");
+        let hooks = hook_entries(&p).unwrap();
+        let keys = native_settings(&p).unwrap();
+        let (merged, owned, _) =
+            merge_settings(Some(USER), &hooks, &keys, &Owned::default(), false).unwrap();
+        let v = value(&merged);
+        assert_eq!(
+            v["hooks"]["PermissionRequest"],
+            json!([
+                {"matcher": "Bash", "hooks": [{"type": "command", "command": "armadai __claude-grant auto-until-mr", "if": "Bash(git push origin feature/*)"}]},
+                {"matcher": "Bash", "hooks": [{"type": "command", "command": "armadai __claude-grant auto-until-mr", "if": "Bash(git push:*)"}]},
+                {"matcher": "Read", "hooks": [
+                    {"type": "command", "command": "armadai __claude-grant zeta", "if": "Read(/logs/*)"}
+                ]}
+            ])
+        );
+        assert_eq!(
+            v["permissions"]["deny"],
+            json!(["Bash(armadai grant *)", "Edit(/.armadai/state/grants.yaml)"])
+        );
+        assert_eq!(
+            value(&remove_entries(&merged, &owned).unwrap()),
+            value(USER)
+        );
     }
 
     #[test]

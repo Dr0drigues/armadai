@@ -1370,3 +1370,116 @@ fn link_adds_the_state_line_to_an_existing_gitignore_once() {
         "state/\n# mine\nvars.local.yaml\n"
     );
 }
+
+const GRANTS_MANIFEST: &str = "schema_version: 1\ncoordinator: lead\npolicy:\n  delegation: strict\n  grants:\n    auto-until-mr:\n      allow: [\"Bash(git push origin feature/*)\"]\n      until: ship/build\n";
+
+fn grant_project(manifest: &str) -> Env {
+    let files: Vec<(&str, &str)> = PROJECT
+        .iter()
+        .map(|&(p, c)| {
+            if p == ".armadai/project.yaml" {
+                (p, manifest)
+            } else {
+                (p, c)
+            }
+        })
+        .collect();
+    let env = Env::new(&files);
+    write(&env.root(), &[(".claude/settings.json", USER_SETTINGS)]);
+    env
+}
+
+fn settings_of(env: &Env) -> serde_json::Value {
+    serde_json::from_str(
+        &std::fs::read_to_string(env.root().join(".claude/settings.json")).unwrap(),
+    )
+    .unwrap()
+}
+
+/// Levels are opt-in: a project without `policy.grants` gets no `PermissionRequest` hook
+/// and no deny rule; with them link writes both, relinking after the levels are gone
+/// removes both, and unlink gives the user's file back.
+#[test]
+fn levels_add_their_hooks_and_guard_rules_and_unlink_removes_them() {
+    let without = grant_project(PROJECT[0].1);
+    without.ok(&["link"]);
+    let s = settings_of(&without);
+    assert!(s["hooks"].get("PermissionRequest").is_none(), "{s}");
+    assert_eq!(s["permissions"], serde_json::json!({"allow": ["Bash(ls)"]}));
+
+    let env = grant_project(GRANTS_MANIFEST);
+    let before = tree(&env.root());
+    let out = env.ok(&["link"]);
+    let s = settings_of(&env);
+    assert_eq!(
+        s["hooks"]["PermissionRequest"],
+        serde_json::json!([{"matcher": "Bash", "hooks": [{"type": "command", "command": "armadai __claude-grant auto-until-mr", "if": "Bash(git push origin feature/*)"}]}])
+    );
+    assert_eq!(
+        s["permissions"],
+        serde_json::json!({"allow": ["Bash(ls)"], "deny": ["Bash(armadai grant *)", "Edit(/.armadai/state/grants.yaml)"]})
+    );
+    assert!(
+        out.contains("claude: policy grants: compiled (PermissionRequest hooks (armadai __claude-grant), one per rule; inactive until armadai grant)"),
+        "{out}"
+    );
+    assert!(
+        out.contains("claude: grant state guard: compiled (deny rules Bash(armadai grant *) and Edit(/.armadai/state/grants.yaml) in .claude/settings.json)"),
+        "{out}"
+    );
+    // the levels are dropped: the entries and the rules go, the user's stay
+    std::fs::write(env.root().join(".armadai/project.yaml"), PROJECT[0].1).unwrap();
+    env.ok(&["link"]);
+    let s = settings_of(&env);
+    assert!(s["hooks"].get("PermissionRequest").is_none(), "{s}");
+    assert_eq!(s["permissions"], serde_json::json!({"allow": ["Bash(ls)"]}));
+    // and back, then unlink
+    std::fs::write(env.root().join(".armadai/project.yaml"), GRANTS_MANIFEST).unwrap();
+    env.ok(&["link"]);
+    env.ok(&["unlink"]);
+    assert_eq!(tree(&env.root()), before);
+}
+
+/// The hook end to end: nothing while no level is on, `allow` while one is, and nothing
+/// for a command the rule does not cover or a compound one.
+#[test]
+fn the_grant_hook_allows_only_while_a_level_is_on() {
+    let env = grant_project(GRANTS_MANIFEST);
+    let call = |command: &str| -> String {
+        let payload = serde_json::json!({
+            "session_id": "s", "cwd": env.root().to_string_lossy(),
+            "hook_event_name": "PermissionRequest", "tool_name": "Bash",
+            "tool_input": {"command": command},
+        })
+        .to_string();
+        let o = Command::cargo_bin("armadai")
+            .unwrap()
+            .args(["__claude-grant", "auto-until-mr"])
+            .env("ARMADAI_CONFIG_DIR", env.dir.path().join("config"))
+            .write_stdin(payload)
+            .output()
+            .unwrap();
+        assert!(o.status.success());
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    };
+    let push = "git push origin feature/x";
+    assert_eq!(call(push), "", "no state");
+    let state = env.root().join(".armadai/state/grants.yaml");
+    std::fs::create_dir_all(state.parent().unwrap()).unwrap();
+    let until = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+    let since = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+    std::fs::write(&state, format!("version: 1\nactive:\n  auto-until-mr:\n    since: \"{since}\"\n    expires_at: \"{until}\"\n")).unwrap();
+    assert_eq!(
+        call(push),
+        "{\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"decision\":{\"behavior\":\"allow\"}}}\n"
+    );
+    assert_eq!(call("git push origin main"), "");
+    assert_eq!(call("git push origin feature/x && rm -rf x"), "");
+    // the level is over
+    let past = (chrono::Utc::now() - chrono::Duration::minutes(1)).to_rfc3339();
+    std::fs::write(&state, format!("version: 1\nactive:\n  auto-until-mr:\n    since: \"{since}\"\n    expires_at: \"{past}\"\n")).unwrap();
+    assert_eq!(call(push), "");
+    // a state that does not read
+    std::fs::write(&state, "version: [\n").unwrap();
+    assert_eq!(call(push), "");
+}
