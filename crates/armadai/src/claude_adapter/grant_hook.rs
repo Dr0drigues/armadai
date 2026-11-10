@@ -573,6 +573,16 @@ mod tests {
                 "{name}"
             );
         }
+        // a tool whose input carries a `command` the level's Bash rule covers (an MCP tool,
+        // another shell tool) is no Bash call: only the tool name decides
+        for name in ["mcp__s__run", "mcp__s__t", "Task", "BashOutput"] {
+            let raw = serde_json::json!({
+                "session_id": "s", "cwd": root(), "hook_event_name": "PermissionRequest",
+                "tool_name": name, "tool_input": { "command": "echo grant-probe x" },
+            })
+            .to_string();
+            assert_eq!(run(&raw, Some(&st), &["Bash(echo *)"]), None, "{name}");
+        }
         // control: the same state answers a Bash rule
         assert_eq!(
             run(&bash("echo hi"), Some(&st), &["Bash(echo *)"]).as_deref(),
