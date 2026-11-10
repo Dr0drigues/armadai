@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, HashMap};
 use armadai_model::Project;
 
 use super::record::{EventKind, FlowEvent, GROUP_SEP};
-use super::runs::{merge_stops, runs_and_markers};
+use super::runs::{Run, merge_stops, runs_and_markers};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum By {
@@ -34,8 +34,10 @@ pub struct Group {
     pub max_s: u64,
     pub total_s: u64,
     pub states: BTreeMap<String, u32>,
-    /// `rejected` or `rejected-*` over the states rendered; `None` when no
-    /// step the group holds declares one.
+    /// `rejected` or `rejected-*` over the states rendered by calls whose step
+    /// declares one; `None` when there is none. `--by agent` cannot tell a
+    /// call's step without a marker: an agent holding a step that rejects and
+    /// one that does not counts the states of both in the denominator.
     pub rejection_rate: Option<f64>,
     /// Links taken more than once: the sum of `times - 1`, by the step they leave.
     pub loops: u32,
@@ -71,11 +73,15 @@ struct Acc {
     calls: u32,
     resumed: u32,
     states: BTreeMap<String, u32>,
-    can_reject: bool,
+    /// States rendered by calls whose step declares a rejection, and the rejections among them.
+    rejectable: u32,
+    rejected: u32,
     loops: u32,
 }
 
-pub fn stats(project: &Project, events: &[FlowEvent], by: By) -> Stats {
+/// `flow`: only the calls and loops of that flow (by the steps the agent
+/// holds, or by the marker); unmarked calls stay in `unmarked_calls`.
+pub fn stats(project: &Project, events: &[FlowEvent], by: By, flow: Option<&str>) -> Stats {
     let mut calls: BTreeMap<&str, Call> = BTreeMap::new();
     for e in events.iter().filter(|e| !e.agent_id.is_empty()) {
         match e.event {
@@ -95,7 +101,23 @@ pub fn stats(project: &Project, events: &[FlowEvent], by: By) -> Stats {
             _ => {}
         }
     }
-    let (runs, markers) = runs_and_markers(project, events);
+    let (found, markers) = runs_and_markers(project, events);
+    // under --by step|lot only the runs a marker placed count: an inferred run
+    // has no lot and its calls are not in any group
+    let mut runs: Vec<Run> = (found.into_iter())
+        .filter(|(_, marked)| *marked || by == By::Agent)
+        .map(|(r, _)| r)
+        .collect();
+    if let Some(f) = flow {
+        let holds = |agent: &str| {
+            (project.flows.get(f)).is_some_and(|fl| fl.steps.values().any(|s| s.agent == agent))
+        };
+        calls.retain(|id, c| match by {
+            By::Agent => holds(&c.agent),
+            By::Step | By::Lot => markers.get(*id).is_none_or(|m| m.0 == f),
+        });
+        runs.retain(|r| r.flow.split(GROUP_SEP).any(|x| x == f));
+    }
     let declares_rejection = |flow: &str, step: &str| {
         (project.flows.get(flow))
             .and_then(|f| f.steps.get(step))
@@ -121,7 +143,7 @@ pub fn stats(project: &Project, events: &[FlowEvent], by: By) -> Stats {
         }
     };
     let mut groups: BTreeMap<String, Acc> = BTreeMap::new();
-    let mut key_for: HashMap<&str, String> = HashMap::new();
+    let mut key_for: HashMap<&str, (String, bool)> = HashMap::new();
     let mut unmarked_calls = 0;
     for (id, c) in &calls {
         let Some((key, can_reject)) = key_of(id, c) else {
@@ -131,20 +153,23 @@ pub fn stats(project: &Project, events: &[FlowEvent], by: By) -> Stats {
         let g = groups.entry(key.clone()).or_default();
         g.calls += 1;
         g.resumed += c.starts - 1;
-        g.can_reject |= can_reject;
         g.durations
             .extend(c.stopped.map(|s| s.saturating_sub(c.started)));
-        key_for.insert(id, key);
+        key_for.insert(id, (key, can_reject));
     }
     for e in merge_stops(events) {
         let (EventKind::Stop, Some(state)) = (&e.event, &e.state) else {
             continue;
         };
-        if let Some(g) = key_for
-            .get(e.agent_id.as_str())
-            .and_then(|k| groups.get_mut(k))
-        {
+        let Some((key, can_reject)) = key_for.get(e.agent_id.as_str()) else {
+            continue;
+        };
+        if let Some(g) = groups.get_mut(key) {
             *g.states.entry(state.clone()).or_default() += 1;
+            if *can_reject {
+                g.rejectable += 1;
+                g.rejected += u32::from(is_rejection(state));
+            }
         }
     }
     for r in &runs {
@@ -173,11 +198,6 @@ pub fn stats(project: &Project, events: &[FlowEvent], by: By) -> Stats {
                 _ if n % 2 == 1 => a.durations[n / 2],
                 _ => (a.durations[n / 2 - 1] + a.durations[n / 2]) / 2,
             };
-            let rendered: u32 = a.states.values().sum();
-            let rejected: u32 = (a.states.iter())
-                .filter(|(w, _)| is_rejection(w))
-                .map(|(_, n)| n)
-                .sum();
             Group {
                 key,
                 calls: a.calls,
@@ -186,8 +206,8 @@ pub fn stats(project: &Project, events: &[FlowEvent], by: By) -> Stats {
                 max_s: a.durations.last().copied().unwrap_or(0),
                 total_s: a.durations.iter().sum(),
                 states: a.states,
-                rejection_rate: (a.can_reject && rendered > 0)
-                    .then(|| f64::from(rejected) / f64::from(rendered)),
+                rejection_rate: (a.rejectable > 0)
+                    .then(|| f64::from(a.rejected) / f64::from(a.rejectable)),
                 loops: a.loops,
             }
         })
@@ -284,7 +304,7 @@ mod tests {
 
     #[test]
     fn by_agent_counts_starts_and_floors_an_even_median() {
-        let s = stats(&project(), &one_loop(), By::Agent);
+        let s = stats(&project(), &one_loop(), By::Agent, None);
         assert_eq!(s.by, By::Agent);
         assert_eq!(s.unmarked_calls, 0);
         assert!(!s.any_marked);
@@ -329,7 +349,7 @@ mod tests {
         e.push(start(400, "q1", "qa"));
         e.extend(stops(405, "q1", "qa", Some("approved")));
         e.push(start(500, "q3", "qa")); // never stopped
-        let s = stats(&project(), &e, By::Agent);
+        let s = stats(&project(), &e, By::Agent, None);
         let qa = group(&s, "qa");
         assert_eq!((qa.calls, qa.resumed), (3, 2));
         // first start to first stop: 12 and 40; q3 has no duration
@@ -352,7 +372,7 @@ mod tests {
             e.push(start(t0, &id, "dev"));
             e.extend(stops(t0 + d, &id, "dev", None));
         }
-        let dev = &stats(&project(), &e, By::Agent).groups[0];
+        let dev = &stats(&project(), &e, By::Agent, None).groups[0];
         assert_eq!((dev.median_s, dev.max_s, dev.total_s), (45, 70, 145));
         assert!(dev.states.is_empty());
     }
@@ -379,7 +399,7 @@ mod tests {
     #[test]
     fn by_step_and_by_lot_count_marked_starts_and_set_the_rest_aside() {
         let p = project();
-        let s = stats(&p, &marked(), By::Step);
+        let s = stats(&p, &marked(), By::Step, None);
         assert!(s.any_marked);
         assert_eq!(s.unmarked_calls, 1);
         let keys: Vec<&str> = s.groups.iter().map(|g| g.key.as_str()).collect();
@@ -394,7 +414,7 @@ mod tests {
         assert_eq!(guard.rejection_rate, Some(0.5));
         assert_eq!(build.rejection_rate, None);
 
-        let s = stats(&p, &marked(), By::Lot);
+        let s = stats(&p, &marked(), By::Lot, None);
         assert_eq!(s.unmarked_calls, 1);
         let keys: Vec<&str> = s.groups.iter().map(|g| g.key.as_str()).collect();
         assert_eq!(keys, ["(none)", "12", "7"]);
@@ -405,7 +425,7 @@ mod tests {
         );
         assert_eq!(
             (l12.calls, l12.total_s, l12.rejection_rate),
-            (2, 42, Some(0.5))
+            (2, 42, Some(1.0))
         );
         assert_eq!((l7.calls, l7.total_s, l7.rejection_rate), (1, 15, None));
     }
@@ -413,7 +433,7 @@ mod tests {
     #[test]
     fn without_a_marker_nothing_is_grouped_by_step_or_lot() {
         for by in [By::Step, By::Lot] {
-            let s = stats(&project(), &one_loop(), by);
+            let s = stats(&project(), &one_loop(), by, None);
             assert!(s.groups.is_empty());
             assert!(!s.any_marked);
             assert_eq!(s.unmarked_calls, 5);
@@ -433,7 +453,7 @@ mod tests {
             e.push(ev(t + 120, EventKind::Stop, &q, "qa", Some(verdict)));
             e.push(ev(t + 121, EventKind::Stop, &q, "qa", Some(verdict)));
         }
-        let s = stats(&project(), &e, By::Agent);
+        let s = stats(&project(), &e, By::Agent, None);
         // build -> guard three times, guard -> build twice
         assert_eq!((group(&s, "dev").loops, group(&s, "qa").loops), (2, 1));
         let qa = group(&s, "qa");
@@ -442,8 +462,82 @@ mod tests {
     }
 
     #[test]
+    fn a_flow_keeps_the_calls_its_agents_hold() {
+        let p = project();
+        let mut e = one_loop();
+        e.push(start(2000, "x1", "ghost")); // an agent no step holds
+        e.extend(stops(2010, "x1", "ghost", None));
+        let s = stats(&p, &e, By::Agent, Some("deliver"));
+        let keys: Vec<&str> = s.groups.iter().map(|g| g.key.as_str()).collect();
+        assert_eq!(keys, ["architect", "dev", "qa"]);
+        assert_eq!(group(&s, "dev").loops, 1);
+        // a flow the project lacks holds nothing
+        assert!(stats(&p, &e, By::Agent, Some("other")).groups.is_empty());
+    }
+
+    /// A marked call of qa, then the unmarked `one_loop`, whose run is inferred.
+    fn marked_then_unmarked_loop(lot: Option<&str>) -> Vec<FlowEvent> {
+        let mut e = vec![mark(1, "qa", "guard", lot), start(2, "m1", "qa")];
+        e.extend(stops(9, "m1", "qa", Some("approved")));
+        e.extend(one_loop());
+        e
+    }
+
+    #[test]
+    fn the_loops_of_unmarked_calls_stay_out_of_a_marked_group() {
+        let p = project();
+        // by lot: the marked call has no lot, the inferred run's loop is not its
+        let s = stats(&p, &marked_then_unmarked_loop(None), By::Lot, None);
+        let got: Vec<_> = s
+            .groups
+            .iter()
+            .map(|g| (g.key.as_str(), g.calls, g.loops))
+            .collect();
+        assert_eq!(got, [(NO_LOT, 1, 0)]);
+        assert_eq!(s.unmarked_calls, 5);
+        // by step: a group deliver/guard exists, and loops leave `build`
+        let mut e = vec![mark(1, "dev", "build", Some("3")), start(2, "m1", "dev")];
+        e.extend(stops(9, "m1", "dev", None));
+        e.extend(one_loop());
+        let s = stats(&p, &e, By::Step, None);
+        let got: Vec<_> = s
+            .groups
+            .iter()
+            .map(|g| (g.key.as_str(), g.calls, g.loops))
+            .collect();
+        assert_eq!(got, [("deliver/build", 1, 0)]);
+        // by agent nothing changes: its runs are the inferred ones
+        let s = stats(&p, &e, By::Agent, None);
+        assert_eq!(group(&s, "dev").loops, 1);
+    }
+
+    #[test]
+    fn the_loops_of_a_marked_run_count_under_its_lot() {
+        let mut e = vec![
+            mark(1, "architect", "design", Some("5")),
+            start(2, "a0", "architect"),
+        ];
+        e.extend(stops(9, "a0", "architect", Some("done")));
+        for (i, verdict) in ["rejected", "approved"].into_iter().enumerate() {
+            let t = 100 * (i as u64 + 1);
+            e.push(mark(t, "dev", "build", Some("5")));
+            e.push(start(t + 1, &format!("d{i}"), "dev"));
+            e.extend(stops(t + 10, &format!("d{i}"), "dev", None));
+            e.push(mark(t + 20, "qa", "guard", Some("5")));
+            e.push(start(t + 21, &format!("q{i}"), "qa"));
+            e.extend(stops(t + 30, &format!("q{i}"), "qa", Some(verdict)));
+        }
+        let p = project();
+        let by_lot = stats(&p, &e, By::Lot, None);
+        assert_eq!(group(&by_lot, "5").loops, 1); // build -> guard taken twice
+        let by_step = stats(&p, &e, By::Step, None);
+        assert_eq!(group(&by_step, "deliver/build").loops, 1);
+        assert_eq!(group(&by_step, "deliver/guard").loops, 0);
+    }
+
+    #[test]
     fn no_events_no_groups() {
-        let s = stats(&project(), &[], By::Agent);
+        let s = stats(&project(), &[], By::Agent, None);
         assert_eq!(
             (s.groups.len(), s.unmarked_calls, s.any_marked),
             (0, 0, false)

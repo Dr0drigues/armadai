@@ -129,15 +129,24 @@ pub struct Run {
 ///   any `mark` line nothing above applies. The `REF:` of the first stop
 ///   recorded for an `agent_id` shows on its step.
 pub fn runs(project: &Project, events: &[FlowEvent]) -> Vec<Run> {
-    runs_and_markers(project, events).0
+    runs_and_markers(project, events)
+        .0
+        .into_iter()
+        .map(|(r, _)| r)
+        .collect()
 }
 
 /// `agent_id` -> the `(flow, step, lot)` of its marker.
 pub(super) type Markers = HashMap<String, (String, String, Option<String>)>;
 
-/// `runs`, with the marker `(flow, step, lot)` each `agent_id` consumed (none
-/// for an unmarked or ambiguously marked one): what `flow stats` groups by.
-pub(super) fn runs_and_markers(project: &Project, events: &[FlowEvent]) -> (Vec<Run>, Markers) {
+/// `runs`, each with whether a marker placed it (a `None` lot says nothing: an
+/// inferred run has none either), and the marker `(flow, step, lot)` each
+/// `agent_id` consumed (none for an unmarked or ambiguously marked one): what
+/// `flow stats` groups by.
+pub(super) fn runs_and_markers(
+    project: &Project,
+    events: &[FlowEvent],
+) -> (Vec<(Run, bool)>, Markers) {
     let mut b = Builder {
         project,
         open: Vec::new(),
@@ -198,7 +207,11 @@ pub(super) fn runs_and_markers(project: &Project, events: &[FlowEvent]) -> (Vec<
         .map(|(id, (_, flow, step, lot))| (id, (flow, step, lot)))
         .collect();
     (
-        groups.into_values().map(merge_candidates).collect(),
+        // a run a marker opened is never grouped with candidates
+        (groups.into_values())
+            .map(|m| (m[0].marked, m))
+            .map(|(marked, m)| (merge_candidates(m), marked))
+            .collect(),
         markers,
     )
 }
