@@ -47,13 +47,100 @@ fn models_tiers_prints_the_embedded_table() {
         .unwrap();
     assert!(out.status.success());
     let stdout = String::from_utf8(out.stdout).unwrap();
-    let mut lines = stdout.lines().filter(|l| !l.is_empty());
-    assert_eq!(
-        lines.next().unwrap(),
+    // Rebuilt from the embedded table, not from the code under test.
+    let t = model_table();
+    let mut rows = vec![["vendor", "fast", "pro", "max"].map(String::from)];
+    for vendor in t.tiers.keys() {
+        rows.push([
+            vendor.to_string(),
+            fallback_model_for_tier(vendor, ModelTier::Fast).to_string(),
+            fallback_model_for_tier(vendor, ModelTier::Pro).to_string(),
+            fallback_model_for_tier(vendor, ModelTier::Max).to_string(),
+        ]);
+    }
+    let w: Vec<usize> = (0..4)
+        .map(|i| rows.iter().map(|r| r[i].len()).max().unwrap())
+        .collect();
+    let mut want = vec![
+        format!("Tier table built into armadai, as of {}:", t.as_of),
+        String::new(),
+    ];
+    for r in &rows {
+        let cells: Vec<String> = (0..4).map(|i| format!("{:<1$}", r[i], w[i])).collect();
+        want.push(format!("  {}", cells.join("  ").trim_end()));
+    }
+    want.push(String::new());
+    want.push("`link --target codex` uses the openai row for an agent without native.codex.model; link never reads the models cache.".into());
+    assert_eq!(stdout.lines().collect::<Vec<_>>(), want);
+}
+
+#[cfg(unix)]
+fn run_sync(curl_body: &str) -> (std::process::Output, std::path::PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let home = tempfile::tempdir().unwrap().keep();
+    let bin = home.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let curl = bin.join("curl");
+    std::fs::write(
+        &curl,
         format!(
-            "Tier table built into armadai, as of {}:",
+            "#!/bin/sh\nwhile [ $# -gt 1 ]; do [ \"$1\" = -o ] && out=$2; shift; done\n{curl_body}\n"
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&curl, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let out = assert_cmd::Command::cargo_bin("armadai")
+        .unwrap()
+        .env("HOME", &home)
+        .env("ARMADAI_CONFIG_DIR", home.join("config"))
+        .env("PATH", path)
+        .env("NO_COLOR", "1")
+        .args(["models", "sync"])
+        .output()
+        .unwrap();
+    (out, home.join("config").join("models-cache.json"))
+}
+
+/// `models sync` through a fake curl: the success line, then the unchanged-table note.
+#[cfg(unix)]
+#[test]
+fn models_sync_reports_what_it_wrote() {
+    let (out, cache) = run_sync(r#"printf '%s' '{"p":{"models":{"m":{"id":"m1"}}}}' > "$out""#);
+    assert!(out.status.success(), "{out:?}");
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let lines: Vec<_> = stdout.lines().collect();
+    let head = format!(
+        "Synced 1 providers, 1 models from https://models.dev/api.json into {} (fetched ",
+        cache.display()
+    );
+    assert!(
+        lines[0].starts_with(&head) && lines[0].ends_with(" UTC)."),
+        "{stdout}"
+    );
+    assert_eq!(
+        lines[1],
+        format!(
+            "link does not read this cache: the tier table built into armadai (as of {}) is unchanged.",
             model_table().as_of
         )
     );
-    assert!(lines.next().unwrap().starts_with("  vendor"));
+    assert_eq!(lines.len(), 2);
+    assert!(cache.exists());
+}
+
+/// A failing download is one `Error:` line on stderr, exit 1, and no cache written.
+#[cfg(unix)]
+#[test]
+fn models_sync_failure_is_one_error_line() {
+    let (out, cache) = run_sync("printf 'curl: (6) first\\nsecond\\n' >&2; exit 6");
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8(out.stderr).unwrap(),
+        format!(
+            "Error: models sync failed, {} unchanged: download https://models.dev/api.json failed (exit status: 6): curl: (6) first; second\n",
+            cache.display()
+        )
+    );
+    assert!(!cache.exists());
 }

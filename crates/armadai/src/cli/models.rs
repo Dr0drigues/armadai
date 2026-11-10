@@ -26,7 +26,15 @@ pub enum ModelsAction {
     List,
     /// Show the tier table built into armadai, with its date
     Tiers,
+    /// Download the models.dev catalog into the local models cache (network)
+    Sync {
+        /// Catalog URL (https only)
+        #[arg(long, default_value = MODELS_DEV_URL)]
+        source: String,
+    },
 }
+
+const MODELS_DEV_URL: &str = "https://models.dev/api.json";
 
 pub fn execute(action: ModelsAction) -> anyhow::Result<()> {
     match action {
@@ -37,7 +45,112 @@ pub fn execute(action: ModelsAction) -> anyhow::Result<()> {
             tiers();
             Ok(())
         }
+        ModelsAction::Sync { source } => sync_command(&source),
     }
+}
+
+struct Synced {
+    providers: usize,
+    models: usize,
+    fetched_at: u64,
+}
+
+/// models.dev `api.json` -> the cache document (`providers`, `fetched_at`), with the
+/// provider and model counts. Fails on anything that is not a catalog: nothing is
+/// written from a body that did not pass.
+fn catalog_to_cache(
+    body: &str,
+    fetched_at: u64,
+) -> anyhow::Result<(serde_json::Value, usize, usize)> {
+    use serde_json::{Map, Value};
+    let catalog: Value = serde_json::from_str(body)?;
+    let Value::Object(catalog) = catalog else {
+        anyhow::bail!("not a JSON object");
+    };
+    let mut providers = Map::new();
+    let mut models = 0;
+    for (pid, provider) in &catalog {
+        let Some(Value::Object(listed)) = provider.get("models") else {
+            continue;
+        };
+        let mut entries = Vec::new();
+        for (mid, model) in listed {
+            let Some(id) = model.get("id").and_then(Value::as_str) else {
+                anyhow::bail!("provider {pid}: model {mid} has no text id");
+            };
+            let mut entry = Map::new();
+            entry.insert("id".into(), id.into());
+            for key in ["name", "cost", "limit"] {
+                if let Some(v) = model.get(key) {
+                    entry.insert(key.into(), v.clone());
+                }
+            }
+            entries.push(Value::Object(entry));
+        }
+        if !entries.is_empty() {
+            models += entries.len();
+            providers.insert(pid.clone(), Value::Array(entries));
+        }
+    }
+    if models == 0 {
+        anyhow::bail!("no provider lists a model");
+    }
+    let n = providers.len();
+    let doc = serde_json::json!({ "providers": providers, "fetched_at": fetched_at });
+    Ok((doc, n, models))
+}
+
+/// Fetch `source` with `curl` (via `download_to`), check it, write `dest` atomically.
+/// On any error `dest` is left as it was and no temporary file remains.
+fn sync(curl: &str, source: &str, dest: &Path) -> anyhow::Result<Synced> {
+    let shown = armadai_core::registries::redact_url(source);
+    let run = || -> anyhow::Result<Synced> {
+        let tmp = tempfile::tempdir()?;
+        let file = tmp.path().join("api.json");
+        crate::starters_registry::download_to(curl, source, &file)?;
+        let body = std::fs::read_to_string(&file)?;
+        let fetched_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs();
+        let (doc, providers, models) = catalog_to_cache(&body, fetched_at)
+            .map_err(|e| anyhow::anyhow!("{shown} did not answer a models.dev catalog: {e}"))?;
+        let parent = dest.parent().unwrap_or(Path::new("."));
+        std::fs::create_dir_all(parent)?;
+        let mut out = tempfile::NamedTempFile::new_in(parent)?;
+        std::io::Write::write_all(&mut out, serde_json::to_string(&doc)?.as_bytes())?;
+        out.persist(dest).map_err(|e| e.error)?;
+        Ok(Synced {
+            providers,
+            models,
+            fetched_at,
+        })
+    };
+    run().map_err(|e| {
+        // One line: curl's stderr may span several.
+        let cause = format!("{e:#}").trim().replace('\n', "; ");
+        anyhow::anyhow!("models sync failed, {} unchanged: {cause}", dest.display())
+    })
+}
+
+fn sync_command(source: &str) -> anyhow::Result<()> {
+    let dest = armadai_core::config::config_dir().join(armadai_core::config::MODELS_CACHE_FILE);
+    let s = sync("curl", source, &dest)?;
+    let when = chrono::DateTime::from_timestamp(s.fetched_at as i64, 0)
+        .map(|d| d.format("%Y-%m-%d %H:%M UTC").to_string())
+        .unwrap_or_default();
+    anstream::println!(
+        "Synced {} providers, {} models from {} into {} (fetched {when}).",
+        s.providers,
+        s.models,
+        armadai_core::registries::redact_url(source),
+        dest.display()
+    );
+    let m = crate::cli::style::muted();
+    anstream::println!(
+        "{m}link does not read this cache: the tier table built into armadai (as of {}) is unchanged.{m:#}",
+        armadai_core::model_table::model_table().as_of
+    );
+    Ok(())
 }
 
 /// The output of `models tiers`: title, a column-aligned table (header row, then one
@@ -433,6 +546,114 @@ fn list() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{replace_model_values, rewrite_front, tiers_lines};
+
+    #[cfg(unix)]
+    const CATALOG: &str = r#"{"openai":{"id":"openai","models":{"a":{"id":"gpt-77-witness","name":"W","cost":{"input":1,"output":5},"limit":{"context":9}},"b":{"id":"gpt-77-witness-mini","cost":{"input":0.1,"output":0.5}},"d":{"id":"gpt-77-zitness","cost":{"input":2,"output":10}}}},"anthropic":{"id":"anthropic","models":{"c":{"id":"claude-witness-sonnet-9","cost":{"input":3,"output":15}}}},"empty":{"models":{}}}"#;
+
+    #[cfg(unix)]
+    fn serving(dir: &std::path::Path, body: &str) -> String {
+        crate::starters_registry::archive_tests::fake_curl(
+            dir,
+            &format!("printf '%s' '{body}' > \"$out\""),
+        )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sync_writes_the_cache_resolve_reads() {
+        use armadai_core::model_resolution::{ModelTier, resolve_model_for_tier};
+        let iso = armadai_core::test_support::IsolatedConfigDir::enter();
+        let dir = tempfile::tempdir().unwrap();
+        let curl = serving(dir.path(), CATALOG);
+        let dest = iso.config_dir().join("models-cache.json");
+        let s = crate::starters_registry::archive_tests::retry_busy(|| {
+            super::sync(&curl, "https://models.example/api.json", &dest)
+        })
+        .unwrap();
+        assert_eq!((s.providers, s.models), (2, 4));
+        let names: Vec<_> = std::fs::read_dir(iso.config_dir())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["models-cache.json"]);
+        assert_eq!(
+            resolve_model_for_tier("openai", ModelTier::Pro),
+            "gpt-77-witness"
+        );
+        assert_eq!(
+            resolve_model_for_tier("openai", ModelTier::Fast),
+            "gpt-77-witness-mini"
+        );
+        let args = std::fs::read_to_string(dir.path().join("args")).unwrap();
+        let args: Vec<_> = args.lines().collect();
+        assert_eq!(args.first(), Some(&"-q"));
+        assert_eq!(args.last(), Some(&"https://models.example/api.json"));
+        for flag in ["--proto", "--proto-redir", "--max-filesize"] {
+            assert!(args.contains(&flag), "{flag} missing: {args:?}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sync_keeps_the_cache_on_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("cfg").join("models-cache.json");
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        std::fs::write(&dest, "previous cache").unwrap();
+        let d = dest.display();
+        let url = "https://models.dev/api.json";
+        let down = tempfile::tempdir().unwrap();
+        let failing = crate::starters_registry::archive_tests::fake_curl(
+            down.path(),
+            "echo 'curl: (6) Could not resolve host: models.dev' >&2; exit 6",
+        );
+        let notjson = tempfile::tempdir().unwrap();
+        let notjson = serving(notjson.path(), "not json");
+        let empty = tempfile::tempdir().unwrap();
+        let empty = serving(empty.path(), r#"{"openai":{"models":{}}}"#);
+        for (curl, source, want) in [
+            (
+                failing.as_str(),
+                url,
+                format!(
+                    "models sync failed, {d} unchanged: download {url} failed (exit status: 6): curl: (6) Could not resolve host: models.dev"
+                ),
+            ),
+            (
+                notjson.as_str(),
+                "https://user:tok@models.dev/api.json?key=secret",
+                format!(
+                    "models sync failed, {d} unchanged: https://***@models.dev/api.json?*** did not answer a models.dev catalog: expected ident at line 1 column 2"
+                ),
+            ),
+            (
+                empty.as_str(),
+                url,
+                format!(
+                    "models sync failed, {d} unchanged: {url} did not answer a models.dev catalog: no provider lists a model"
+                ),
+            ),
+            (
+                "curl",
+                "http://example.com/api.json",
+                format!(
+                    "models sync failed, {d} unchanged: download http://example.com/api.json refused: archive sources must use an https:// URL"
+                ),
+            ),
+        ] {
+            let err = crate::starters_registry::archive_tests::retry_busy(|| {
+                super::sync(curl, source, &dest).map(|_| ())
+            })
+            .unwrap_err();
+            assert_eq!(err.to_string(), want);
+            assert_eq!(std::fs::read_to_string(&dest).unwrap(), "previous cache");
+            let names: Vec<_> = std::fs::read_dir(dest.parent().unwrap())
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            assert_eq!(names, ["models-cache.json"]);
+        }
+    }
 
     #[test]
     fn tiers_lines_aligns_the_table() {

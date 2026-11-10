@@ -51,8 +51,20 @@ Sources, read on 2026-11-10 (the ids are copied from these pages, not from memor
   Pro the page lists.
 
 The same table carries the aliases `armadai models check` uses: the replacements those
-deprecation pages name. The table is refreshed from those pages (`armadai models sync` is planned
-for that); until then, pin `native.<target>.model` when you need a newer model.
+deprecation pages name. The table is refreshed from those pages; until then, pin
+`native.<target>.model` when you need a newer model.
+
+## Syncing the models cache
+
+`armadai models sync` downloads the models.dev catalog (`https://models.dev/api.json`, through
+`curl`, HTTPS only) and writes it to `<config dir>/models-cache.json` (provider ids, model ids,
+names, prices, limits). The write is atomic: on any error (download failed, answer is not a
+catalog) the previous cache is left as it was and the error says so. `--source <url>` reads
+another HTTPS catalog of the same shape.
+
+`armadai link` never reads this cache and never touches the network: the table above is what it
+uses, whatever the cache holds. The cache feeds the `latest:<tier>` placeholders where they are
+resolved, and `armadai models sync` is the only command of this page that uses the network.
 
 ## Deprecated model ids
 
