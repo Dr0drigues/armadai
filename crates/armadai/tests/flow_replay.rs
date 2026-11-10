@@ -120,12 +120,8 @@ fn the_misplaced_case_misplaces_its_verdicts_without_marks() {
         .map(|l| format!("{l}\n"))
         .collect();
     let steps = |doc: &Value, flow: &str| -> Vec<(String, String)> {
-        let run = doc["runs"].as_array().unwrap().iter();
-        let run = run
-            .filter(|r| r["flow"] == flow)
-            .next_back()
-            .unwrap()
-            .clone();
+        let runs = doc["runs"].as_array().unwrap();
+        let run = runs.iter().rfind(|r| r["flow"] == flow).unwrap().clone();
         let steps = run["steps"].as_array().unwrap().iter();
         steps
             .map(|s| {
