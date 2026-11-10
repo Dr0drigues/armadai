@@ -344,11 +344,17 @@ fn the_team_view_agrees_with_the_gate() {
     );
     let g: serde_json::Value = serde_json::from_str(&out).unwrap();
     let gate = |caller: Option<&str>, target: &str| -> String {
+        // the topology is what is compared: a step agent gets the marker of its step
+        let description = match target {
+            "dev" => "[ship/zed] work",
+            "rev" => "[ship/alpha] work",
+            _ => "work",
+        };
         let payload = serde_json::json!({
             "cwd": env.root().to_string_lossy(),
             "tool_name": "Agent",
             "agent_type": caller.unwrap_or(""),
-            "tool_input": {"subagent_type": target},
+            "tool_input": {"subagent_type": target, "description": description},
         })
         .to_string();
         let o = Command::cargo_bin("armadai")
