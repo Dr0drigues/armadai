@@ -117,18 +117,23 @@ fn next_local<Tz: TimeZone>(now: &DateTime<Tz>, time: NaiveTime) -> Result<DateT
     let tz = now.timezone();
     let missing = || format!("{} does not exist in your time zone", time.format("%H:%M"));
     let today = now.date_naive().and_time(time);
-    let at = tz
-        .from_local_datetime(&today)
-        .earliest()
-        .ok_or_else(missing)?;
+    let at = first(tz.from_local_datetime(&today)).ok_or_else(missing)?;
     if at > *now {
         return Ok(at.with_timezone(&Utc));
     }
-    let tomorrow = tz
-        .from_local_datetime(&(today + Duration::days(1)))
-        .earliest()
-        .ok_or_else(missing)?;
+    let tomorrow =
+        first(tz.from_local_datetime(&(today + Duration::days(1)))).ok_or_else(missing)?;
     Ok(tomorrow.with_timezone(&Utc))
+}
+
+/// The earlier instant of a local time: a time the zone has twice comes in an order that
+/// depends on the platform, so it is compared, not trusted.
+fn first<Tz: TimeZone>(local: chrono::LocalResult<DateTime<Tz>>) -> Option<DateTime<Tz>> {
+    match local {
+        chrono::LocalResult::Single(t) => Some(t),
+        chrono::LocalResult::Ambiguous(a, b) => Some(a.min(b)),
+        chrono::LocalResult::None => None,
+    }
 }
 
 fn rules(n: usize) -> String {
@@ -857,7 +862,8 @@ mod tests {
                 summer(&(*l - Duration::seconds(off.local_minus_utc().into()))) == is_summer
             };
             match (valid(cest, true), valid(cet, false)) {
-                (true, true) => chrono::LocalResult::Ambiguous(cest, cet),
+                // the order of the real `Local` (winter time first): the code must not rely on it
+                (true, true) => chrono::LocalResult::Ambiguous(cet, cest),
                 (true, false) => chrono::LocalResult::Single(cest),
                 (false, true) => chrono::LocalResult::Single(cet),
                 (false, false) => chrono::LocalResult::None,
@@ -977,5 +983,57 @@ mod tests {
             asked.into_inner(),
             vec![("evolution/publish".to_string(), utc("2026-11-10T08:12:00Z"))]
         );
+        // not ended: the line is the active one again
+        let list = render_list(&p, &state, &now(), &|_, _| false);
+        assert_eq!(
+            list.lines().nth(1),
+            Some("  auto-until-mr  active until evolution/publish starts, since 09:12")
+        );
+    }
+
+    /// Run inside a child process under `TZ=Europe/Paris` by the test below: the real
+    /// `Local`, whose order for an ambiguous time is the platform's.
+    #[test]
+    #[ignore = "run by the_local_zone_is_read_under_tz_europe_paris"]
+    fn local_zone_probe() {
+        let now = chrono::Local.from_utc_datetime(&utc("2027-10-30T22:30:00Z").naive_utc());
+        assert_eq!(
+            now.offset().local_minus_utc(),
+            7200,
+            "TZ=Europe/Paris is not known here"
+        );
+        assert_eq!(
+            next_local(&now, t(2, 30)),
+            Ok(utc("2027-10-31T00:30:00Z")),
+            "02:30 happens twice that night, the first one is kept"
+        );
+        let spring = chrono::Local.from_utc_datetime(&utc("2027-03-28T00:00:00Z").naive_utc());
+        assert_eq!(
+            next_local(&spring, t(2, 30)),
+            Err("02:30 does not exist in your time zone".to_string())
+        );
+    }
+
+    /// The real `Local` under a zone with a change of hour. The zone is set in a child
+    /// process, so this process's environment is not touched.
+    #[test]
+    fn the_local_zone_is_read_under_tz_europe_paris() {
+        let exe = std::env::current_exe().unwrap();
+        let out = std::process::Command::new(exe)
+            .env("TZ", "Europe/Paris")
+            .args([
+                "--exact",
+                "cli::grant::tests::local_zone_probe",
+                "--ignored",
+            ])
+            .output()
+            .unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(out.status.success(), "{text}");
+        assert!(text.contains("1 passed"), "the probe did not run: {text}");
     }
 }
