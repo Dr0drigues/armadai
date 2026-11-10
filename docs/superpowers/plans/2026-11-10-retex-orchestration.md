@@ -562,13 +562,45 @@ Chaque tâche finit barrière verte. Les mutations citées sont le minimum ; le 
   - Mutations : `HOME` non remplacé ; code de sortie 0 malgré un échec ; délai ignoré.
 - Commit : `feat(cli): add armadai pack test`
 
+#### Suites de P2 (décisions de Dimitri du 2026-11-10)
+
+Sources, mot pour mot :
+- sur la limite de sécurité de `grant` (D16) : « Accepter + avertir (Recommandé) » ;
+- sur l'affichage par `link` de `grant-unsupported-rule` : « Oui (Recommandé) ».
+
+**P2.4 Avertir d'une règle de niveau large** (`schema-specialist`)
+- Fichiers : `armadai-model/src/check.rs` (à côté des codes `grant-*` de P2.1), `docs/wiki/project-format.md` (table des codes).
+- [ ] Nouveau code `grant-broad-rule` (Warning), un par règle large d'un niveau. Le texte est T21, en choix par défaut.
+- [ ] Est large une règle `Bash` (tous les cas se jugent sur le texte de la règle, sans normalisation) :
+  - `Bash` seul, `Bash(*)`, ou `Bash(* …)` (spécificateur qui commence par `*`) ;
+  - un spécificateur dont le premier mot est un interpréteur ou un lanceur : `python`, `python3`, `node`, `ruby`, `perl`, `sh`, `bash`, `zsh`, `env`, `xargs`, `eval`, `exec` ;
+  - un spécificateur dont le premier mot est un outil de copie ou de déplacement et qui contient un `*` : `cp`, `mv`, `rsync`, `ln`, `tar`.
+- [ ] La liste est une constante commentée « incomplète par construction : un avertissement, pas une frontière (D16) ».
+- Tests :
+  - un cas par forme (`Bash`, `Bash(*)`, `Bash(* --x)`, `Bash(python3 x.py)`, `Bash(xargs rm)`, `Bash(cp * /tmp)`), message entier à égalité ;
+  - aucun avertissement pour `Bash(git push origin feature/*)` ni pour `Bash(cp a b)`.
+  - Mutations : retirer un mot de la liste (son cas rougit) ; supprimer la condition « contient `*` » pour les outils de copie (le cas `cp a b` rougit).
+- Commit : `feat(model): warn on broad grant rules`
+
+**P2.5 `link` montre les avertissements des niveaux** (`adapter-specialist`)
+- Fichier : `cli/link.rs` (`load_project`).
+- Comportement actuel (V, `cli/link.rs:64-77`) : `link` n'affiche que les **erreurs**, une par ligne sur stderr par `Diagnostic::render()`, puis s'arrête. Un projet valide passe par `Ok((p, _))`, où le `_` est l'`Origins` : ses avertissements ne sont jamais montrés. `validate` les obtient par `view.validate()` (V, `cli/validate.rs:9-12`).
+- [ ] Après un `load_checked` réussi, `link` écrit sur stderr, avant le rapport, chaque avertissement dont le code commence par `grant-` (`grant-unsupported-rule`, `grant-broad-rule`), par `Diagnostic::render()`. Ce sont les avertissements de `view.validate()`, ou les diagnostics déjà calculés si `load_checked` les expose sans un second chargement : à voir en tâche.
+- [ ] Les autres avertissements restent non montrés par `link`, comme aujourd'hui : hors du périmètre de cette tâche.
+- [ ] Format : la ligne de `Diagnostic::render()`, déjà utilisée par `link` pour les erreurs et par `validate`. Pas de texte nouveau. `--json` n'est pas touché, puisque les avertissements vont sur stderr.
+- Tests :
+  - par le binaire, sur un projet qui déclare un niveau avec `Bash(*)` et `Edit(/src/*)` : stderr contient exactement les deux lignes rendues, et stdout de `link --json` reste un JSON valide sans elles ;
+  - sans niveau : stderr sans ligne `grant-`.
+  - Mutations : ne pas filtrer sur `grant-` (des avertissements d'une autre famille de la fixture apparaissent) ; écrire sur stdout (le JSON casse).
+- Commit : `feat(link): show the warnings of grant levels`
+
 **D2 Documentation de la PR 2** (`cli-specialist`)
 - Fichiers : `docs/wiki/flow-status.md` (`skipped`, `--line`, `steps[].agent`, la bande, le mod du panneau mis à jour, risque 5), `docs/wiki/link.md` (barre enchaînée, `ui.flow_band`), `docs/wiki/project-format.md` (`optional`, `ui.flow_band`, `optional-start-step`, `pack-test-path-escapes`), `docs/wiki/starter-packs.md` (`tests:` et `pack test`, avec la phrase : « `pack test` exécute les scripts du pack avec vos droits, dans une copie isolée et avec un `HOME` temporaire ; il n'isole pas le réseau »), `CLAUDE.md` (liste : `pack` … `test`).
 - Commit : `docs: document optional steps, the chained status line and pack test`
 
 ### Ordre et dépendances
 
-A.0 → A.1 ; A.2, A.3, A.4 → A.5 → A.6 (A.2 à A.5 sont indépendantes entre elles, une à la fois pour `link`) → P1.0 → P1.1 → P1.2 → P1.3 (attend P1.0 (iii)) → P1.4 → P1.5 → P2.0 → [P2.1 → P2.2 → P2.3 si la mesure est positive] → P3.1 → P3.2 → D1 → **PR 1**. Puis P4.0 → P4.1 → P4.2 → P4.3 → P4.4 → P5.1 → P5.2 → D2 → **PR 2**. P3 ne dépend que de P1 pour `--by step|lot`. Essais réels de Dimitri : fin de P1 (critère 1) et fin de P4 (critères 7 et 9).
+A.0 → A.1 ; A.2, A.3, A.4 → A.5 → A.6 (A.2 à A.5 sont indépendantes entre elles, une à la fois pour `link`) → P1.0 → P1.1 → P1.2 → P1.3 (attend P1.0 (iii)) → P1.4 → P1.5 → P2.0 → [P2.1 → P2.2 → P2.3 si la mesure est positive] → P3.1 → P3.2 → D1 → **PR 1**. Puis P4.0 → P4.1 → P4.2 → P4.3 → P4.4 → P5.1 → P5.2 → P2.4 → P2.5 → D2 → **PR 2**. P3 ne dépend que de P1 pour `--by step|lot`. Essais réels de Dimitri : fin de P1 (critère 1) et fin de P4 (critères 7 et 9).
 
 ## 5. Textes de sortie proposés (à valider par Dimitri)
 
@@ -662,6 +694,10 @@ Code, messages et sorties en anglais. `‹…›` marque une valeur.
   - `invalid time X; write it as HH:MM (24 hours, your local time)`.
 - État illisible : `.armadai/state/grants.yaml does not read (damaged, or written by a later version); delete it and run the command again`.
 - `cli/grant.rs:178` : `grant <niveau> has no Bash rule to answer; list its rules as Bash(...) in policy.grants, other rules are never granted`, code 1. Validé par Dimitri : « Refuser (Recommandé) ».
+
+**P2.4 et P2.5**
+- T21, `grant-broad-rule` (Warning). Message : ``grant `‹level›` rule `‹rule›` is broad: it lets through any command that this program runs``. Hint : ``a grant is a convenience, not a boundary; name the exact command, such as `Bash(python3 scripts/release.py)` ``. Choix par défaut à valider.
+- Affichage par `link` (P2.5) : la ligne de `Diagnostic::render()` existante, sur stderr ; pas de texte nouveau. Choix par défaut.
 
 **P3.2**
 - `cli/flow.rs:220`, en-tête avec `--all` : `flow stats  all sessions (N)  by agent`. Choix par défaut.
