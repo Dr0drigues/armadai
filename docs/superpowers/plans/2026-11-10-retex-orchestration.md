@@ -645,6 +645,8 @@ Code, messages et sorties en anglais. `‹…›` marque une valeur.
 
 **P2.2**
 - Code `grant-unsupported-rule` (warning). Message : ``grant `g` lists `Edit(/src/*)`, and a level answers `Bash` rules only``. Hint : ``the rule is never granted: write a `Bash(...)` rule, or put it in native.claude.permissions.allow``.
+- `compile/claude_settings.rs:379` : ``native.claude key `permissions` must be a mapping when policy.grants is set``. Choix par défaut.
+- `compile/claude_settings.rs:385` : ``native.claude key `permissions.deny` must be a list when policy.grants is set``. Choix par défaut.
 
 **P2.3**
 - Refus si `CLAUDECODE` est posé : `grant is for the person at a terminal, and this shell belongs to a Claude Code session (CLAUDECODE is set); run armadai grant in your own terminal`.
@@ -659,6 +661,12 @@ Code, messages et sorties en anglais. `‹…›` marque une valeur.
   - `invalid duration X; write 30m, 2h or 1h30m` ;
   - `invalid time X; write it as HH:MM (24 hours, your local time)`.
 - État illisible : `.armadai/state/grants.yaml does not read (damaged, or written by a later version); delete it and run the command again`.
+- `cli/grant.rs:178` : `grant <niveau> has no Bash rule to answer; list its rules as Bash(...) in policy.grants, other rules are never granted`, code 1. Validé par Dimitri : « Refuser (Recommandé) ».
+
+**P3.2**
+- `cli/flow.rs:220`, en-tête avec `--all` : `flow stats  all sessions (N)  by agent`. Choix par défaut.
+- `cli/flow.rs:212` : `no call of flow <flow> in this session`, et avec `--all` `no call of flow <flow> in these sessions`, code 0. Validé par Dimitri : « ça me va », puis « Oui, ce texte (Recommandé) ».
+- `flow_status/render.rs:266`, note sous la table : `states count each verdict rendered, a resumed agent can render several`. Choix par défaut.
 
 ## 6. Choix par défaut (mandat du 2026-11-10, à confirmer par Dimitri)
 
