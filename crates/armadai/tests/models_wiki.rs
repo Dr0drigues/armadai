@@ -107,13 +107,14 @@ fn run_sync(curl_body: &str) -> (std::process::Output, std::path::PathBuf, tempf
 #[cfg(unix)]
 #[test]
 fn models_sync_reports_what_it_wrote() {
-    let (out, cache, _home) =
-        run_sync(r#"printf '%s' '{"p":{"models":{"m":{"id":"m1"}}}}' > "$out""#);
+    let (out, cache, _home) = run_sync(
+        r#"printf '%s' '{"pa":{"models":{"ma1":{"id":"ma1"},"ma2":{"id":"ma2"}}},"pb":{"models":{"mb1":{"id":"mb1"}}},"pc":{"models":{}}}' > "$out""#,
+    );
     assert!(out.status.success(), "{out:?}");
     let stdout = String::from_utf8(out.stdout).unwrap();
     let lines: Vec<_> = stdout.lines().collect();
     let head = format!(
-        "Synced 1 providers, 1 models from https://models.dev/api.json into {} (fetched ",
+        "Synced 2 providers, 3 models from https://models.dev/api.json into {} (fetched ",
         cache.display()
     );
     assert!(

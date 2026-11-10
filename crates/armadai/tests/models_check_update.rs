@@ -188,10 +188,9 @@ fn a_failing_update_writes_nothing_and_all_goes_on() {
         std::fs::read_to_string(broken.join(".armadai/agents/dev.md")).unwrap(),
         before
     );
-    assert!(
-        std::fs::read_to_string(fine.join(".armadai/agents/dev.md"))
-            .unwrap()
-            .contains("model: gpt-5.6-sol"),
+    assert_eq!(
+        std::fs::read_to_string(fine.join(".armadai/agents/dev.md")).unwrap(),
+        DEV.replace("gpt-4-turbo", "gpt-5.6-sol"),
         "{out}"
     );
 }
