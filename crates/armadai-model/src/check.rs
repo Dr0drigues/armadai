@@ -242,28 +242,47 @@ fn edit_distance(a: &str, b: &str) -> usize {
 }
 
 /// First words of a `Bash` rule that run whatever they are given: any command through them is let
-/// through. Incomplete by construction: a warning, not a boundary (D16).
+/// through. Compared after `first_word` (base name, lowercase, no version suffix). Incomplete by
+/// construction (`make`, `npm run`, `cargo run`, `git` are not listed): a warning, not a boundary
+/// (D16).
 const BROAD_RUNNERS: &[&str] = &[
-    "python", "python3", "node", "ruby", "perl", "sh", "bash", "zsh", "env", "xargs", "eval",
-    "exec",
+    "python", "node", "ruby", "perl", "sh", "bash", "zsh", "env", "xargs", "eval", "exec", "sudo",
+    "npx", "timeout", "nice", "nohup",
 ];
 /// Copy and move tools: broad only with a `*` in the rule.
 const BROAD_WHEN_GLOB: &[&str] = &["cp", "mv", "rsync", "ln", "tar"];
 
+/// The program a specifier runs, as spelled in many ways: a trailing legacy `:*` removed, leading
+/// `VAR=val` words skipped, the base name of a path, lowercase, without a `[0-9.]+` version suffix
+/// (`FOO=1 /usr/bin/Python3.12 x` -> `python`).
+fn first_word(spec: &str) -> String {
+    let spec = spec.strip_suffix(":*").unwrap_or(spec);
+    let is_assignment = |w: &str| {
+        w.split_once('=').is_some_and(|(k, _)| {
+            k.chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+    };
+    let word = spec
+        .split_whitespace()
+        .find(|w| !is_assignment(w))
+        .unwrap_or("");
+    let base = word.rsplit('/').next().unwrap_or("").to_lowercase();
+    base.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.')
+        .to_string()
+}
+
 /// A `Bash` rule that lets through far more than one command, judged on its text alone.
 fn is_broad_bash_rule(rule: &str) -> bool {
-    // a bare `Bash` is never granted at all (`grant-unsupported-rule`), so it lets nothing through
     let Some(spec) = rule.strip_prefix("Bash(").and_then(|r| r.strip_suffix(')')) else {
         return false;
     };
-    // the legacy `prefix:*` form is as broad as `prefix *`
-    let first = (spec.strip_suffix(":*").unwrap_or(spec))
-        .split_whitespace()
-        .next()
-        .unwrap_or("");
+    let first = first_word(spec);
     spec.starts_with('*')
-        || BROAD_RUNNERS.contains(&first)
-        || (BROAD_WHEN_GLOB.contains(&first) && spec.contains('*'))
+        || BROAD_RUNNERS.contains(&first.as_str())
+        || (BROAD_WHEN_GLOB.contains(&first.as_str()) && spec.contains('*'))
 }
 
 /// The steps a flow starts from: `start` when the flow declares it. Otherwise a
@@ -614,8 +633,8 @@ fn check_grants(o: &mut Out, project: &Project) {
                 "grant-broad-rule",
                 Some((rule, false)),
                 format!(
-                    "grant `{name}` rule `{rule}` is broad: it lets through any command that \
-                     this program runs"
+                    "grant `{name}` rule `{rule}` is broad: it lets through any command it \
+                     matches"
                 ),
                 Some(
                     "a grant is a convenience, not a boundary; name the exact command, such as \

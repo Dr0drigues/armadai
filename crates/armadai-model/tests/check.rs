@@ -1593,6 +1593,11 @@ fn a_broad_grant_rule_is_a_warning() {
         "Bash(cp * /tmp)",
         "Bash(python3:*)",
         "Bash(cp:*)",
+        "Bash(/usr/bin/python3 *)",
+        "Bash(python3.12 *)",
+        "Bash(Python3 *)",
+        "Bash(FOO=1 python3 *)",
+        "Bash(A=1 B=2 /opt/bin/Node18 x)",
     ] {
         let ds = grants(
             &format!("policy:\n  grants:\n    g:\n      allow: [\"Bash(ls)\", \"{rule}\"]\n"),
@@ -1602,16 +1607,14 @@ fn a_broad_grant_rule_is_a_warning() {
         assert_eq!(hits.len(), 1, "{rule}: {ds:?}");
         assert_eq!(
             hits[0].message,
-            format!(
-                "grant `g` rule `{rule}` is broad: it lets through any command that this program runs"
-            )
+            format!("grant `g` rule `{rule}` is broad: it lets through any command it matches")
         );
         assert_eq!(hits[0].hint.as_deref(), Some(hint));
         assert_eq!(hits[0].severity, Severity::Warning);
     }
     for word in [
-        "python", "python3", "node", "ruby", "perl", "sh", "bash", "zsh", "env", "xargs", "eval",
-        "exec",
+        "python", "node", "ruby", "perl", "sh", "bash", "zsh", "env", "xargs", "eval", "exec",
+        "sudo", "npx", "timeout", "nice", "nohup",
     ] {
         let ds = grants(
             &format!("policy:\n  grants:\n    g:\n      allow: [\"Bash({word} x)\"]\n"),
@@ -1631,7 +1634,7 @@ fn a_broad_grant_rule_is_a_warning() {
         assert!(!broad(&format!("{word} a b")), "{word} without a glob");
     }
     let ds = grants(
-        "policy:\n  grants:\n    g:\n      allow: [\"Bash(git push origin feature/*)\", \"Bash(cp a b)\", \"Bash(glab mr create *)\"]\n",
+        "policy:\n  grants:\n    g:\n      allow: [\"Bash(git push origin feature/*)\", \"Bash(cp a b)\", \"Bash(FOO=1 git status)\", \"Bash(/usr/bin/git push *)\", \"Bash(make test)\", \"Bash(glab mr create *)\"]\n",
         &[],
     );
     assert!(ds.iter().all(|d| d.code != "grant-broad-rule"), "{ds:?}");
