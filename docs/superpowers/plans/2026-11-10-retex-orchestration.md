@@ -481,7 +481,9 @@ Chaque tâche finit barrière verte. Les mutations citées sont le minimum ; le 
 
 **P4.2 `skipped`, `--line` avec l'agent, `steps[].agent`** (`cli-specialist`)
 - Fichiers : `runs.rs`, `line.rs`, `json.rs`, `render.rs`, `watch.rs`, `cli/flow.rs` (`MARKS`, `painted`).
-- [ ] `Mark::Skipped`, signe `⤼`, nom `skipped`, note `skipped`. Une étape facultative jamais démarrée se traverse comme une étape du coordinateur (`reach`) tant qu'elle n'a pas démarré. Elle devient `Skipped` dès qu'une étape qu'elle atteint démarre, ou que le run est fini. `to_take` ignore une étape facultative en attente.
+- [ ] `Mark::Skipped`, signe `⤼`, nom `skipped`, note `skipped`. Une étape facultative se traverse comme une étape du coordinateur (`reach`) tant qu'elle n'est pas en cours, y compris quand elle est déjà `Done` d'un tour précédent : elle garde alors ✓, et la transition va directement de l'étape d'avant à celle d'après (§6, P4.2). Jamais démarrée, elle devient `Skipped` dès qu'une étape qu'elle atteint démarre, ou que le run est fini. `to_take` ignore une étape facultative en attente.
+- [ ] Une étape facultative démarrée après l'étape qui la suit ne laisse pas le run ouvert (§6, P4.2). Test et mutation dédiés.
+- [ ] `⤼ skipped` figure dans la liste des marques de `flow status --help` (`long_about` de `FlowCommand::Status`). Le test d'aide est mis à jour à égalité.
 - [ ] `StepView.agent: String`, l'agent de l'étape (le premier flow pour un groupe `a | b`) ; JSON `steps[].agent`.
 - [ ] `--line` : T15 ; `Piece::Agent` (couleur `muted`) ; `n` ne compte pas les `Skipped` ; `line_at` (la ligne du sous-agent) n'ajoute pas l'agent.
 - Tests :
@@ -571,15 +573,17 @@ Sources, mot pour mot :
 **P2.4 Avertir d'une règle de niveau large** (`schema-specialist`)
 - Fichiers : `armadai-model/src/check.rs` (à côté des codes `grant-*` de P2.1), `docs/wiki/project-format.md` (table des codes).
 - [ ] Nouveau code `grant-broad-rule` (Warning), un par règle large d'un niveau. Le texte est T21, en choix par défaut.
-- [ ] Est large une règle `Bash` (tous les cas se jugent sur le texte de la règle, sans normalisation) :
-  - `Bash` seul, `Bash(*)`, ou `Bash(* …)` (spécificateur qui commence par `*`) ;
-  - un spécificateur dont le premier mot est un interpréteur ou un lanceur : `python`, `python3`, `node`, `ruby`, `perl`, `sh`, `bash`, `zsh`, `env`, `xargs`, `eval`, `exec` ;
-  - un spécificateur dont le premier mot est un outil de copie ou de déplacement et qui contient un `*` : `cp`, `mv`, `rsync`, `ln`, `tar`.
+- [ ] Est large une règle `Bash` qui remplit l'une de ces conditions. Le premier mot est normalisé selon le choix « graphies » de §6 (P2.4).
+  - `Bash(*)` ou `Bash(* …)` (spécificateur qui commence par `*`). `Bash` seul n'en est pas : `grant-unsupported-rule` le couvre déjà (§6, P2.4).
+  - Un spécificateur dont le premier mot est un interpréteur ou un lanceur : `python`, `python3`, `node`, `ruby`, `perl`, `sh`, `bash`, `zsh`, `env`, `xargs`, `eval`, `exec`, `sudo`, `npx`, `timeout`, `nice`, `nohup`.
+  - Un spécificateur dont le premier mot est un outil de copie ou de déplacement et qui contient un `*` : `cp`, `mv`, `rsync`, `ln`, `tar`.
+- [ ] Limite connue, à écrire dans le wiki (`project-format.md`) : `make`, `npm run`, `cargo run` et `git` ne sont pas dans la liste (§6, P2.4).
 - [ ] La liste est une constante commentée « incomplète par construction : un avertissement, pas une frontière (D16) ».
 - Tests :
-  - un cas par forme (`Bash`, `Bash(*)`, `Bash(* --x)`, `Bash(python3 x.py)`, `Bash(xargs rm)`, `Bash(cp * /tmp)`), message entier à égalité ;
-  - aucun avertissement pour `Bash(git push origin feature/*)` ni pour `Bash(cp a b)`.
-  - Mutations : retirer un mot de la liste (son cas rougit) ; supprimer la condition « contient `*` » pour les outils de copie (le cas `cp a b` rougit).
+  - un cas par forme (`Bash(*)`, `Bash(* --x)`, `Bash(python3 x.py)`, `Bash(xargs rm)`, `Bash(cp * /tmp)`), message entier à égalité ;
+  - un cas par graphie normalisée (`Bash(FOO=1 python x)`, `Bash(/usr/bin/python3.12 x)`, `Bash(Python x)`, `Bash(sudo:*)`) ;
+  - aucun avertissement pour `Bash(git push origin feature/*)`, ni pour `Bash(cp a b)`, ni pour `Bash` seul (qui reste à `grant-unsupported-rule`).
+  - Mutations : retirer un mot de la liste (son cas rougit) ; supprimer la condition « contient `*` » pour les outils de copie (le cas `cp a b` rougit) ; retirer une étape de normalisation (le cas de cette graphie rougit).
 - Commit : `feat(model): warn on broad grant rules`
 
 **P2.5 `link` montre les avertissements des niveaux** (`adapter-specialist`)
@@ -696,7 +700,7 @@ Code, messages et sorties en anglais. `‹…›` marque une valeur.
 - `cli/grant.rs:178` : `grant <niveau> has no Bash rule to answer; list its rules as Bash(...) in policy.grants, other rules are never granted`, code 1. Validé par Dimitri : « Refuser (Recommandé) ».
 
 **P2.4 et P2.5**
-- T21, `grant-broad-rule` (Warning). Message : ``grant `‹level›` rule `‹rule›` is broad: it lets through any command that this program runs``. Hint : ``a grant is a convenience, not a boundary; name the exact command, such as `Bash(python3 scripts/release.py)` ``. Choix par défaut à valider.
+- T21, `grant-broad-rule` (Warning). Message : ``grant `‹level›` rule `‹rule›` is broad: it lets through any command it matches`` (validé par Dimitri, §6, P2.4). Hint : ``a grant is a convenience, not a boundary; name the exact command, such as `Bash(python3 scripts/release.py)` ``. Hint : choix par défaut à valider.
 - Affichage par `link` (P2.5) : la ligne de `Diagnostic::render()` existante, sur stderr ; pas de texte nouveau. Choix par défaut.
 
 **P3.2**
@@ -740,6 +744,24 @@ Dimitri est absent ; son mandat : « continue en autonomie » et « Prends les r
 - Les `mark` non consommées sont jetées au `stop` d'un agent déjà vu.
 - Un `start` ambigu sans run ouvre un run par `(flow, lot)`.
 - Le rejeu passe par le binaire, avec des fixtures synthétiques acceptées.
+
+### Décisions de Dimitri du 2026-11-10 (mot pour mot)
+
+**P2.4 (`grant-broad-rule`)**
+- Graphies : « Oui (Recommandé) ». On reconnaît les autres graphies d'un mot de la liste. Pour juger le premier mot :
+  - ignorer les préfixes `VAR=val` ;
+  - garder le nom de base du chemin ;
+  - retirer un suffixe de version `[0-9.]+` ;
+  - passer en minuscules ;
+  - retirer le suffixe `:*` de la forme héritée.
+- Liste : « Les 5 lanceurs (Recommandé) ». Ajouter `sudo`, `npx`, `timeout`, `nice` et `nohup`. Les programmes `make`, `npm run`, `cargo run` et `git` ne sont pas ajoutés : le wiki les cite comme limite connue.
+- Texte T21 : « « any command it matches » (Recommandé) ». Le message devient ``grant `‹level›` rule `‹rule›` is broad: it lets through any command it matches``. Le hint ne change pas.
+- `Bash` seul n'est pas large : `grant-unsupported-rule` le couvre déjà.
+
+**P4.2**
+- Étape facultative dans une boucle : « Oui, à chaque tour (Recommandé) ». Une étape facultative est franchissable tant qu'elle n'est pas en cours, même si elle est déjà `Done` d'un tour précédent. Elle garde ✓, et la transition va directement de `guard` à `build`, sans passer par elle.
+- Une étape facultative démarrée après l'étape qui la suit ne laisse pas le run ouvert.
+- `⤼ skipped` figure dans l'aide `flow status --help`.
 
 ## 7. Résultats des mesures (rempli en tâche)
 
