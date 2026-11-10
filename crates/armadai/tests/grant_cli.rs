@@ -9,6 +9,7 @@ const MANIFEST: &str = "schema_version: 1\ncoordinator: lead\npolicy:\n  grants:
 
 struct Env {
     dir: tempfile::TempDir,
+    extra: Vec<(String, String)>,
 }
 
 impl Env {
@@ -32,7 +33,7 @@ impl Env {
         .unwrap();
         std::fs::create_dir_all(dir.path().join("project/.git")).unwrap();
         std::fs::create_dir_all(dir.path().join("config")).unwrap();
-        Env { dir }
+        Env { dir, extra: vec![] }
     }
 
     fn root(&self) -> PathBuf {
@@ -46,6 +47,9 @@ impl Env {
             .env("ARMADAI_CONFIG_DIR", self.dir.path().join("config"))
             .env("HOME", self.dir.path())
             .env("NO_COLOR", "1")
+            // the tests run in a Claude Code shell too: grant refuses there
+            .env_remove("CLAUDECODE")
+            .envs(self.extra.iter().cloned())
             .args(args)
             .timeout(std::time::Duration::from_secs(30))
             .output()
@@ -205,4 +209,35 @@ fn unlink_takes_the_state_away() {
     let (code, _, err) = env.run(&["unlink", "--target", "claude"]);
     assert_eq!(code, Some(0), "{err}");
     assert_eq!(env.state(), None);
+}
+
+#[test]
+fn a_grant_from_a_claude_code_shell_is_refused_and_a_list_is_not() {
+    let mut env = Env::new();
+    env.extra.push(("CLAUDECODE".into(), "1".into()));
+    assert_eq!(
+        refused(env.run(&["grant", "read-logs", "--for", "1h"])),
+        "Error: grant is for the person at a terminal, and this shell belongs to a Claude Code session (CLAUDECODE is set); run armadai grant in your own terminal\n"
+    );
+    assert_eq!(env.state(), None);
+    assert!(ok(env.run(&["grant"])).starts_with("grant levels"));
+}
+
+#[test]
+fn a_level_whose_step_was_delegated_is_listed_ended() {
+    let env = Env::new();
+    env.link();
+    ok(env.run(&["grant", "auto-until-mr"]));
+    let logs = env.root().join(".armadai/state/claude");
+    std::fs::create_dir_all(&logs).unwrap();
+    let ts = chrono::Utc::now().timestamp() + 5;
+    let mark = format!(
+        "{{\"ts\":{ts},\"event\":\"mark\",\"agent_type\":\"lead\",\"flow\":\"evolution\",\"step\":\"publish\"}}\n"
+    );
+    std::fs::write(logs.join("s1.jsonl"), mark).unwrap();
+    let list = ok(env.run(&["grant"]));
+    assert!(
+        list.contains("  auto-until-mr  ended (evolution/publish started)\n"),
+        "{list}"
+    );
 }

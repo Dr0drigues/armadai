@@ -21,7 +21,9 @@ use armadai_model::Project;
 use chrono::{DateTime, Duration, NaiveTime, TimeZone, Utc};
 use serde_json::Value;
 
-use crate::claude_adapter::grant_hook::{ActiveGrant, GrantState, STATE_FILE, read_state};
+use crate::claude_adapter::grant_hook::{
+    ActiveGrant, GrantState, STATE_FILE, marked_since_in_logs, read_state,
+};
 
 /// What ends a level, as the user typed it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -38,6 +40,8 @@ pub struct Env<'a, Tz: TimeZone> {
     pub markers: bool,
     /// `(rule, file)` of every `deny` rule of the user's settings.
     pub denies: &'a [(String, String)],
+    /// The command runs in a shell of a Claude Code session (`CLAUDECODE` is set).
+    pub claude_shell: bool,
 }
 
 /// `30m`, `2h`, `1h30m`, `45s`: hours, minutes and seconds in that order, each once.
@@ -106,6 +110,27 @@ where
     at.with_timezone(tz).format("%H:%M").to_string()
 }
 
+/// The next time `time` is on the clock of `now`'s zone: today when it is still ahead,
+/// else tomorrow. A time the zone skips (the spring change) is refused, never moved to
+/// another day; a time it has twice (the autumn change) is the first one.
+fn next_local<Tz: TimeZone>(now: &DateTime<Tz>, time: NaiveTime) -> Result<DateTime<Utc>, String> {
+    let tz = now.timezone();
+    let missing = || format!("{} does not exist in your time zone", time.format("%H:%M"));
+    let today = now.date_naive().and_time(time);
+    let at = tz
+        .from_local_datetime(&today)
+        .earliest()
+        .ok_or_else(missing)?;
+    if at > *now {
+        return Ok(at.with_timezone(&Utc));
+    }
+    let tomorrow = tz
+        .from_local_datetime(&(today + Duration::days(1)))
+        .earliest()
+        .ok_or_else(missing)?;
+    Ok(tomorrow.with_timezone(&Utc))
+}
+
 fn rules(n: usize) -> String {
     format!("{n} rule{}", if n == 1 { "" } else { "s" })
 }
@@ -120,6 +145,13 @@ pub fn plan_grant<Tz: TimeZone>(
 where
     Tz::Offset: Display,
 {
+    // `link` denies `Bash(armadai grant *)`, which an agent gets around with a full path,
+    // `sh -c` or `env`; Claude Code puts `CLAUDECODE` in every shell it starts (measured
+    // 2026-11-10, claude -p, Bash tool). Not a boundary (`env -u CLAUDECODE` lifts it), a
+    // guard against the plain forms the deny rule misses.
+    if env.claude_shell {
+        return Err("grant is for the person at a terminal, and this shell belongs to a Claude Code session (CLAUDECODE is set); run armadai grant in your own terminal".into());
+    }
     let levels = &project.manifest.policy.grants;
     let Some(grant) = levels.get(level) else {
         let names: Vec<&str> = levels.keys().map(String::as_str).collect();
@@ -162,17 +194,7 @@ where
     let expires_at = if let Some(span) = bounds.span {
         Some(env.now.with_timezone(&Utc) + span)
     } else if let Some(time) = bounds.at {
-        let today = env.now.date_naive().and_time(time);
-        let mut at = tz.from_local_datetime(&today).earliest();
-        if at.as_ref().is_none_or(|t| *t <= env.now) {
-            at = tz
-                .from_local_datetime(&(today + Duration::days(1)))
-                .earliest();
-        }
-        Some(
-            at.ok_or_else(|| format!("{} does not exist in your time zone", time.format("%H:%M")))?
-                .with_timezone(&Utc),
-        )
+        Some(next_local(&env.now, time)?)
     } else {
         None
     };
@@ -204,6 +226,7 @@ pub fn render_list<Tz: TimeZone>(
     project: &Project,
     state: &GrantState,
     now: &DateTime<Tz>,
+    ended: &dyn Fn(&str, DateTime<Utc>) -> bool,
 ) -> String
 where
     Tz::Offset: Display,
@@ -222,6 +245,12 @@ where
                     .is_some_and(|end| end <= now.with_timezone(&Utc)) =>
             {
                 format!("expired at {}", hhmm(a.expires_at.unwrap_or(a.since), &tz))
+            }
+            Some(a) if (a.until_step.as_deref()).is_some_and(|s| ended(s, a.since)) => {
+                format!(
+                    "ended ({} started)",
+                    a.until_step.as_deref().unwrap_or_default()
+                )
             }
             Some(a) => {
                 let ends: Vec<String> = (a.until_step.iter())
@@ -362,7 +391,8 @@ pub fn execute_grant(
     let mut state = load_state(&root)?;
     let now = chrono::Local::now();
     let Some(level) = level else {
-        anstream::print!("{}", render_list(&project, &state, &now));
+        let ended = |step: &str, since| marked_since_in_logs(&root, step, since);
+        anstream::print!("{}", render_list(&project, &state, &now, &ended));
         return Ok(());
     };
     let bounds = Bounds {
@@ -383,6 +413,7 @@ pub fn execute_grant(
         now,
         markers: markers_installed(&root),
         denies: &denies,
+        claude_shell: std::env::var_os("CLAUDECODE").is_some_and(|v| !v.is_empty()),
     };
     let (active, line) = plan_grant(&project, &level, &bounds, &env).map_err(anyhow::Error::msg)?;
     state.active.insert(level, active);
@@ -443,6 +474,7 @@ mod tests {
             now: now(),
             markers,
             denies,
+            claude_shell: false,
         }
     }
 
@@ -618,7 +650,7 @@ mod tests {
         let p = project(MANIFEST);
         let mut state = GrantState::default();
         assert_eq!(
-            render_list(&p, &state, &now()),
+            render_list(&p, &state, &now(), &|_, _| false),
             "grant levels (policy.grants)\n  auto-until-mr  inactive\n  read-logs      inactive  Lire les journaux de recette\n"
         );
         state.active.insert(
@@ -638,18 +670,20 @@ mod tests {
             },
         );
         assert_eq!(
-            render_list(&p, &state, &now()),
+            render_list(&p, &state, &now(), &|_, _| false),
             "grant levels (policy.grants)\n  auto-until-mr  active until evolution/publish starts or 18:00, since 09:12\n  read-logs      expired at 09:30\n"
         );
         state.active.get_mut("read-logs").unwrap().expires_at = Some(utc("2026-11-10T11:00:00Z"));
         state.active.get_mut("read-logs").unwrap().until_step = None;
         assert_eq!(
-            render_list(&p, &state, &now()).lines().nth(2),
+            render_list(&p, &state, &now(), &|_, _| false)
+                .lines()
+                .nth(2),
             Some("  read-logs      active until 12:00, since 08:00")
         );
         let none = project("schema_version: 1\n");
         assert_eq!(
-            render_list(&none, &GrantState::default(), &now()),
+            render_list(&none, &GrantState::default(), &now(), &|_, _| false),
             "no grant level declared (policy.grants in .armadai/project.yaml)\n"
         );
     }
@@ -787,5 +821,161 @@ mod tests {
         )));
         assert!(!installed("{}".into()));
         assert!(!markers_installed(&dir.path().join("nowhere")));
+    }
+
+    /// Paris in 2027: UTC+1, UTC+2 from 2027-03-28T01:00Z to 2027-10-31T01:00Z. A test
+    /// zone, since `chrono-tz` is not in the lock.
+    #[derive(Clone, Copy, Debug)]
+    struct Paris;
+
+    fn summer(utc: &chrono::NaiveDateTime) -> bool {
+        let at = |s: &str| s.parse::<DateTime<Utc>>().unwrap().naive_utc();
+        *utc >= at("2027-03-28T01:00:00Z") && *utc < at("2027-10-31T01:00:00Z")
+    }
+
+    impl TimeZone for Paris {
+        type Offset = FixedOffset;
+        fn from_offset(_: &FixedOffset) -> Paris {
+            Paris
+        }
+        fn offset_from_local_date(
+            &self,
+            d: &chrono::NaiveDate,
+        ) -> chrono::LocalResult<FixedOffset> {
+            self.offset_from_local_datetime(&d.and_hms_opt(12, 0, 0).unwrap())
+        }
+        fn offset_from_local_datetime(
+            &self,
+            l: &chrono::NaiveDateTime,
+        ) -> chrono::LocalResult<FixedOffset> {
+            let (cet, cest) = (
+                FixedOffset::east_opt(3600).unwrap(),
+                FixedOffset::east_opt(7200).unwrap(),
+            );
+            // an offset is valid when the instant it gives falls in its own season
+            let valid = |off: FixedOffset, is_summer: bool| {
+                summer(&(*l - Duration::seconds(off.local_minus_utc().into()))) == is_summer
+            };
+            match (valid(cest, true), valid(cet, false)) {
+                (true, true) => chrono::LocalResult::Ambiguous(cest, cet),
+                (true, false) => chrono::LocalResult::Single(cest),
+                (false, true) => chrono::LocalResult::Single(cet),
+                (false, false) => chrono::LocalResult::None,
+            }
+        }
+        fn offset_from_utc_date(&self, d: &chrono::NaiveDate) -> FixedOffset {
+            self.offset_from_utc_datetime(&d.and_hms_opt(12, 0, 0).unwrap())
+        }
+        fn offset_from_utc_datetime(&self, u: &chrono::NaiveDateTime) -> FixedOffset {
+            FixedOffset::east_opt(if summer(u) { 7200 } else { 3600 }).unwrap()
+        }
+    }
+
+    fn paris(utc: &str) -> DateTime<Paris> {
+        Paris.from_utc_datetime(&utc.parse::<DateTime<Utc>>().unwrap().naive_utc())
+    }
+
+    fn t(h: u32, m: u32) -> NaiveTime {
+        NaiveTime::from_hms_opt(h, m, 0).unwrap()
+    }
+
+    #[test]
+    fn the_test_zone_is_paris() {
+        assert_eq!(
+            paris("2027-03-28T00:59:00Z").to_rfc3339(),
+            "2027-03-28T01:59:00+01:00"
+        );
+        assert_eq!(
+            paris("2027-03-28T01:00:00Z").to_rfc3339(),
+            "2027-03-28T03:00:00+02:00"
+        );
+        assert_eq!(
+            paris("2027-10-31T01:00:00Z").to_rfc3339(),
+            "2027-10-31T02:00:00+01:00"
+        );
+    }
+
+    /// The spring change: 02:30 does not exist on 2027-03-28 in Paris. It is refused, today
+    /// as tomorrow, and never moved to the next day.
+    #[test]
+    fn a_time_the_zone_skips_is_refused() {
+        let skipped = "02:30 does not exist in your time zone".to_string();
+        // 01:00 CET on the day of the change: 02:30 is skipped today
+        assert_eq!(
+            next_local(&paris("2027-03-28T00:00:00Z"), t(2, 30)),
+            Err(skipped.clone())
+        );
+        // 03:00 on the day before (UTC+1): 02:30 has passed, and tomorrow's does not exist
+        assert_eq!(
+            next_local(&paris("2027-03-27T02:00:00Z"), t(2, 30)),
+            Err(skipped)
+        );
+        // the same hour on an ordinary day is fine
+        assert_eq!(
+            next_local(&paris("2027-03-26T00:00:00Z"), t(2, 30)),
+            Ok(utc("2027-03-26T01:30:00Z"))
+        );
+    }
+
+    /// The autumn change: 02:30 happens twice on 2027-10-31, the first one (CEST) is kept.
+    #[test]
+    fn a_time_the_zone_has_twice_is_the_first_one() {
+        // 00:30 CEST (22:30Z the day before): 02:30 CEST is 00:30Z
+        assert_eq!(
+            next_local(&paris("2027-10-30T22:30:00Z"), t(2, 30)),
+            Ok(utc("2027-10-31T00:30:00Z"))
+        );
+        // 02:45 CET (the second 02:xx): 02:30 has passed, tomorrow's is 01:30Z the day after
+        assert_eq!(
+            next_local(&paris("2027-10-31T01:45:00Z"), t(2, 30)),
+            Ok(utc("2027-11-01T01:30:00Z"))
+        );
+    }
+
+    #[test]
+    fn a_grant_in_a_claude_code_shell_is_refused() {
+        let p = project(MANIFEST);
+        let span = Bounds {
+            span: Some(Duration::hours(1)),
+            ..Bounds::default()
+        };
+        let e = Env {
+            claude_shell: true,
+            ..env(true, &[])
+        };
+        assert_eq!(
+            plan_grant(&p, "read-logs", &span, &e).unwrap_err(),
+            "grant is for the person at a terminal, and this shell belongs to a Claude Code session (CLAUDECODE is set); run armadai grant in your own terminal"
+        );
+        assert!(plan_grant(&p, "read-logs", &span, &env(true, &[])).is_ok());
+    }
+
+    /// A level whose step was delegated since it began has ended, whatever the clock says.
+    #[test]
+    fn a_level_whose_step_started_is_shown_ended() {
+        let p = project(MANIFEST);
+        let mut state = GrantState::default();
+        state.active.insert(
+            "auto-until-mr".into(),
+            ActiveGrant {
+                since: utc("2026-11-10T08:12:00Z"),
+                expires_at: None,
+                until_step: Some("evolution/publish".into()),
+            },
+        );
+        let asked = std::cell::RefCell::new(Vec::new());
+        let ended = |step: &str, since: DateTime<Utc>| {
+            asked.borrow_mut().push((step.to_string(), since));
+            true
+        };
+        let list = render_list(&p, &state, &now(), &ended);
+        assert_eq!(
+            list.lines().nth(1),
+            Some("  auto-until-mr  ended (evolution/publish started)")
+        );
+        assert_eq!(
+            asked.into_inner(),
+            vec![("evolution/publish".to_string(), utc("2026-11-10T08:12:00Z"))]
+        );
     }
 }
