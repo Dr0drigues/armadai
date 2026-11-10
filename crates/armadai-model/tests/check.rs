@@ -1442,6 +1442,23 @@ fn a_grant_without_a_rule_is_an_error() {
 }
 
 #[test]
+fn a_blank_rule_is_an_error_each_even_beside_a_good_one() {
+    let msg = "grant `g` has an empty rule in `allow`";
+    let ds = grants("policy:\n  grants:\n    g:\n      allow: [\"  \"]\n", &[]);
+    assert_eq!(only(&ds, "grant-empty-allow").message, msg);
+    let ds = grants(
+        "policy:\n  grants:\n    g:\n      allow: [\"Bash(ls)\", \"   \", \"\"]\n",
+        &[],
+    );
+    let all: Vec<_> = ds
+        .iter()
+        .filter(|d| d.code == "grant-empty-allow")
+        .collect();
+    assert_eq!(all.len(), 2, "{ds:?}");
+    assert!(all.iter().all(|d| d.message == msg));
+}
+
+#[test]
 fn an_unknown_until_step_is_reported_with_a_hint() {
     let ds = grants(
         "policy:\n  grants:\n    g:\n      allow: [\"Bash(ls)\"]\n      until: biuld\n",

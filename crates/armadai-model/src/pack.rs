@@ -25,14 +25,21 @@ pub enum OverlayError {
 
 /// Two `project.yaml` values merged: maps key by key (recursively), lists completed
 /// (the pack's items, then the project's absent from them, order kept), any other
-/// value taken from the project.
+/// value taken from the project; a `policy.grants` level is the exception, see
+/// `replace_grants`.
 pub fn merge_manifest_values(pack: &Value, project: &Value) -> Value {
+    let mut merged = merge_values(pack, project);
+    replace_grants(&mut merged, project);
+    merged
+}
+
+fn merge_values(pack: &Value, project: &Value) -> Value {
     match (pack, project) {
         (Value::Object(a), Value::Object(b)) => {
             let mut out = a.clone();
             for (k, v) in b {
                 let merged = match a.get(k) {
-                    Some(p) => merge_manifest_values(p, v),
+                    Some(p) => merge_values(p, v),
                     None => v.clone(),
                 };
                 out.insert(k.clone(), merged);
@@ -117,9 +124,7 @@ pub fn overlay(
         }
         (Some(a), Some(mut p)) => {
             p.as_object_mut().map(|m| m.remove("pack"));
-            let mut merged = merge_manifest_values(&a, &p);
-            replace_grants(&mut merged, &p);
-            merged
+            merge_manifest_values(&a, &p)
         }
     };
     let text =

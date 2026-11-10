@@ -502,9 +502,9 @@ warning on stderr.
 | `empty-flow` | error | A flow has no step | Add steps or delete the file |
 | `duplicate-step-state` | error | `states` repeats a state or redeclares `done`/`failed` | Remove the duplicate |
 | `unknown-step` | error | A link's `from`/`to`, an `on_failure`, a `start` or a grant's `until` names no step (of the flow; of any flow, or of `<flow>/<step>`, for `until`) | Use an existing step id |
-| `grant-empty-allow` | error | A `policy.grants` level has no `allow` rule (missing, empty or blank) | List at least one native rule |
+| `grant-empty-allow` | error | A `policy.grants` level has no `allow` rule (missing or `[]`), or one of its rules is empty or blank (one error per such rule) | List native rules, and remove the empty entries |
 | `grant-ambiguous-until` | error | A grant's bare `until` step is held by several flows | Write `<flow>/<step>` |
-| `grant-over-deny` | error | A grant's rule is, character for character, a `native.claude.permissions.deny` rule | Drop it from one of them: a grant never lifts a `deny` |
+| `grant-over-deny` | error | A grant's rule is, character for character, a `native.claude.permissions.deny` rule | Drop it from one of them: a grant never lifts a `deny`. Only an exact match is detected: a rule that overlaps a `deny` by pattern (`Bash(rm *)` vs `Bash(rm -rf *)`) is not, and Claude Code still applies `deny` first |
 | `unknown-state` | error | A link's `when` is not a state of its `from` step | Add it to `states`, or use `done`/`failed` |
 | `self-link` | error | A link, or `on_failure`, goes from a step to itself | Point it at another step |
 | `duplicate-link` | error | The same link is declared twice | Remove one |

@@ -533,13 +533,23 @@ fn check_grants(o: &mut Out, project: &Project) {
                 Some("ids match [a-z0-9][a-z0-9-]{0,63}".into()),
             );
         }
-        if g.allow.iter().all(|r| r.trim().is_empty()) {
+        if g.allow.is_empty() {
             o.err(
                 man,
                 "grant-empty-allow",
                 Some((name, true)),
                 format!("grant `{name}` allows nothing"),
                 Some("list at least one native rule in `allow`, e.g. `Bash(git push *)`".into()),
+            );
+        }
+        // an empty rule would become an empty `if`/matcher of a hook
+        for _ in g.allow.iter().filter(|r| r.trim().is_empty()) {
+            o.err(
+                man,
+                "grant-empty-allow",
+                Some((name, true)),
+                format!("grant `{name}` has an empty rule in `allow`"),
+                Some("write a native rule such as `Bash(git push *)`, or remove the entry".into()),
             );
         }
         for rule in g.allow.iter().filter(|r| denied.contains(&r.as_str())) {

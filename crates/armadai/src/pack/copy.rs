@@ -430,6 +430,23 @@ fn prune(base: &Path, rel: &Path) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_users_grant_level_is_not_completed_with_the_packs_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let disk = dir.path().join("project.yaml");
+        std::fs::write(
+            &disk,
+            "schema_version: 1\npolicy:\n  grants:\n    g:\n      allow:\n      - Bash(git push *)\n",
+        )
+        .unwrap();
+        let pack = b"schema_version: 1\nname: p\npolicy:\n  grants:\n    g:\n      allow: [\"Bash(git push *)\", \"Bash(rm *)\"]\n";
+        let (text, _) = merged(&disk, pack).unwrap().unwrap();
+        assert!(
+            text.contains("Bash(git push *)") && !text.contains("Bash(rm *)"),
+            "{text}"
+        );
+    }
+
     use super::*;
     use CopyAction::*;
 
