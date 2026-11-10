@@ -82,7 +82,7 @@ fn every_marked_case_replays_to_its_expected_document() {
         .into_iter()
         .filter(|c| c != "unmarked-unchanged")
         .collect();
-    assert_eq!(marked.len(), 6, "{marked:?}");
+    assert_eq!(marked.len(), 7, "{marked:?}");
     for case in &marked {
         assert_eq!(replay(case), expected(case), "case {case}");
     }
@@ -149,6 +149,30 @@ fn the_misplaced_case_misplaces_its_verdicts_without_marks() {
         steps(&marked, "task"),
         vec![pair("build-cli", "done"), pair("guard", "approved")]
     );
+}
+
+/// A loop that comes back to the same step through the coordinator (`review`,
+/// `rejected-task`, `tasks`, `review`) stays in one run, marked or not: the marked
+/// document is the inferred one, with the lot.
+#[test]
+fn a_marked_loop_through_the_coordinator_is_the_inferred_one() {
+    let case = "lot-rejected-task-loop";
+    let log = std::fs::read_to_string(fixtures().join(case).join("log.jsonl")).unwrap();
+    let plain: String = (log.lines())
+        .filter(|l| !l.contains("\"event\":\"mark\""))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    let mut inferred = replay_log(case, &plain);
+    let mut marked = replay(case);
+    assert_eq!(marked["runs"].as_array().unwrap().len(), 1, "{marked}");
+    for doc in [&mut marked, &mut inferred] {
+        // the first `mark` line opens the session a second earlier
+        doc.as_object_mut().unwrap().remove("session");
+        for run in doc["runs"].as_array_mut().unwrap() {
+            run.as_object_mut().unwrap().remove("lot");
+        }
+    }
+    assert_eq!(marked, inferred);
 }
 
 const AGENTS: &[&str] = &[

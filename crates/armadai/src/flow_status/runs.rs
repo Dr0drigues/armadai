@@ -631,13 +631,15 @@ impl<'p> Builder<'p> {
         }
     }
 
-    /// The open run of a `(flow, lot)` pair that a marker opened.
-    fn marked_run(&self, flow: &str, lot: &Option<String>) -> Option<usize> {
+    /// The run of a `(flow, lot)` pair that a marker opened, for `step` to start in:
+    /// the latest one that is open, or finished but with a link still to `step` (a loop
+    /// back to the same step through the coordinator, as for an inferred run).
+    fn marked_run(&self, flow: &str, lot: &Option<String>, step: &str) -> Option<usize> {
         (self.open.iter())
             .rposition(|r| {
                 r.marked && r.run.flow == flow && &r.run.lot == lot && !r.dropped && !r.closed
             })
-            .filter(|i| !self.open[*i].run.finished)
+            .filter(|i| !self.open[*i].run.finished || self.open[*i].linked_from(step).is_some())
     }
 
     /// A start: placed by its marker when it has one, else inferred. A resume
@@ -689,7 +691,7 @@ impl<'p> Builder<'p> {
         self.tick += 1;
         self.unsure_ids.insert(e.agent_id.clone());
         for (_, flow, step, lot) in cands {
-            let i = self.marked_run_or_open(flow, lot);
+            let i = self.marked_run_or_open(flow, lot, step);
             let v = self.open[i].view(step);
             if v.mark == Mark::Pending {
                 v.mark = Mark::Unsure;
@@ -700,8 +702,8 @@ impl<'p> Builder<'p> {
 
     /// The open run of a `(flow, lot)` pair a marker opened, or a new one,
     /// attributed as by a command.
-    fn marked_run_or_open(&mut self, flow_id: &str, lot: &Option<String>) -> usize {
-        self.marked_run(flow_id, lot).unwrap_or_else(|| {
+    fn marked_run_or_open(&mut self, flow_id: &str, lot: &Option<String>, step: &str) -> usize {
+        self.marked_run(flow_id, lot, step).unwrap_or_else(|| {
             let (id, flow) = (self.project.flows.get_key_value(flow_id)).expect("a flow id");
             let coordinator = self.project.manifest.coordinator.as_deref();
             let mut run = Building::new(id, flow, self.open.len(), coordinator);
@@ -717,7 +719,7 @@ impl<'p> Builder<'p> {
     fn start_marked(&mut self, m: &Mark3, e: &FlowEvent) -> Vec<(usize, String)> {
         self.tick += 1;
         let (_, flow_id, step, lot) = m;
-        let i = self.marked_run_or_open(flow_id, lot);
+        let i = self.marked_run_or_open(flow_id, lot, step);
         self.place(i, step, e.ts, false);
         let targets = vec![(i, step.clone())];
         self.assigned.insert(e.agent_id.clone(), targets.clone());
@@ -3797,5 +3799,54 @@ mod tests {
         assert_eq!(got[0].lot, None);
         assert_eq!(step_of(&got[0], "guard").mark, Mark::Pending);
         assert_eq!(step_of(&got[0], "build").mark, Mark::Done);
+    }
+
+    /// A finished marked run takes only a loop back; a new pass of the same lot (the entry
+    /// step again) is a new run.
+    #[test]
+    fn a_finished_marked_run_is_not_reopened_by_an_entry_start() {
+        let events = seq(&[
+            &step_marked(10, "a1", "architect", "design", None),
+            &step_marked(20, "a2", "dev", "build", None),
+            &step_marked(30, "a3", "qa", "guard", Some("approved")),
+            &step_marked(40, "a4", "ops", "validate", None),
+            &step_marked(50, "a5", "architect", "design", None),
+        ]);
+        let got = runs(&deliver(), &events);
+        assert_eq!(got.len(), 2);
+        assert!(got[0].finished);
+        assert_eq!(step_of(&got[0], "validate").mark, Mark::Done);
+        assert_eq!(step_of(&got[1], "design").mark, Mark::Done);
+        assert_eq!(step_of(&got[1], "build").mark, Mark::Pending);
+    }
+
+    /// The same loop back as an inferred run takes: `guard` rejected, then `build` again,
+    /// in the run of its lot.
+    #[test]
+    fn a_marked_loop_back_stays_in_its_run() {
+        let events = seq(&[
+            &step_marked(10, "a1", "architect", "design", None),
+            &step_marked(20, "a2", "dev", "build", None),
+            &step_marked(30, "a3", "qa", "guard", Some("rejected")),
+            &step_marked(40, "a4", "dev", "build", None),
+        ]);
+        let got = runs(&deliver(), &events);
+        assert_eq!(got.len(), 1);
+        assert_eq!(
+            got[0].transitions.last(),
+            Some(&t(40, "guard", "build", Some("rejected")))
+        );
+    }
+
+    fn step_marked(
+        ts: u64,
+        id: &str,
+        agent: &str,
+        step: &str,
+        state: Option<&str>,
+    ) -> Vec<FlowEvent> {
+        let mut out = vec![mark(ts - 1, agent, "deliver", step, Some("x"))];
+        out.extend(self::step(ts, id, agent, state));
+        out
     }
 }

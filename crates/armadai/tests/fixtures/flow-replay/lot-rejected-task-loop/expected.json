@@ -1,0 +1,116 @@
+{
+  "schema": "armadai.flow-status/1",
+  "session": {
+    "id": "s1",
+    "started_at": "2026-10-22T09:15:09Z",
+    "last_event_at": "2026-10-22T09:16:05Z"
+  },
+  "runs": [
+    {
+      "flow": "lot",
+      "lot": "12",
+      "status": "finished",
+      "steps": [
+        {
+          "step": "spec",
+          "mark": "done",
+          "sign": "✓",
+          "state": "done",
+          "note": null,
+          "ref": null
+        },
+        {
+          "step": "frame",
+          "mark": "done",
+          "sign": "✓",
+          "state": "done",
+          "note": null,
+          "ref": null
+        },
+        {
+          "step": "plan",
+          "mark": "done",
+          "sign": "✓",
+          "state": "done",
+          "note": null,
+          "ref": null
+        },
+        {
+          "step": "tasks",
+          "mark": "coordinator",
+          "sign": "~",
+          "state": null,
+          "note": "coordinator, not recorded",
+          "ref": null
+        },
+        {
+          "step": "review",
+          "mark": "done",
+          "sign": "✓",
+          "state": "approved",
+          "note": null,
+          "ref": null
+        },
+        {
+          "step": "validate",
+          "mark": "done",
+          "sign": "✓",
+          "state": "approved",
+          "note": null,
+          "ref": null
+        }
+      ],
+      "loops": [
+        {
+          "from": "tasks",
+          "to": "review",
+          "times": 2
+        }
+      ],
+      "transitions": [
+        {
+          "at": "2026-10-22T09:15:20Z",
+          "from": "spec",
+          "to": "frame",
+          "state": "done"
+        },
+        {
+          "at": "2026-10-22T09:15:30Z",
+          "from": "frame",
+          "to": "plan",
+          "state": "done"
+        },
+        {
+          "at": "2026-10-22T09:15:40Z",
+          "from": "plan",
+          "to": "tasks",
+          "state": "done"
+        },
+        {
+          "at": "2026-10-22T09:15:40Z",
+          "from": "tasks",
+          "to": "review",
+          "state": null
+        },
+        {
+          "at": "2026-10-22T09:15:50Z",
+          "from": "review",
+          "to": "tasks",
+          "state": "rejected-task"
+        },
+        {
+          "at": "2026-10-22T09:15:50Z",
+          "from": "tasks",
+          "to": "review",
+          "state": null
+        },
+        {
+          "at": "2026-10-22T09:16:00Z",
+          "from": "review",
+          "to": "validate",
+          "state": "approved"
+        }
+      ]
+    }
+  ]
+}
