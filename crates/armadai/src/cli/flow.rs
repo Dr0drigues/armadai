@@ -42,7 +42,7 @@ pub enum FlowCommand {
             for the claude target when the project has a flow).\n\n\
             Each run of a flow lists its steps (✓ done with its state, ● running, ○ pending, \
             ? unsure with the reason, ✗ a state the step does not declare, ~ held by the \
-            coordinator, which is not recorded, - not run in this session: before the step a \
+            coordinator, which is not recorded, ⤼ skipped, an optional step that did not run, - not run in this session: before the step a \
             run opened at, when the session started mid-flow), the links taken more than once, \
             and the timed transitions (UTC). A run is attributed to the flow whose id is the command you typed (when the recording hook saw it) until \
             it finishes, then the sub-agents are inferred again; it is shown `interrupted` when a \

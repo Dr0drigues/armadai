@@ -303,6 +303,12 @@ struct Building<'p> {
     /// Hop -> tick it was last recorded at.
     crossed: HashMap<(String, String), usize>,
     taken: BTreeMap<(String, String), u32>,
+    /// `(optional step, target)` -> the `(source, its stop tick)` of the link that
+    /// went past the step to the target.
+    bypassed: HashMap<(String, String), (String, usize)>,
+    /// `(optional step, target)` whose link the step started too late to take: it
+    /// ran after the target did, from the same stop of the same source.
+    late_taken: BTreeSet<(String, String)>,
 }
 
 impl<'p> Building<'p> {
@@ -343,6 +349,8 @@ impl<'p> Building<'p> {
             linked_at: HashMap::new(),
             crossed: HashMap::new(),
             taken: BTreeMap::new(),
+            bypassed: HashMap::new(),
+            late_taken: BTreeSet::new(),
         }
     }
 
@@ -416,11 +424,13 @@ impl<'p> Building<'p> {
         out
     }
 
-    /// An `optional` step that has not started in this run.
+    /// An `optional` step that is not running: what follows it can start
+    /// without it, on every turn of a loop (it keeps the mark of an earlier one).
     fn skippable(&self, step: &str) -> bool {
         self.flow.steps.get(step).is_some_and(|s| s.optional)
-            && (self.run.steps.iter())
-                .any(|v| v.step == step && matches!(v.mark, Mark::Pending | Mark::Skipped))
+            && (self.run.steps.iter()).any(|v| {
+                v.step == step && matches!(v.mark, Mark::Pending | Mark::Skipped | Mark::Done)
+            })
     }
 
     /// Shows the optional steps not started as skipped (a step they reach
@@ -454,15 +464,27 @@ impl<'p> Building<'p> {
     /// state `from` leads with. Read before `from`'s view changes: `from` may be
     /// the step that starts.
     fn take_link(&mut self, from: &str, crossed: &[&str], to: &str, ts: u64, tick: usize) {
-        // an optional step crossed is skipped, and is no hop of the link
-        self.skip(Some(crossed));
-        let crossed: Vec<&str> = (crossed.iter().copied())
-            .filter(|c| !self.flow.steps[*c].optional || self.view(c).mark != Mark::Skipped)
+        let left = self.stopped[from];
+        // an optional step crossed is skipped (shown so unless it ran), and is no hop of the link
+        let (passed, crossed): (Vec<&str>, Vec<&str>) =
+            crossed.iter().copied().partition(|c| self.skippable(c));
+        for x in &passed {
+            self.bypassed
+                .insert((x.to_string(), to.to_string()), (from.to_string(), left));
+        }
+        self.skip(Some(&passed));
+        // an optional step that starts now, from the stop that already led past it
+        let late: Vec<(String, String)> = (self.bypassed.iter())
+            .filter(|((x, _), (f, at))| x == to && f == from && *at == left)
+            .map(|(k, _)| k.clone())
             .collect();
+        for k in late {
+            self.bypassed.remove(&k);
+            self.late_taken.insert(k);
+        }
         let crossed = crossed.as_slice();
         let mut state = self.leads_with(from).map(str::to_string);
         let mut prev = from.to_string();
-        let left = self.stopped[from];
         self.linked_at.insert(to.to_string(), self.stopped_ts[from]);
         for (k, hop_to) in crossed.iter().copied().chain([to]).enumerate() {
             let hop = (prev.clone(), hop_to.to_string());
@@ -962,6 +984,15 @@ impl<'p> Builder<'p> {
         };
         run.stopped.insert(step.to_string(), self.tick);
         run.stopped_ts.insert(step.to_string(), ts);
+        // an optional step that ran after what it leads to: that link is behind it
+        let behind: Vec<(String, String)> = (run.late_taken.iter())
+            .filter(|(x, _)| x == step)
+            .cloned()
+            .collect();
+        for k in behind {
+            run.late_taken.remove(&k);
+            run.entered.insert(k.1, self.tick);
+        }
         // the late links: a step that started before this one stopped follows it
         // a `?` or `✗` step leads nowhere, and a step does not follow itself
         let leads = !matches!(run.view(step).mark, Mark::Unsure | Mark::Unexpected);
@@ -4032,6 +4063,87 @@ mod tests {
                 ("guard", "qa"),
                 ("check", "ops"),
                 ("release", "lead")
+            ]
+        );
+    }
+
+    /// `check` (optional) sits on the way back of a rejection.
+    const OPTIONAL_LOOP: &str = "start: build\nsteps:\n  build: { agent: dev }\n  guard: { agent: qa, states: [approved, rejected] }\n  check: { agent: ops, optional: true }\n  release: { agent: lead }\nlinks:\n  - { from: build, to: guard }\n  - { from: guard, to: check, when: rejected }\n  - { from: check, to: build }\n  - { from: guard, to: release, when: approved }\n";
+
+    /// An optional step done in a turn of a loop is still crossed in the next one:
+    /// it stays done, and the link goes from `guard` straight to `build`.
+    #[test]
+    fn an_optional_step_done_in_a_turn_is_crossed_in_the_next() {
+        let p = project(&[("opt", OPTIONAL_LOOP)]);
+        let events = seq(&[
+            &step(10, "d1", "dev", None),
+            &step(20, "q1", "qa", Some("rejected")),
+            &step(30, "o1", "ops", None),
+            &step(40, "d2", "dev", None),
+            &step(50, "q2", "qa", Some("rejected")),
+            &step(60, "d3", "dev", None),
+            &step(70, "q3", "qa", Some("approved")),
+            &step(80, "l1", "lead", None),
+        ]);
+        let got = runs(&p, &events);
+        assert_eq!(got.len(), 1, "one run");
+        assert_eq!(
+            marks(&got[0]),
+            [
+                ("build", Mark::Done),
+                ("guard", Mark::Done),
+                ("check", Mark::Done),
+                ("release", Mark::Done),
+            ]
+        );
+        assert_eq!(
+            got[0].transitions,
+            vec![
+                t(20, "build", "guard", Some("done")),
+                t(30, "guard", "check", Some("rejected")),
+                t(40, "check", "build", Some("done")),
+                t(50, "build", "guard", Some("done")),
+                t(60, "guard", "build", Some("rejected")),
+                t(70, "build", "guard", Some("done")),
+                t(80, "guard", "release", Some("approved")),
+            ]
+        );
+        assert_eq!(got[0].loops, vec![("build".into(), "guard".into(), 3)]);
+        assert!(got[0].finished);
+    }
+
+    /// The optional step that starts after the step that follows it does not hold
+    /// the run open for the link `check -> release` it missed.
+    #[test]
+    fn an_optional_step_started_after_the_next_one_leaves_the_run_closed() {
+        let p = project(&[("opt", OPTIONAL)]);
+        let events = seq(&[
+            &step(10, "a1", "architect", None),
+            &step(20, "a2", "dev", None),
+            &step(30, "a3", "qa", None),
+            &step(40, "a4", "lead", None),
+            &step(50, "a5", "ops", None),
+        ]);
+        let got = runs(&p, &events);
+        assert_eq!(got.len(), 1);
+        assert_eq!(
+            marks(&got[0]),
+            [
+                ("design", Mark::Done),
+                ("build", Mark::Done),
+                ("guard", Mark::Done),
+                ("check", Mark::Done),
+                ("release", Mark::Done),
+            ]
+        );
+        assert!(got[0].finished);
+        assert_eq!(
+            got[0].transitions,
+            vec![
+                t(20, "design", "build", Some("done")),
+                t(30, "build", "guard", Some("done")),
+                t(40, "guard", "release", Some("done")),
+                t(50, "guard", "check", Some("done")),
             ]
         );
     }

@@ -1834,3 +1834,16 @@ fn a_skipped_step_reads_in_text_markdown_and_json_and_the_run_finishes() {
     let (_, line, _) = env.line(&env.root(), &["opt"], "");
     assert_eq!(line, "opt finished 3/3\n");
 }
+
+#[test]
+fn the_help_of_flow_status_lists_the_skipped_mark() {
+    let env = Env::new();
+    let (code, out, _) = env.run(&env.root(), &["flow", "status", "--help"]);
+    assert_eq!(code, Some(0));
+    // the help wraps its text: compare it with the line breaks folded
+    let flat = out.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat.contains("~ held by the coordinator, which is not recorded, ⤼ skipped, an optional step that did not run, - not run in this session"),
+        "{flat}"
+    );
+}
