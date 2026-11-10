@@ -134,7 +134,8 @@ grant levels (policy.grants)
 ```
 
 A bound is required, from the command or from `until:` in the level; one typed on the command line
-replaces the level's. `--until <step>` is `<flow>/<step>`, or a step id held by one flow only; it
+replaces the level's. `--for` and `--until-time` exclude each other (the command refuses both);
+`--until` combines with either, and the level then ends at the first of the two. `--until <step>` is `<flow>/<step>`, or a step id held by one flow only; it
 needs the delegation markers that `link` makes Claude Code record (see
 [Flow status](flow-status.md#the-delegation-marker)), so run `armadai link --target claude` first.
 The state is `.armadai/state/grants.yaml`, git-ignored with the rest of `state/`; the hook of each
@@ -144,7 +145,7 @@ lifts a `deny`: a level whose rule is, character for character, a `deny` rule of
 `native.claude.permissions.deny` rule is the validator error `grant-over-deny`.
 A level with no `Bash(...)` rule has no hook to answer anything: `armadai grant` refuses it (`grant <level> has no Bash rule to answer; list its rules as Bash(...) in policy.grants, other rules are never granted`, exit code 1) and writes no state.
 
-**What `link` writes.** For each rule, a `PermissionRequest` hook with matcher `Bash` and `if` set to
+**What `link` writes.** For each `Bash(...)` rule, a `PermissionRequest` hook with matcher `Bash` and `if` set to
 the rule, running `armadai __claude-grant <level>` (hidden command: it reads the hook JSON on stdin,
 answers `allow` only while the level is active and the call is covered, and prints nothing
 otherwise, which leaves Claude Code's own prompt). Two `deny` rules guard the state:
@@ -168,8 +169,9 @@ two rules it added (yours are kept) and, for the `claude` target, deletes
 is not a boundary around the program (permissions page). The checks above stop an accident or a
 naive attempt, nothing more. Under a broad level (`Bash(cp *)`, `Bash(python *)`, `Bash(*)`), an
 agent can still rewrite the state through a copied folder, a link prepared beforehand, or an
-interpreter that runs code the hook never reads; the `acceptEdits` mode makes the preparation
-silent. Write narrow levels: full commands with fixed arguments (`Bash(git push origin
+interpreter that runs code the hook never reads; in `acceptEdits` mode, `cp`, `mv`, `mkdir` and `rm` inside the
+project run without a prompt, so a copied folder is prepared silently (a prepared link is not
+silent for that reason: `ln` is not in that list; permission-modes page, read 2026-11-10). Write narrow levels: full commands with fixed arguments (`Bash(git push origin
 feature/menu)`), never an interpreter, a shell, `env`, `xargs` or a bare `*`.
 
 **Who runs it.** `grant` is for the person at a terminal. It refuses to run in a shell of a Claude
