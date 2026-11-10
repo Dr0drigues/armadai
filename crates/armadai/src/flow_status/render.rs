@@ -22,7 +22,10 @@ pub fn render(runs: &[Run], session: &str) -> String {
 
 /// `{flow}  {status word}`.
 pub(super) fn run_heading(run: &Run) -> String {
-    format!("{}  {}", run.flow, status_word(run))
+    match &run.lot {
+        Some(lot) => format!("{} #{lot}  {}", run.flow, status_word(run)),
+        None => format!("{}  {}", run.flow, status_word(run)),
+    }
 }
 
 /// The step lines, the links taken more than once and the timed transitions,
@@ -73,6 +76,7 @@ fn status_text(v: &StepView) -> String {
     };
     (v.state.as_deref().or(word).map(str::to_string))
         .into_iter()
+        .chain(v.reference.as_ref().map(|r| format!("[{r}]")))
         .chain(v.note.as_ref().map(|n| format!("({n})")))
         .collect::<Vec<_>>()
         .join(" ")
@@ -97,7 +101,12 @@ pub fn render_md(runs: &[Run], session: &str, last_event_at: Option<u64>) -> Str
         );
     }
     for run in ordered(runs) {
-        out += &format!("\n## {}: {}\n\n", run.flow, status_word(run));
+        let lot = run
+            .lot
+            .as_ref()
+            .map(|l| format!(" #{l}"))
+            .unwrap_or_default();
+        out += &format!("\n## {}{lot}: {}\n\n", run.flow, status_word(run));
         out += "| Step | Mark | Status |\n|---|---|---|\n";
         for v in &run.steps {
             let (step, status) = (cell(&v.step), cell(&status_text(v)));
@@ -198,6 +207,7 @@ mod tests {
             mark,
             state: state.map(str::to_string),
             note: note.map(str::to_string),
+            reference: None,
         }
     }
 
@@ -231,6 +241,7 @@ mod tests {
             ],
             finished: false,
             interrupted: false,
+            lot: None,
         }
     }
 
@@ -245,6 +256,7 @@ mod tests {
             transitions: vec![t(T0 + 5, "triage", "check", Some("done"))],
             finished: true,
             interrupted: false,
+            lot: None,
         }
     }
 
@@ -271,6 +283,7 @@ mod tests {
             transitions: vec![],
             finished: false,
             interrupted: false,
+            lot: None,
         }
     }
 
@@ -407,6 +420,7 @@ mod tests {
             transitions: vec![],
             finished: false,
             interrupted: false,
+            lot: None,
         };
         assert_eq!(
             render(&[run], "s"),
@@ -474,6 +488,7 @@ mod tests {
             transitions: vec![],
             finished: false,
             interrupted: false,
+            lot: None,
         };
         assert_eq!(
             render(&[run], "s"),
@@ -551,6 +566,7 @@ mod tests {
             transitions: vec![t(T0 + 20, "analyse", "test", Some("done"))],
             finished: false,
             interrupted: true,
+            lot: None,
         };
         // started in this order: running, interrupted, finished
         assert_eq!(
@@ -577,6 +593,37 @@ mod tests {
              \x20 09:15:30  build → guard  (done)\n\
              \x20 09:15:40  guard → build  (rejected)\n\
              \x20 09:15:50  build → guard  (done)\n"
+        );
+    }
+
+    /// T4 and T5: the lot follows the flow, the ref follows the state.
+    #[test]
+    fn a_lot_and_a_ref_show_in_text_and_markdown() {
+        let run = Run {
+            lot: Some("menu".into()),
+            steps: vec![
+                StepView {
+                    reference: Some("feature/menu".into()),
+                    ..view("triage", Mark::Done, Some("approved"), Some("n"))
+                },
+                view("check", Mark::Running, None, None),
+            ],
+            loops: vec![],
+            transitions: vec![],
+            ..finished()
+        };
+        assert_eq!(
+            render(std::slice::from_ref(&run), "s"),
+            "session s (UTC)\n\n\
+             hotfix #menu  finished\n\
+             \x20 ✓ triage  approved [feature/menu] (n)\n\
+             \x20 ● check   running\n"
+        );
+        let md = render_md(std::slice::from_ref(&run), "s", None);
+        assert!(md.contains("\n## hotfix #menu: finished\n"), "{md}");
+        assert!(
+            md.contains("| triage | ✓ | approved [feature/menu] (n) |\n"),
+            "{md}"
         );
     }
 }

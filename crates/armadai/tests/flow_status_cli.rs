@@ -517,7 +517,7 @@ fn json_prints_the_session_as_the_schema_says() {
     assert_eq!((code, err.as_str()), (Some(0), ""));
     assert!(out.ends_with("}\n"), "one document and a newline: {out:?}");
     let got: serde_json::Value = serde_json::from_str(&out).unwrap();
-    let step = |s: &str, mark: &str, sign: &str, state: Option<&str>| serde_json::json!({"step": s, "mark": mark, "sign": sign, "state": state, "note": null});
+    let step = |s: &str, mark: &str, sign: &str, state: Option<&str>| serde_json::json!({"step": s, "mark": mark, "sign": sign, "state": state, "note": null, "ref": null});
     let tr = |at: &str, from: &str, to: &str, state: &str| serde_json::json!({"at": at, "from": from, "to": to, "state": state});
     assert_eq!(
         got,
@@ -530,6 +530,7 @@ fn json_prints_the_session_as_the_schema_says() {
             },
             "runs": [{
                 "flow": "deliver",
+                "lot": null,
                 "status": "in-progress",
                 "steps": [
                     step("design", "done", "✓", Some("done")),

@@ -54,11 +54,15 @@ pub struct StepView {
     pub mark: Mark,
     pub state: Option<String>,
     pub note: Option<String>,
+    /// The `REF:` word of the step's reply (first one recorded).
+    pub reference: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Run {
     pub flow: String,
+    /// The lot of the marker the run was placed by; `None` when it was inferred.
+    pub lot: Option<String>,
     pub steps: Vec<StepView>,
     /// Links taken more than once, as `(from, to, times)`.
     pub loops: Vec<(String, String, u32)>,
@@ -105,6 +109,20 @@ pub struct Run {
 ///   Once it has finished, the rules above apply again. A command naming no
 ///   flow changes nothing; without any `command` line the rules above are the
 ///   only ones.
+/// - A `mark` line (`[flow/step#lot]`, written when the coordinator delegated)
+///   places the sub-agent that follows instead of inference. (1) A `start` of
+///   a new `agent_id` consumes the oldest unconsumed `mark` of its
+///   `agent_type`; when several remain with different `(flow, step, lot)`, the
+///   start (and as many starts after it as there were marks) is `?`
+///   "ambiguous marker" and no run moves. (2) A `start` of an `agent_id` seen
+///   before (a resume) inherits its last marker and consumes nothing. (3) A
+///   marked `start` goes to the open run of the `(flow, lot)` pair, or opens
+///   one, attributed as by a command; no command, other lot or restart of an
+///   entry closes it, only its natural end does. (4) An unmarked `start`
+///   follows the rules above and never extends a run a marker opened. (5) A
+///   `mark` naming a flow or step the project lacks is ignored. (6) Without
+///   any `mark` line nothing above applies. The `REF:` of the first stop
+///   recorded for an `agent_id` shows on its step.
 pub fn runs(project: &Project, events: &[FlowEvent]) -> Vec<Run> {
     let mut b = Builder {
         project,
@@ -112,6 +130,10 @@ pub fn runs(project: &Project, events: &[FlowEvent]) -> Vec<Run> {
         assigned: HashMap::new(),
         tick: 0,
         attributed: None,
+        marks: Vec::new(),
+        marker_of: HashMap::new(),
+        unsure: HashMap::new(),
+        unsure_ids: BTreeSet::new(),
     };
     for e in merge_stops(events) {
         let targets = match e.event {
@@ -126,9 +148,12 @@ pub fn runs(project: &Project, events: &[FlowEvent]) -> Vec<Run> {
                 }
                 continue;
             }
-            // read by the marker attribution only
-            EventKind::Mark => continue,
-            EventKind::Start => b.start(&e),
+            EventKind::Mark => {
+                b.note_mark(&e);
+                continue;
+            }
+            EventKind::Start => b.start_event(&e),
+            EventKind::Stop if b.unsure_ids.contains(&e.agent_id) => continue,
             EventKind::Stop => match b.assigned.remove(&e.agent_id) {
                 Some(t) => t,
                 None => b.start(&e), // its start was not recorded
@@ -136,7 +161,7 @@ pub fn runs(project: &Project, events: &[FlowEvent]) -> Vec<Run> {
         };
         if e.event == EventKind::Stop && !b.ambiguous(&targets) {
             for (i, step) in &targets {
-                b.stop(*i, step, e.ts, e.state.as_deref());
+                b.stop(*i, step, e.ts, e.state.as_deref(), e.reference.as_deref());
             }
         }
     }
@@ -174,7 +199,7 @@ fn merge_candidates(mut members: Vec<Building>) -> Run {
 
 /// One stop per sub-agent run: a `SubagentHandback` (with the state) and the
 /// `SubagentStop` after it (usually without) share an `agent_id`; the first
-/// state recorded wins. A new start of the same id begins a new run.
+/// state and the first `REF:` recorded win. A new start of the same id begins a new run.
 fn merge_stops(events: &[FlowEvent]) -> Vec<FlowEvent> {
     let mut out: Vec<FlowEvent> = Vec::new();
     let mut last_stop: HashMap<&str, usize> = HashMap::new();
@@ -188,6 +213,9 @@ fn merge_stops(events: &[FlowEvent]) -> Vec<FlowEvent> {
                 if let Some(&i) = last_stop.get(e.agent_id.as_str()) {
                     if out[i].state.is_none() {
                         out[i].state = e.state.clone();
+                    }
+                    if out[i].reference.is_none() {
+                        out[i].reference = e.reference.clone();
                     }
                     continue;
                 }
@@ -211,6 +239,8 @@ struct Building<'p> {
     closed: bool,
     /// Opened by a command naming its flow: no inference, no `a | b` group.
     attributed: bool,
+    /// Opened by a `mark` line: only marked starts of its `(flow, lot)` extend it.
+    marked: bool,
     /// Closed by a later command before it finished.
     interrupted: bool,
     /// Steps placed with no link taken to them, whose source may still stop.
@@ -239,6 +269,7 @@ impl<'p> Building<'p> {
                 mark: if relay { Mark::Relay } else { Mark::Pending },
                 state: None,
                 note: relay.then(|| "coordinator, not recorded".to_string()),
+                reference: None,
             }
         };
         Building {
@@ -247,11 +278,13 @@ impl<'p> Building<'p> {
             dropped: false,
             closed: false,
             attributed: false,
+            marked: false,
             interrupted: false,
             awaiting: BTreeSet::new(),
             entered: HashMap::new(),
             run: Run {
                 flow: flow_id.to_string(),
+                lot: None,
                 steps: step_order(flow).into_iter().map(pending).collect(),
                 loops: Vec::new(),
                 transitions: Vec::new(),
@@ -382,6 +415,7 @@ impl<'p> Building<'p> {
             },
             state: None,
             note: ambiguous.then(|| "ambiguous step".to_string()),
+            reference: None,
         };
     }
 
@@ -403,12 +437,23 @@ struct Builder<'p> {
     tick: usize,
     /// The run of the latest command naming a flow, until it finishes.
     attributed: Option<usize>,
+    /// `mark` lines not consumed yet, oldest first.
+    marks: Vec<Mark3>,
+    /// `agent_id` -> its marker, for a resume.
+    marker_of: HashMap<String, Mark3>,
+    /// `agent_type` -> (starts still ambiguous, the markers they may carry).
+    unsure: HashMap<String, (usize, Vec<Mark3>)>,
+    /// Sub-agents whose marker was ambiguous: placed nowhere.
+    unsure_ids: BTreeSet<String>,
 }
+
+/// A marker as the log gives it: agent type, flow, step, lot.
+type Mark3 = (String, String, String, Option<String>);
 
 impl<'p> Builder<'p> {
     fn open_run(&self, flow: &str) -> Option<usize> {
         (self.open.iter())
-            .rposition(|r| r.run.flow == flow && !r.dropped && !r.closed)
+            .rposition(|r| r.run.flow == flow && !r.dropped && !r.closed && !r.marked)
             .filter(|i| !self.open[*i].run.finished)
     }
 
@@ -468,7 +513,9 @@ impl<'p> Builder<'p> {
     /// run of that flow alone opens, where the sub-agents that follow go.
     fn boundary(&mut self, flow_id: &str) {
         // (a run closed before, left stuck by its entry starting again, stays as it is)
-        for r in (self.open.iter_mut()).filter(|r| !r.dropped && !r.closed && !r.run.finished) {
+        for r in (self.open.iter_mut())
+            .filter(|r| !r.dropped && !r.closed && !r.run.finished && !r.marked)
+        {
             r.closed = true; // the inference that resumes must not extend it
             r.interrupted = true;
         }
@@ -494,28 +541,154 @@ impl<'p> Builder<'p> {
             .map(|(sid, _)| sid.as_str())
             .collect();
         let ambiguous = held.len() > 1;
-        // an entry step has no source to wait for (a review loop goes back to it)
-        let waits: Vec<bool> = held.iter().map(|s| !self.opens_at(flow, s)).collect();
-        let tick = self.tick;
-        let run = &mut self.open[i];
-        for (sid, waits) in held.iter().zip(waits) {
-            if !ambiguous {
-                match run.linked_from(sid) {
-                    Some((from, crossed)) => {
-                        run.take_link(&from, &crossed, sid, e.ts, tick);
-                        run.awaiting.remove(*sid);
-                    }
-                    None if waits => {
-                        run.awaiting.insert(sid.to_string());
-                    }
-                    None => {}
-                }
-                run.started.insert(sid.to_string(), tick);
-                run.run.finished = false;
-            }
-            run.show_started(sid, ambiguous);
+        for sid in &held {
+            self.place(i, sid, e.ts, ambiguous);
         }
         let targets: Vec<(usize, String)> = held.iter().map(|s| (i, s.to_string())).collect();
+        self.assigned.insert(e.agent_id.clone(), targets.clone());
+        targets
+    }
+
+    /// A step starts in a run placed by a command or a marker: linked from a
+    /// finished step, or awaiting its source (an entry step has none to wait
+    /// for: a review loop goes back to it).
+    fn place(&mut self, i: usize, sid: &str, ts: u64, ambiguous: bool) {
+        let flow = self.open[i].flow;
+        let waits = !self.opens_at(flow, sid);
+        let tick = self.tick;
+        let run = &mut self.open[i];
+        if !ambiguous {
+            match run.linked_from(sid) {
+                Some((from, crossed)) => {
+                    run.take_link(&from, &crossed, sid, ts, tick);
+                    run.awaiting.remove(sid);
+                }
+                None if waits => {
+                    run.awaiting.insert(sid.to_string());
+                }
+                None => {}
+            }
+            run.started.insert(sid.to_string(), tick);
+            run.run.finished = false;
+        }
+        run.show_started(sid, ambiguous);
+    }
+
+    /// Notes a `mark` line, unless it names a flow or step the project lacks.
+    fn note_mark(&mut self, e: &FlowEvent) {
+        let (Some(flow), Some(step)) = (&e.flow, &e.step) else {
+            return;
+        };
+        if (self.project.flows.get(flow)).is_some_and(|f| f.steps.contains_key(step)) {
+            self.marks.push((
+                e.agent_type.clone(),
+                flow.clone(),
+                step.clone(),
+                e.lot.clone(),
+            ));
+        }
+    }
+
+    /// The open run of a `(flow, lot)` pair that a marker opened.
+    fn marked_run(&self, flow: &str, lot: &Option<String>) -> Option<usize> {
+        (self.open.iter())
+            .rposition(|r| {
+                r.marked && r.run.flow == flow && &r.run.lot == lot && !r.dropped && !r.closed
+            })
+            .filter(|i| !self.open[*i].run.finished)
+    }
+
+    /// A start: placed by its marker when it has one, else inferred.
+    fn start_event(&mut self, e: &FlowEvent) -> Vec<(usize, String)> {
+        self.unsure_ids.remove(&e.agent_id);
+        // a resume keeps its marker and consumes no `mark`
+        let marker = match self.marker_of.get(&e.agent_id) {
+            Some(m) => Some(m.clone()),
+            None => self.take_mark(e),
+        };
+        match marker {
+            Some(m) => self.start_marked(&m, e),
+            None if self.unsure_ids.contains(&e.agent_id) => {
+                self.tick += 1;
+                Vec::new()
+            }
+            None => self.start(e),
+        }
+    }
+
+    /// The marker a new `agent_id` consumes: the oldest unconsumed `mark` of
+    /// its type. Several that differ: none, the start is shown `?` and
+    /// remembered in `unsure_ids`.
+    fn take_mark(&mut self, e: &FlowEvent) -> Option<Mark3> {
+        let mine: Vec<usize> = (self.marks.iter().enumerate())
+            .filter(|(_, m)| m.0 == e.agent_type)
+            .map(|(i, _)| i)
+            .collect();
+        let (left, mut cands) = self.unsure.remove(&e.agent_type).unwrap_or_default();
+        if left > 0 {
+            self.show_unsure(e, &cands);
+            if left > 1 {
+                self.unsure
+                    .insert(e.agent_type.clone(), (left - 1, std::mem::take(&mut cands)));
+            }
+            return None;
+        }
+        let first = self.marks.get(*mine.first()?)?.clone();
+        if mine.iter().any(|i| self.marks[*i] != first) {
+            // the marks of the type are all unattributable: they go, and so
+            // many starts after this one are `?` too
+            let mut cands: Vec<Mark3> = Vec::new();
+            for i in mine.iter().rev() {
+                let m = self.marks.remove(*i);
+                if !cands.contains(&m) {
+                    cands.insert(0, m);
+                }
+            }
+            let n = mine.len();
+            self.show_unsure(e, &cands);
+            if n > 1 {
+                self.unsure.insert(e.agent_type.clone(), (n - 1, cands));
+            }
+            return None;
+        }
+        let m = self.marks.remove(mine[0]);
+        self.marker_of.insert(e.agent_id.clone(), m.clone());
+        Some(m)
+    }
+
+    /// An ambiguous marked start: `?` on the steps its markers name, in the
+    /// runs that already exist; no run moves.
+    fn show_unsure(&mut self, e: &FlowEvent, cands: &[Mark3]) {
+        self.tick += 1;
+        self.unsure_ids.insert(e.agent_id.clone());
+        for (_, flow, step, lot) in cands {
+            if let Some(i) = self.marked_run(flow, lot) {
+                let v = self.open[i].view(step);
+                if v.mark == Mark::Pending {
+                    v.mark = Mark::Unsure;
+                    v.note = Some("ambiguous marker".to_string());
+                }
+            }
+        }
+    }
+
+    /// A start the coordinator marked: the open run of its `(flow, lot)`, or a
+    /// new one, attributed as by a command.
+    fn start_marked(&mut self, m: &Mark3, e: &FlowEvent) -> Vec<(usize, String)> {
+        self.tick += 1;
+        let (_, flow_id, step, lot) = m;
+        let i = self.marked_run(flow_id, lot).unwrap_or_else(|| {
+            let (id, flow) = (self.project.flows.get_key_value(flow_id)).expect("a flow id");
+            let coordinator = self.project.manifest.coordinator.as_deref();
+            let mut run = Building::new(id, flow, self.open.len(), coordinator);
+            run.attributed = true;
+            run.marked = true;
+            run.run.lot = lot.clone();
+            self.open.push(run);
+            self.open.len() - 1
+        });
+        self.place(i, step, e.ts, false);
+        let targets = vec![(i, step.clone())];
         self.assigned.insert(e.agent_id.clone(), targets.clone());
         targets
     }
@@ -538,8 +711,8 @@ impl<'p> Builder<'p> {
         for (fid, _, sid) in &held {
             // a finished run has no link left but a loop back through the
             // coordinator to the same step (see `stop`): that one goes on
-            let last =
-                (self.open.iter()).rposition(|r| r.run.flow == *fid && !r.dropped && !r.closed);
+            let last = (self.open.iter())
+                .rposition(|r| r.run.flow == *fid && !r.dropped && !r.closed && !r.marked);
             if let Some(i) = last
                 && let Some(from) = self.open[i].linked_from(sid)
             {
@@ -560,7 +733,7 @@ impl<'p> Builder<'p> {
         let taken = (held.iter())
             .filter_map(|(fid, _, sid)| {
                 let i = (self.open.iter())
-                    .rposition(|r| r.run.flow == *fid && !r.dropped && !r.closed)?;
+                    .rposition(|r| r.run.flow == *fid && !r.dropped && !r.closed && !r.marked)?;
                 self.open[i].linked_at.get(*sid).copied()
             })
             .max();
@@ -686,7 +859,14 @@ impl<'p> Builder<'p> {
         targets
     }
 
-    fn stop(&mut self, i: usize, step: &str, ts: u64, state: Option<&str>) {
+    fn stop(
+        &mut self,
+        i: usize,
+        step: &str,
+        ts: u64,
+        state: Option<&str>,
+        reference: Option<&str>,
+    ) {
         self.tick += 1;
         let run = &mut self.open[i];
         let declared = &run.flow.steps[step].states;
@@ -705,6 +885,7 @@ impl<'p> Builder<'p> {
             mark,
             state: state.map(str::to_string),
             note: note.map(str::to_string),
+            reference: reference.map(str::to_string),
         };
         run.stopped.insert(step.to_string(), self.tick);
         run.stopped_ts.insert(step.to_string(), ts);
@@ -901,6 +1082,7 @@ mod tests {
             mark,
             state: state.map(str::to_string),
             note: note.map(str::to_string),
+            reference: None,
         }
     }
 
@@ -943,6 +1125,7 @@ mod tests {
                 ],
                 finished: true,
                 interrupted: false,
+                lot: None,
             }]
         );
     }
@@ -976,6 +1159,7 @@ mod tests {
                 ],
                 finished: false,
                 interrupted: false,
+                lot: None,
             }]
         );
     }
@@ -1125,6 +1309,7 @@ mod tests {
                 transitions: vec![t(20, "refine", "build", Some("done"))],
                 finished: false,
                 interrupted: false,
+                lot: None,
             }]
         );
     }
@@ -1144,6 +1329,7 @@ mod tests {
                 transitions: vec![],
                 finished: false,
                 interrupted: false,
+                lot: None,
             }]
         );
     }
@@ -1172,6 +1358,7 @@ mod tests {
                 transitions: vec![t(20, "x", "y", Some("done"))],
                 finished: false,
                 interrupted: false,
+                lot: None,
             }]
         );
     }
@@ -1209,6 +1396,7 @@ mod tests {
                 transitions: vec![t(20, "x", "y", Some("done")), t(30, "y", "z", Some("done"))],
                 finished: false,
                 interrupted: false,
+                lot: None,
             }]
         );
     }
@@ -1299,6 +1487,7 @@ mod tests {
             transitions,
             finished,
             interrupted: false,
+            lot: None,
         }
     }
 
@@ -1775,6 +1964,7 @@ mod tests {
                     ],
                     finished: true,
                     interrupted: false,
+                    lot: None,
                 }],
             )
         );
@@ -2837,6 +3027,7 @@ mod tests {
                 transitions: vec![],
                 finished: true,
                 interrupted: false,
+                lot: None,
             }]
         );
     }
@@ -3013,6 +3204,7 @@ mod tests {
                 transitions: vec![],
                 finished: true,
                 interrupted: false,
+                lot: None,
             }]
         );
     }
@@ -3235,6 +3427,228 @@ mod tests {
                 "  09:15:40  build → guard  (done)",
                 "  09:16:00  guard → validate  (approved)",
             ])
+        );
+    }
+
+    // ---- marker attribution (P1.3) ----
+
+    fn mark(ts: u64, agent: &str, flow: &str, step: &str, lot: Option<&str>) -> FlowEvent {
+        FlowEvent {
+            ts,
+            event: EventKind::Mark,
+            agent_id: String::new(),
+            agent_type: agent.into(),
+            state: None,
+            command: None,
+            flow: Some(flow.into()),
+            step: Some(step.into()),
+            lot: lot.map(str::to_string),
+            reference: None,
+        }
+    }
+
+    fn stop_ref(ts: u64, id: &str, agent: &str, state: Option<&str>, r: &str) -> FlowEvent {
+        FlowEvent {
+            reference: Some(r.into()),
+            ..stop(ts, id, agent, state)
+        }
+    }
+
+    fn lot_of(run: &Run) -> Option<&str> {
+        run.lot.as_deref()
+    }
+
+    fn step_of<'r>(run: &'r Run, step: &str) -> &'r StepView {
+        run.steps.iter().find(|v| v.step == step).unwrap()
+    }
+
+    /// A marked delegation runs in the run of its `(flow, lot)`, two lots of one
+    /// flow stay apart however their events interleave.
+    #[test]
+    fn two_lots_of_one_flow_interleaved_stay_two_runs() {
+        let events = seq(&[
+            &[mark(10, "architect", "deliver", "design", Some("x"))],
+            &[start(11, "a1", "architect")],
+            &[mark(12, "architect", "deliver", "design", Some("y"))],
+            &[start(13, "a2", "architect")],
+            &[
+                stop(14, "a1", "architect", None),
+                stop(15, "a2", "architect", None),
+            ],
+            &[mark(20, "dev", "deliver", "build", Some("y"))],
+            &[start(21, "a3", "dev")],
+            &[stop(22, "a3", "dev", None)],
+        ]);
+        let got = runs(&deliver(), &events);
+        assert_eq!(got.len(), 2);
+        assert_eq!(
+            got.iter().map(lot_of).collect::<Vec<_>>(),
+            vec![Some("x"), Some("y")]
+        );
+        assert_eq!(step_of(&got[0], "build").mark, Mark::Pending);
+        assert_eq!(step_of(&got[1], "build").mark, Mark::Done);
+        assert_eq!(
+            got[1].transitions,
+            vec![t(21, "design", "build", Some("done"))]
+        );
+        assert_eq!(got[0].transitions, vec![]);
+    }
+
+    /// Rule 1: identical marks pending, each start takes one, no `?`.
+    #[test]
+    fn two_identical_marks_serve_two_starts() {
+        let events = seq(&[
+            &[mark(10, "dev", "deliver", "build", Some("x"))],
+            &[mark(11, "dev", "deliver", "build", Some("x"))],
+            &[start(12, "a1", "dev"), start(13, "a2", "dev")],
+        ]);
+        let got = runs(&deliver(), &events);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].lot.as_deref(), Some("x"));
+        assert_eq!(
+            step_of(&got[0], "build"),
+            &view("build", Mark::Running, None, None)
+        );
+    }
+
+    /// Rule 1: two marks that differ for one agent type: the start is `?` and no run moves.
+    #[test]
+    fn two_different_marks_make_the_start_ambiguous() {
+        let events = seq(&[
+            &[mark(1, "architect", "deliver", "design", Some("x"))],
+            &[start(2, "b1", "architect")],
+            &[mark(3, "architect", "deliver", "design", Some("y"))],
+            &[start(4, "b2", "architect")],
+            &[
+                stop(5, "b1", "architect", None),
+                stop(6, "b2", "architect", None),
+            ],
+            &[mark(10, "dev", "deliver", "build", Some("x"))],
+            &[mark(11, "dev", "deliver", "build", Some("y"))],
+            &[start(12, "a1", "dev"), stop(13, "a1", "dev", None)],
+        ]);
+        let got = runs(&deliver(), &events);
+        assert_eq!(got.len(), 2);
+        for r in &got {
+            assert_eq!(
+                step_of(r, "build"),
+                &view("build", Mark::Unsure, None, Some("ambiguous marker"))
+            );
+            // no link was taken, nothing was stopped
+            assert_eq!(r.transitions, vec![]);
+            assert!(!r.finished);
+        }
+    }
+
+    /// Rule 2: a resume (same `agent_id`) keeps its marker and takes no `mark`.
+    #[test]
+    fn a_resumed_sub_agent_inherits_its_marker() {
+        let events = seq(&[
+            &[mark(10, "architect", "deliver", "design", Some("x"))],
+            &[
+                start(11, "a1", "architect"),
+                stop(12, "a1", "architect", None),
+            ],
+            &[mark(20, "dev", "deliver", "build", Some("x"))],
+            &[start(21, "a2", "dev"), stop(22, "a2", "dev", None)],
+            &[mark(25, "qa", "deliver", "guard", Some("x"))],
+            &[
+                start(30, "a3", "qa"),
+                stop(31, "a3", "qa", Some("rejected")),
+            ],
+            // no mark: a2 resumes
+            &[start(40, "a2", "dev")],
+        ]);
+        let got = runs(&deliver(), &events);
+        assert_eq!(got.len(), 1);
+        assert_eq!(
+            got[0].transitions.last(),
+            Some(&t(40, "guard", "build", Some("rejected")))
+        );
+        assert_eq!(step_of(&got[0], "build").mark, Mark::Running);
+    }
+
+    /// Rule 3: a command does not close a marked run.
+    #[test]
+    fn a_command_does_not_close_a_marked_run() {
+        let events = seq(&[
+            &[mark(10, "architect", "deliver", "design", Some("x"))],
+            &[
+                start(11, "a1", "architect"),
+                stop(12, "a1", "architect", None),
+            ],
+            &[cmd(15, "deliver")],
+            &[mark(20, "dev", "deliver", "build", Some("x"))],
+            &[start(21, "a2", "dev")],
+        ]);
+        let got = runs(&deliver(), &events);
+        let marked: Vec<_> = got.iter().filter(|r| r.lot.is_some()).collect();
+        assert_eq!(marked.len(), 1);
+        assert!(!marked[0].interrupted);
+        assert_eq!(step_of(marked[0], "build").mark, Mark::Running);
+        assert_eq!(
+            marked[0].transitions,
+            vec![t(21, "design", "build", Some("done"))]
+        );
+    }
+
+    /// Rule 4: an unmarked start never extends a run a marker opened.
+    #[test]
+    fn an_unmarked_start_does_not_extend_a_marked_run() {
+        let events = seq(&[
+            &[mark(10, "architect", "deliver", "design", Some("x"))],
+            &[
+                start(11, "a1", "architect"),
+                stop(12, "a1", "architect", None),
+            ],
+            // no mark
+            &[start(20, "a2", "dev")],
+        ]);
+        let got = runs(&deliver(), &events);
+        assert_eq!(got.len(), 2);
+        let marked = got.iter().find(|r| r.lot.is_some()).unwrap();
+        let inferred = got.iter().find(|r| r.lot.is_none()).unwrap();
+        assert_eq!(step_of(marked, "build").mark, Mark::Pending);
+        assert_eq!(step_of(inferred, "build").mark, Mark::Running);
+    }
+
+    /// Rule 5: a mark naming a flow or a step the project lacks is ignored.
+    #[test]
+    fn a_mark_naming_nothing_of_the_project_is_ignored() {
+        let plain = seq(&[&step(20, "a2", "dev", None)]);
+        let noisy = seq(&[
+            &[mark(10, "dev", "nowhere", "build", Some("x"))],
+            &[mark(11, "dev", "deliver", "nostep", None)],
+            &step(20, "a2", "dev", None),
+        ]);
+        assert_eq!(runs(&deliver(), &noisy), runs(&deliver(), &plain));
+        assert_eq!(runs(&deliver(), &plain)[0].lot, None);
+    }
+
+    /// The `REF:` of the first stop recorded of an `agent_id` shows on its step;
+    /// a resume that stops again shows its own.
+    #[test]
+    fn the_first_ref_of_a_sub_agent_shows_on_its_step() {
+        let events = seq(&[
+            &[mark(9, "architect", "deliver", "design", None)],
+            &[start(10, "a1", "architect")],
+            &[
+                stop_ref(11, "a1", "architect", None, "feature/one"),
+                stop_ref(12, "a1", "architect", None, "feature/two"),
+            ],
+            &[mark(19, "dev", "deliver", "build", None)],
+            &[start(20, "a2", "dev"), stop(21, "a2", "dev", None)],
+            &[start(30, "a2", "dev")],
+            &[stop_ref(31, "a2", "dev", None, "feature/three")],
+        ]);
+        let got = runs(&deliver(), &events);
+        assert_eq!(
+            step_of(&got[0], "design").reference.as_deref(),
+            Some("feature/one")
+        );
+        assert_eq!(
+            step_of(&got[0], "build").reference.as_deref(),
+            Some("feature/three")
         );
     }
 }

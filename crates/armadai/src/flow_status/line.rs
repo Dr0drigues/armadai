@@ -94,6 +94,7 @@ mod tests {
             mark,
             state: None,
             note: None,
+            reference: None,
         }
     }
 
@@ -108,6 +109,7 @@ mod tests {
             transitions: vec![],
             finished: false,
             interrupted: false,
+            lot: None,
         }
     }
 
