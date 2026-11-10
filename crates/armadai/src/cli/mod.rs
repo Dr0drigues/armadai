@@ -190,7 +190,7 @@ pub enum Command {
         #[command(subcommand)]
         action: config::ConfigAction,
     },
-    /// Manage model deprecations and project registry
+    /// Check model deprecations, show the tier table
     #[command(
         subcommand,
         long_about = "Manage model deprecations and project registry.\n\n\
@@ -202,7 +202,8 @@ pub enum Command {
             armadai models check --all --prune\n  \
             armadai models update\n  \
             armadai models update --all\n  \
-            armadai models list"
+            armadai models list\n  \
+            armadai models tiers"
     )]
     Models(models::ModelsAction),
     /// Compile the project (.armadai/) into native config files for AI assistants

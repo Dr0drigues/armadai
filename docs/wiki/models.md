@@ -39,6 +39,8 @@ Table as of 2026-11-10.
 | `openai` | `gpt-6-luna` | `gpt-6.1-sol` | `gpt-6-astra` |
 <!-- tier-table:end -->
 
+`armadai models tiers` shows this table.
+
 Sources, read on 2026-11-10 (the ids are copied from these pages, not from memory):
 
 - OpenAI: <https://developers.openai.com/api/docs/models> (`gpt-6-luna`, `gpt-6.1-sol`,

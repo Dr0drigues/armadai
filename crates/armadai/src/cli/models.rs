@@ -24,6 +24,8 @@ pub enum ModelsAction {
     },
     /// List registered projects
     List,
+    /// Show the tier table built into armadai, with its date
+    Tiers,
 }
 
 pub fn execute(action: ModelsAction) -> anyhow::Result<()> {
@@ -31,6 +33,54 @@ pub fn execute(action: ModelsAction) -> anyhow::Result<()> {
         ModelsAction::Check { all, prune } => run(all, prune, false),
         ModelsAction::Update { all } => run(all, false, true),
         ModelsAction::List => list(),
+        ModelsAction::Tiers => {
+            tiers();
+            Ok(())
+        }
+    }
+}
+
+/// The output of `models tiers`: title, a column-aligned table (header row, then one
+/// row per vendor; `max` is what `link` uses, so a vendor without one shows its `pro`),
+/// and the note on what reads the table. Line 0 is the title, line 2 the header row,
+/// the last line the note.
+fn tiers_lines(table: &armadai_core::model_table::ModelTable) -> Vec<String> {
+    let mut rows = vec![["vendor", "fast", "pro", "max"].map(String::from)];
+    for (vendor, t) in &table.tiers {
+        let max = t.max.as_ref().unwrap_or(&t.pro);
+        rows.push([vendor, &t.fast, &t.pro, max].map(|c| c.to_string()));
+    }
+    let widths: [usize; 4] =
+        std::array::from_fn(|i| rows.iter().map(|r| r[i].len()).max().unwrap_or(0));
+    let mut out = vec![
+        format!("Tier table built into armadai, as of {}:", table.as_of),
+        String::new(),
+    ];
+    for r in &rows {
+        let cells: Vec<String> = (0..4)
+            .map(|i| format!("{:<w$}", r[i], w = widths[i]))
+            .collect();
+        out.push(format!("  {}", cells.join("  ").trim_end()));
+    }
+    out.push(String::new());
+    out.push(
+        "`link --target codex` uses the openai row for an agent without native.codex.model; \
+         link never reads the models cache."
+            .into(),
+    );
+    out
+}
+
+fn tiers() {
+    let lines = tiers_lines(armadai_core::model_table::model_table());
+    let last = lines.len() - 1;
+    for (i, l) in lines.iter().enumerate() {
+        let style = match i {
+            0 | 2 => crate::cli::style::header(),
+            n if n == last => crate::cli::style::muted(),
+            _ => crate::cli::style::accent(),
+        };
+        anstream::println!("{style}{l}{style:#}");
     }
 }
 
@@ -382,7 +432,29 @@ fn list() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{replace_model_values, rewrite_front};
+    use super::{replace_model_values, rewrite_front, tiers_lines};
+
+    #[test]
+    fn tiers_lines_aligns_the_table() {
+        let table: armadai_core::model_table::ModelTable = serde_json::from_str(
+            r#"{"version":1,"as_of":"2030-01-02","aliases":{},"tiers":{
+              "acme":{"fast":"acme-f1","pro":"acme-pro-long-name","max":"acme-m3"},
+              "zeta":{"fast":"zeta-quick","pro":"zeta-p2"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            tiers_lines(&table),
+            [
+                "Tier table built into armadai, as of 2030-01-02:",
+                "",
+                "  vendor  fast        pro                 max",
+                "  acme    acme-f1     acme-pro-long-name  acme-m3",
+                "  zeta    zeta-quick  zeta-p2             zeta-p2",
+                "",
+                "`link --target codex` uses the openai row for an agent without native.codex.model; link never reads the models cache.",
+            ]
+        );
+    }
 
     fn pairs() -> Vec<(String, String)> {
         vec![("gpt-4-turbo".into(), "gpt-4o".into())]
