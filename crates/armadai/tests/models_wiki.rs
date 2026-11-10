@@ -75,9 +75,10 @@ fn models_tiers_prints_the_embedded_table() {
 }
 
 #[cfg(unix)]
-fn run_sync(curl_body: &str) -> (std::process::Output, std::path::PathBuf) {
+fn run_sync(curl_body: &str) -> (std::process::Output, std::path::PathBuf, tempfile::TempDir) {
     use std::os::unix::fs::PermissionsExt;
-    let home = tempfile::tempdir().unwrap().keep();
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().to_path_buf();
     let bin = home.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let curl = bin.join("curl");
@@ -99,14 +100,15 @@ fn run_sync(curl_body: &str) -> (std::process::Output, std::path::PathBuf) {
         .args(["models", "sync"])
         .output()
         .unwrap();
-    (out, home.join("config").join("models-cache.json"))
+    (out, home.join("config").join("models-cache.json"), tmp)
 }
 
 /// `models sync` through a fake curl: the success line, then the unchanged-table note.
 #[cfg(unix)]
 #[test]
 fn models_sync_reports_what_it_wrote() {
-    let (out, cache) = run_sync(r#"printf '%s' '{"p":{"models":{"m":{"id":"m1"}}}}' > "$out""#);
+    let (out, cache, _home) =
+        run_sync(r#"printf '%s' '{"p":{"models":{"m":{"id":"m1"}}}}' > "$out""#);
     assert!(out.status.success(), "{out:?}");
     let stdout = String::from_utf8(out.stdout).unwrap();
     let lines: Vec<_> = stdout.lines().collect();
@@ -133,7 +135,7 @@ fn models_sync_reports_what_it_wrote() {
 #[cfg(unix)]
 #[test]
 fn models_sync_failure_is_one_error_line() {
-    let (out, cache) = run_sync("printf 'curl: (6) first\\nsecond\\n' >&2; exit 6");
+    let (out, cache, _home) = run_sync("printf 'curl: (6) first\\nsecond\\n' >&2; exit 6");
     assert_eq!(out.status.code(), Some(1));
     assert_eq!(
         String::from_utf8(out.stderr).unwrap(),
