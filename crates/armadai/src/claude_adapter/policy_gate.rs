@@ -106,7 +106,7 @@ fn main_checkout_of(cwd: &Path) -> Option<PathBuf> {
 /// omission as this target is what stops omitting the field from being a way
 /// around the policy — and if a project declares this agent, such calls are
 /// allowed again, because the policy decides rather than the shape of the call.
-const IMPLICIT_SUBAGENT: &str = "general-purpose";
+pub const IMPLICIT_SUBAGENT: &str = "general-purpose";
 
 /// The whole gate, as a pure string→string function so it can be tested
 /// without a subprocess. `None` means "no opinion".
@@ -188,7 +188,12 @@ pub fn decide(raw: &str) -> Option<String> {
     }
     let allowed = allowed_targets(&project, caller);
     if allowed.contains(target) {
-        return None;
+        let description = v
+            .get("tool_input")
+            .and_then(|i| i.get("description"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        return marker_refusal(&project, target, description).map(deny);
     }
     let from = caller.map_or("the main thread".to_string(), |c| format!("agent `{c}`"));
     let reason = if allowed.is_empty() {
@@ -205,6 +210,54 @@ pub fn decide(raw: &str) -> Option<String> {
         )
     };
     Some(deny(reason))
+}
+
+/// The refusal of a step delegation whose description does not carry the
+/// `[flow/step#lot]` marker of a step the target holds. A free agent and an agent
+/// holding no step need none. Any doubt is a refusal: the only way through is a marker
+/// that names a flow of the project and a step of that flow held by `target`.
+fn marker_refusal(
+    project: &armadai_model::Project,
+    target: &str,
+    description: &str,
+) -> Option<String> {
+    if project
+        .manifest
+        .policy
+        .free_agents
+        .iter()
+        .any(|a| a == target)
+    {
+        return None;
+    }
+    let held: std::collections::BTreeSet<String> = project
+        .flows
+        .iter()
+        .flat_map(|(fid, f)| {
+            f.steps
+                .iter()
+                .filter(|(_, s)| s.agent == target)
+                .map(move |(sid, _)| format!("{fid}/{sid}"))
+        })
+        .collect();
+    if held.is_empty() {
+        return None;
+    }
+    let among = held.iter().cloned().collect::<Vec<_>>().join(", ");
+    let Some(m) = crate::flow_status::marker::parse(description) else {
+        return Some(format!(
+            "the description of a delegation to `{target}` must start with [flow/step] or \
+             [flow/step#lot], with flow/step among: {among}"
+        ));
+    };
+    if held.contains(&format!("{}/{}", m.flow, m.step)) {
+        return None;
+    }
+    let lot = m.lot.map(|l| format!("#{l}")).unwrap_or_default();
+    Some(format!(
+        "the marker [{}/{}{lot}] does not name a step `{target}` holds; use one of: {among}",
+        m.flow, m.step
+    ))
 }
 
 fn deny(reason: String) -> String {
@@ -240,6 +293,13 @@ mod tests {
             "tool_use_id": "toolu_01",
         })
         .to_string()
+    }
+
+    /// A call to a step agent, its description opening with `marker`.
+    fn marked(agent_type: &str, subagent_type: &str, marker: &str, cwd: &Path) -> String {
+        let mut v: Value = serde_json::from_str(&payload(agent_type, subagent_type, cwd)).unwrap();
+        v["tool_input"]["description"] = format!("{marker} do work").into();
+        v.to_string()
     }
 
     const AGENTS: [&str; 5] = ["lead", "dev", "qa", "doc", "helper"];
@@ -285,8 +345,8 @@ mod tests {
     #[test]
     fn the_main_thread_reaches_every_step_agent_when_a_coordinator_leads() {
         let dir = strict();
-        assert!(decide(&payload("", "dev", dir.path())).is_none());
-        assert!(decide(&payload("", "qa", dir.path())).is_none());
+        assert!(decide(&marked("", "dev", "[ship/build]", dir.path())).is_none());
+        assert!(decide(&marked("", "qa", "[ship/test]", dir.path())).is_none());
     }
 
     #[test]
@@ -316,7 +376,7 @@ mod tests {
     #[test]
     fn a_step_reaches_only_its_successors() {
         let dir = strict();
-        assert!(decide(&payload("dev", "qa", dir.path())).is_none());
+        assert!(decide(&marked("dev", "qa", "[ship/test]", dir.path())).is_none());
         let r = reason(decide(&payload("qa", "dev", dir.path())));
         assert!(r.contains("agent `qa`"), "{r}");
         // `doc` is the source of no link: reaching `qa` is not its to do
@@ -326,7 +386,120 @@ mod tests {
     #[test]
     fn the_coordinator_as_agent_is_the_main_thread() {
         let dir = strict();
-        assert!(decide(&payload("lead", "qa", dir.path())).is_none());
+        assert!(decide(&marked("lead", "qa", "[ship/test]", dir.path())).is_none());
+    }
+
+    fn with_description(raw: &str, description: &str) -> String {
+        let mut v: Value = serde_json::from_str(raw).unwrap();
+        v["tool_input"]["description"] = description.into();
+        v.to_string()
+    }
+
+    #[test]
+    fn a_step_agent_without_a_marker_is_refused_with_the_form() {
+        let dir = strict();
+        // `dev` holds a second step: the list is every `flow/step` it holds, sorted
+        std::fs::write(
+            dir.path().join(".armadai/flows/extra.yaml"),
+            "steps:\n  s1: { agent: dev }\n",
+        )
+        .unwrap();
+        let expected = "the description of a delegation to `dev` must start with [flow/step] \
+                        or [flow/step#lot], with flow/step among: extra/s1, ship/build";
+        for description in [
+            "do work",
+            "",
+            " [ship/build] x",
+            "x [ship/build]",
+            "[Ship/build] x",
+            "[ship/build x",
+        ] {
+            let raw = with_description(&payload("", "dev", dir.path()), description);
+            assert_eq!(reason(decide(&raw)), expected, "{description:?}");
+        }
+        // an absent description is no marker either
+        let mut v: Value = serde_json::from_str(&payload("", "dev", dir.path())).unwrap();
+        v["tool_input"]
+            .as_object_mut()
+            .unwrap()
+            .remove("description");
+        assert_eq!(reason(decide(&v.to_string())), expected);
+    }
+
+    #[test]
+    fn a_marker_naming_another_agents_step_is_refused() {
+        let dir = strict();
+        for (description, shown) in [
+            ("[ship/test#l1] x", "ship/test#l1"),
+            ("[ship/test] x", "ship/test"),
+            ("[nope/build] x", "nope/build"),
+            ("[ship/nope#a-b] x", "ship/nope#a-b"),
+        ] {
+            let raw = with_description(&payload("", "dev", dir.path()), description);
+            assert_eq!(
+                reason(decide(&raw)),
+                format!(
+                    "the marker [{shown}] does not name a step `dev` holds; use one of: ship/build"
+                ),
+                "{description}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_valid_marker_passes() {
+        let dir = strict();
+        for description in ["[ship/build] x", "[ship/build#menu] x", "[ship/build#menu]"] {
+            let raw = with_description(&payload("", "dev", dir.path()), description);
+            assert!(decide(&raw).is_none(), "{description}");
+        }
+    }
+
+    #[test]
+    fn a_free_agent_needs_no_marker() {
+        let dir = strict();
+        // a free agent that also holds a step is still free
+        std::fs::write(
+            dir.path().join(".armadai/flows/aid.yaml"),
+            "steps:\n  help: { agent: helper }\n",
+        )
+        .unwrap();
+        let raw = with_description(&payload("", "helper", dir.path()), "no marker here");
+        assert!(decide(&raw).is_none());
+    }
+
+    #[test]
+    fn an_agent_holding_no_step_needs_no_marker() {
+        let dir = strict();
+        let (project, _) = armadai_model::load_checked(dir.path()).unwrap();
+        assert_eq!(marker_refusal(&project, "doc", "no marker"), None);
+        assert!(marker_refusal(&project, "dev", "no marker").is_some());
+    }
+
+    #[test]
+    fn policy_off_ignores_the_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        write_project(
+            dir.path(),
+            "schema_version: 1\ncoordinator: lead\npolicy:\n  delegation: off\n",
+        );
+        for description in ["no marker", "[nope/nope] x"] {
+            let raw = with_description(&payload("", "dev", dir.path()), description);
+            assert!(decide(&raw).is_none(), "{description}");
+        }
+    }
+
+    #[test]
+    fn a_resumed_agent_is_not_judged_by_its_marker() {
+        let dir = strict();
+        let raw = serde_json::json!({
+            "cwd": dir.path().to_string_lossy(),
+            "hook_event_name": "PreToolUse",
+            "tool_name": "SendMessage",
+            "tool_input": { "to": "a1b2", "summary": "s", "message": "again" },
+        })
+        .to_string();
+        assert!(decide(&raw).is_none());
     }
 
     #[test]
@@ -344,7 +517,7 @@ mod tests {
             dir.path(),
             "schema_version: 1\npolicy:\n  delegation: strict\n",
         );
-        assert!(decide(&payload("", "dev", dir.path())).is_none());
+        assert!(decide(&marked("", "dev", "[ship/build]", dir.path())).is_none());
         assert!(decide(&payload("", "qa", dir.path())).is_some());
     }
 
@@ -364,7 +537,7 @@ mod tests {
             "steps:\n  write: { agent: dev }\n  review: { agent: qa, states: [approved, rejected] }\n  ship: { agent: doc }\nlinks:\n  - { from: write, to: review }\n  - { from: review, to: write, when: rejected }\n  - { from: review, to: ship, when: approved }\n",
         )
         .unwrap();
-        assert!(decide(&payload("", "dev", dir.path())).is_none());
+        assert!(decide(&marked("", "dev", "[review/write]", dir.path())).is_none());
         let r = reason(decide(&payload("", "doc", dir.path())));
         assert!(r.contains("[dev]"), "{r}");
     }
@@ -384,7 +557,7 @@ mod tests {
             "start: write\nsteps:\n  write: { agent: dev }\n  review: { agent: qa, states: [rejected] }\n  fix: { agent: doc }\nlinks:\n  - { from: write, to: review }\n  - { from: review, to: fix, when: rejected }\n  - { from: fix, to: write }\n",
         )
         .unwrap();
-        assert!(decide(&payload("", "dev", dir.path())).is_none());
+        assert!(decide(&marked("", "dev", "[fix/write]", dir.path())).is_none());
         let r = reason(decide(&payload("", "doc", dir.path())));
         assert!(r.contains("[dev]"), "{r}");
     }
@@ -397,7 +570,7 @@ mod tests {
             "steps:\n  check: { agent: qa, on_failure: write }\n  write: { agent: doc }\n",
         )
         .unwrap();
-        assert!(decide(&payload("qa", "doc", dir.path())).is_none());
+        assert!(decide(&marked("qa", "doc", "[fix/write]", dir.path())).is_none());
     }
 
     /// Regression: an `Agent` call may omit `subagent_type` entirely — Claude

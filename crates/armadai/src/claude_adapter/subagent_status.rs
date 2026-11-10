@@ -109,6 +109,7 @@ mod tests {
             mark,
             state: None,
             note: None,
+            reference: None,
         }
     }
 
@@ -132,6 +133,7 @@ mod tests {
             transitions: vec![],
             finished,
             interrupted: false,
+            lot: None,
         }
     }
 
@@ -194,6 +196,7 @@ mod tests {
             transitions: vec![],
             finished: false,
             interrupted: false,
+            lot: None,
         };
         let got = lines(&project(), &[run(false), other], &[task("t", "qa")]);
         let want = crate::cli::flow::painted(&[

@@ -98,6 +98,16 @@ Code de test pret a etre enregistre. Inclut :
             "async": true
           }
         ]
+      },
+      {
+        "matcher": "Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __record-flow-event",
+            "async": true
+          }
+        ]
       }
     ],
     "SubagentStart": [
@@ -184,6 +194,10 @@ Transitions:
 - `test-writer` -> `doc-generator`
 - `code-reviewer` -> `echo-reviewer`
 - `code-reviewer` -> `claude-cli-reviewer`
+
+### Marking delegations
+
+Start the `description` of every Agent call to an agent that holds a step with `[<flow>/<step>#<lot>]`, for example `[lot/plan#12] write the plan`. `#<lot>` is optional: it names one batch of work, so that two batches of one flow stay apart in `armadai flow status`. A free agent needs no marker. Ask the agent to end its reply with `REF: <ref>` after its `STATE:` line when it produced something to point at (a branch, a merge request): up to 64 letters, digits or `._/#-`. Under policy.delegation: strict the gate refuses a delegation without it.
 <!-- armadai:end -->
 
 === report ===
@@ -198,5 +212,5 @@ claude: agents tags: not-compiled (informational, no Claude Code field; 6 agents
 claude: agents temperature: not-compiled (no equivalent in Claude Code subagents; 3 agents: code-reviewer, doc-generator, test-writer)
 claude: agents title: not-compiled (Claude Code names a subagent by its id; 6 agents: claude-cli-reviewer, code-reviewer, doc-generator, echo-reviewer, gemini-reviewer, test-writer)
 claude: flow orchestration: approximated (rendered as guidance in CLAUDE.md; delegation topology enforced by the gate)
-claude: flow recording: compiled (hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback), UserPromptExpansion in .claude/settings.json)
+claude: flow recording: compiled (hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback, Agent|Task), UserPromptExpansion in .claude/settings.json)
 claude: policy delegation=strict: compiled (enforced: delegation topology, by the PreToolUse gate)

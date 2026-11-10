@@ -7,8 +7,10 @@ use serde_json::{Value, json};
 
 use super::record::FlowEvent;
 use super::runs::Run;
+use super::stats::{By, Stats};
 
 pub const SCHEMA: &str = "armadai.flow-status/1";
+pub const STATS_SCHEMA: &str = "armadai.flow-stats/1";
 
 /// `session`: (id, events of its log), `None` when no log exists at all. The
 /// runs keep the order they started in, not the display order of the text.
@@ -27,6 +29,31 @@ pub fn document(session: Option<(&str, &[FlowEvent])>, runs: &[Run]) -> Value {
     })
 }
 
+/// `armadai flow stats --json` (schema `armadai.flow-stats/1`); every key is
+/// always there, and the schema only grows like `flow-status`'s.
+pub fn stats_document(sessions: &[String], stats: &Stats) -> Value {
+    let by = match stats.by {
+        By::Agent => "agent",
+        By::Step => "step",
+        By::Lot => "lot",
+    };
+    json!({
+        "schema": STATS_SCHEMA,
+        "sessions": sessions,
+        "by": by,
+        "groups": stats.groups.iter().map(|g| json!({
+            "key": g.key,
+            "calls": g.calls,
+            "resumed": g.resumed,
+            "duration_s": { "median": g.median_s, "max": g.max_s, "total": g.total_s },
+            "states": g.states,
+            "rejection_rate": g.rejection_rate.map(|r| (r * 10_000.0).round() / 10_000.0),
+            "loops": g.loops,
+        })).collect::<Vec<_>>(),
+        "unmarked_calls": stats.unmarked_calls,
+    })
+}
+
 fn run(r: &Run) -> Value {
     let status = if r.finished {
         "finished"
@@ -37,6 +64,7 @@ fn run(r: &Run) -> Value {
     };
     json!({
         "flow": r.flow,
+        "lot": r.lot,
         "status": status,
         "steps": r.steps.iter().map(|v| json!({
             "step": v.step,
@@ -44,6 +72,7 @@ fn run(r: &Run) -> Value {
             "sign": v.mark.sign(),
             "state": v.state,
             "note": v.note,
+            "ref": v.reference,
         })).collect::<Vec<_>>(),
         "loops": r.loops.iter().map(|(from, to, times)| json!({
             "from": from, "to": to, "times": times,
@@ -74,6 +103,7 @@ mod tests {
             mark,
             state: state.map(str::to_string),
             note: note.map(str::to_string),
+            reference: None,
         }
     }
 
@@ -94,6 +124,10 @@ mod tests {
             agent_type: String::new(),
             state: None,
             command: None,
+            flow: None,
+            step: None,
+            lot: None,
+            reference: None,
         }
     }
 
@@ -105,7 +139,10 @@ mod tests {
                 flow: "deliver".into(),
                 steps: vec![
                     v("design", Mark::Done, Some("done"), None),
-                    v("build", Mark::Done, Some("done"), None),
+                    StepView {
+                        reference: Some("feature/menu".into()),
+                        ..v("build", Mark::Done, Some("done"), None)
+                    },
                     v("guard", Mark::Running, None, None),
                     v("validate", Mark::Pending, None, None),
                 ],
@@ -116,6 +153,7 @@ mod tests {
                 ],
                 finished: false,
                 interrupted: false,
+                lot: Some("menu".into()),
             },
             Run {
                 flow: "hotfix".into(),
@@ -127,6 +165,7 @@ mod tests {
                 transitions: vec![t(T0 + 5, "triage", "check", None)],
                 finished: true,
                 interrupted: false,
+                lot: None,
             },
             Run {
                 flow: "bugfix".into(),
@@ -150,6 +189,7 @@ mod tests {
                 transitions: vec![],
                 finished: false,
                 interrupted: true,
+                lot: None,
             },
         ]
     }
@@ -165,12 +205,13 @@ mod tests {
             "runs": [
                 {
                     "flow": "deliver",
+                    "lot": "menu",
                     "status": "in-progress",
                     "steps": [
-                        {"step": "design", "mark": "done", "sign": "✓", "state": "done", "note": null},
-                        {"step": "build", "mark": "done", "sign": "✓", "state": "done", "note": null},
-                        {"step": "guard", "mark": "running", "sign": "●", "state": null, "note": null},
-                        {"step": "validate", "mark": "pending", "sign": "○", "state": null, "note": null}
+                        {"step": "design", "mark": "done", "sign": "✓", "state": "done", "note": null, "ref": null},
+                        {"step": "build", "mark": "done", "sign": "✓", "state": "done", "note": null, "ref": "feature/menu"},
+                        {"step": "guard", "mark": "running", "sign": "●", "state": null, "note": null, "ref": null},
+                        {"step": "validate", "mark": "pending", "sign": "○", "state": null, "note": null, "ref": null}
                     ],
                     "loops": [{"from": "build", "to": "guard", "times": 2}],
                     "transitions": [
@@ -180,10 +221,11 @@ mod tests {
                 },
                 {
                     "flow": "hotfix",
+                    "lot": null,
                     "status": "finished",
                     "steps": [
-                        {"step": "triage", "mark": "done", "sign": "✓", "state": "done", "note": null},
-                        {"step": "check", "mark": "done", "sign": "✓", "state": "approved", "note": null}
+                        {"step": "triage", "mark": "done", "sign": "✓", "state": "done", "note": null, "ref": null},
+                        {"step": "check", "mark": "done", "sign": "✓", "state": "approved", "note": null, "ref": null}
                     ],
                     "loops": [],
                     "transitions": [
@@ -192,12 +234,13 @@ mod tests {
                 },
                 {
                     "flow": "bugfix",
+                    "lot": null,
                     "status": "interrupted",
                     "steps": [
-                        {"step": "frame", "mark": "coordinator", "sign": "~", "state": null, "note": "coordinator, not recorded"},
-                        {"step": "check", "mark": "unsure", "sign": "?", "state": null, "note": "no STATE line"},
-                        {"step": "verify", "mark": "unexpected", "sign": "✗", "state": "scope_changed", "note": "undeclared state"},
-                        {"step": "ship", "mark": "not-run", "sign": "-", "state": null, "note": null}
+                        {"step": "frame", "mark": "coordinator", "sign": "~", "state": null, "note": "coordinator, not recorded", "ref": null},
+                        {"step": "check", "mark": "unsure", "sign": "?", "state": null, "note": "no STATE line", "ref": null},
+                        {"step": "verify", "mark": "unexpected", "sign": "✗", "state": "scope_changed", "note": "undeclared state", "ref": null},
+                        {"step": "ship", "mark": "not-run", "sign": "-", "state": null, "note": null, "ref": null}
                     ],
                     "loops": [],
                     "transitions": []

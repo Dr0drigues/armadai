@@ -1391,3 +1391,151 @@ fn pack_ref_diagnostics() {
         assert_eq!(got, [want], "{yaml}");
     }
 }
+
+// ---- policy.grants ----
+
+fn grants(extra: &str, flows: &[(&str, &str)]) -> Vec<Diagnostic> {
+    let m = format!("schema_version: 1\n{extra}");
+    let mut files = vec![(".armadai/project.yaml", m.as_str()), DEV];
+    files.extend_from_slice(flows);
+    diags(&files)
+}
+
+const F1: (&str, &str) = (
+    ".armadai/flows/f1.yaml",
+    "steps:\n  publish: { agent: dev }\n  build: { agent: dev }\n",
+);
+const F2: (&str, &str) = (
+    ".armadai/flows/f2.yaml",
+    "steps:\n  publish: { agent: dev }\n",
+);
+
+#[test]
+fn a_valid_grant_level_is_clean() {
+    let ds = grants(
+        "policy:\n  grants:\n    push:\n      allow: [\"Bash(git push *)\"]\n      until: build\n    qual:\n      allow: [\"Bash(git push *)\"]\n      until: f2/publish\n",
+        &[F1, F2],
+    );
+    assert_eq!(ds, Vec::new());
+}
+
+#[test]
+fn a_grant_key_must_be_a_valid_id() {
+    let ds = grants(
+        "policy:\n  grants:\n    Bad_Id:\n      allow: [\"Bash(ls)\"]\n",
+        &[],
+    );
+    let d = err(&ds, "bad-id", (4, 5));
+    assert_eq!(d.message, "grant id `Bad_Id` is not a valid id");
+}
+
+#[test]
+fn a_grant_without_a_rule_is_an_error() {
+    let ds = grants("policy:\n  grants:\n    nothing:\n      allow: []\n", &[]);
+    let d = err(&ds, "grant-empty-allow", (4, 5));
+    assert_eq!(d.message, "grant `nothing` allows nothing");
+    let ds = grants(
+        "policy:\n  grants:\n    nothing:\n      description: x\n",
+        &[],
+    );
+    only(&ds, "grant-empty-allow");
+}
+
+#[test]
+fn a_blank_rule_is_an_error_each_even_beside_a_good_one() {
+    let msg = "grant `g` has an empty rule in `allow`";
+    let ds = grants("policy:\n  grants:\n    g:\n      allow: [\"  \"]\n", &[]);
+    assert_eq!(only(&ds, "grant-empty-allow").message, msg);
+    let ds = grants(
+        "policy:\n  grants:\n    g:\n      allow: [\"Bash(ls)\", \"   \", \"\"]\n",
+        &[],
+    );
+    let all: Vec<_> = ds
+        .iter()
+        .filter(|d| d.code == "grant-empty-allow")
+        .collect();
+    assert_eq!(all.len(), 2, "{ds:?}");
+    assert!(all.iter().all(|d| d.message == msg));
+}
+
+#[test]
+fn an_unknown_until_step_is_reported_with_a_hint() {
+    let ds = grants(
+        "policy:\n  grants:\n    g:\n      allow: [\"Bash(ls)\"]\n      until: biuld\n",
+        &[F1],
+    );
+    let d = err(&ds, "unknown-step", (6, 14));
+    assert_eq!(d.message, "unknown step `biuld`");
+    assert_eq!(d.hint.as_deref(), Some("did you mean `build`?"));
+    let ds = grants(
+        "policy:\n  grants:\n    g:\n      allow: [\"Bash(ls)\"]\n      until: f1/ghost\n",
+        &[F1],
+    );
+    assert_eq!(only(&ds, "unknown-step").message, "unknown step `f1/ghost`");
+}
+
+#[test]
+fn a_bare_until_held_by_two_flows_is_ambiguous() {
+    let ds = grants(
+        "policy:\n  grants:\n    g:\n      allow: [\"Bash(ls)\"]\n      until: publish\n",
+        &[F1, F2],
+    );
+    let d = err(&ds, "grant-ambiguous-until", (6, 14));
+    assert_eq!(
+        d.message,
+        "`until: publish` of grant `g` is a step of several flows (f1, f2)"
+    );
+    assert_eq!(d.hint.as_deref(), Some("write `<flow>/publish`"));
+}
+
+#[test]
+fn a_grant_rule_that_is_not_bash_is_a_warning() {
+    let ds = grants(
+        "policy:\n  grants:\n    g:\n      allow: [\"Bash(ls)\", \"Edit(/src/*)\", \"Read\", \"Bashful(x)\", \"mcp__s__t\", \"Bash\", \" Bash(x)\"]\n",
+        &[],
+    );
+    let hits: Vec<_> = ds
+        .iter()
+        .filter(|d| d.code == "grant-unsupported-rule")
+        .collect();
+    assert_eq!(
+        hits.iter().map(|d| d.message.as_str()).collect::<Vec<_>>(),
+        [
+            "grant `g` lists `Edit(/src/*)`, and a level answers `Bash` rules only",
+            "grant `g` lists `Read`, and a level answers `Bash` rules only",
+            "grant `g` lists `Bashful(x)`, and a level answers `Bash` rules only",
+            "grant `g` lists `mcp__s__t`, and a level answers `Bash` rules only",
+            "grant `g` lists `Bash`, and a level answers `Bash` rules only",
+            "grant `g` lists ` Bash(x)`, and a level answers `Bash` rules only",
+        ]
+    );
+    assert!(hits.iter().all(|d| d.severity == Severity::Warning));
+    assert_eq!(
+        hits[0].hint.as_deref(),
+        Some(
+            "the rule is never granted: write a `Bash(...)` rule, or put it in native.claude.permissions.allow"
+        )
+    );
+    // a Bash-only level says nothing
+    let ds = grants(
+        "policy:\n  grants:\n    g:\n      allow: [\"Bash(ls)\", \"Bash(git *)\"]\n",
+        &[],
+    );
+    assert!(
+        ds.iter().all(|d| d.code != "grant-unsupported-rule"),
+        "{ds:?}"
+    );
+}
+
+#[test]
+fn a_grant_rule_equal_to_a_native_deny_is_an_error() {
+    let ds = grants(
+        "policy:\n  grants:\n    g:\n      allow: [\"Bash(rm *)\", \"Bash(rm *) -f\", \"Bash(git push *)\"]\nnative:\n  claude:\n    permissions:\n      deny: [\"Bash(rm *)\", \"Bash(git push *) --force\"]\n",
+        &[],
+    );
+    let d = err(&ds, "grant-over-deny", (5, 16));
+    assert_eq!(
+        d.message,
+        "grant `g` allows `Bash(rm *)`, which `native.claude.permissions.deny` denies"
+    );
+}

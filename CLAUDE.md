@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ArmadAI is a declarative compiler written in Rust (edition 2024). A team of agents (agents, skills, flows, gates, hooks) is described once, then compiled by `armadai link` into the native files of Claude Code, Codex, OpenCode and Copilot. ArmadAI does not run agents: there is no execution engine, no TUI, no web UI. The binary is named `armadai`; without arguments it prints the help.
 
-Commands: `link`, `unlink`, `list`, `inspect`, `graph`, `flow` (`status`), `validate`, `migrate`, `new` (`agent|flow|automation|skill|command`, or a guided menu), `init`, `pack` (`add|sync|status|update|new`), `skills`, `models` (`check|update|list|tiers|sync`), `config`, `update`, `completion`.
+Commands: `link`, `unlink`, `list`, `inspect`, `graph`, `flow` (`status`, `stats`), `grant`, `revoke`, `validate`, `migrate`, `new` (`agent|flow|automation|skill|command`, or a guided menu), `init`, `pack` (`add|sync|status|update|new`), `skills`, `models` (`check|update|list|tiers|sync`), `config`, `update`, `completion`.
 
 The refocus (what was removed, kept and frozen) is specified in `docs/superpowers/specs/2026-10-09-step0-retrait-surfaces-design.md`.
 
@@ -49,7 +49,8 @@ CI (`.github/workflows/ci.yml`) runs fmt, clippy, test, build (`cargo build --re
 **Non-obvious facts**:
 - `crates/armadai` is **binary-only** — no `lib.rs`. `cargo test --lib` there returns "0 passed" with **no error**; use `--bin armadai` or `--test <name>`.
 - There is no execution engine: flows are guidance (`CLAUDE.md` for Claude, `.opencode/armadai-team.md` for OpenCode) plus, under `policy.delegation: strict`, links enforced by the gate (Claude Code) or by native `permission.task` rules (OpenCode). The legacy `OrchestrationPattern` is read only by the legacy parser (for `migrate`).
-- There is no response-marker protocol any more (`ARMADAI_DELEGATE`/`END`/`META` were removed): delegation goes through each tool's native mechanism. The `PreToolUse` policy gate (`armadai __claude-policy-gate`) is installed by `link` in `settings.json` under `policy.delegation: strict` and reads `.armadai/project.yaml` at runtime (see `docs/wiki/policy-gate.md`).
+- The old response-marker protocol (`ARMADAI_DELEGATE`/`END`/`META`) was removed: delegation goes through each tool's native mechanism. On Claude Code, the `description` of a delegation to an agent that holds a step starts with a `[flow/step#lot]` marker (required by the gate under `policy.delegation: strict`, recorded for `flow status` and `flow stats`), and a handback may end with a `REF: <ref>` line (the `STATE:` line is unchanged). The `PreToolUse` policy gate (`armadai __claude-policy-gate`) is installed by `link` in `settings.json` under `policy.delegation: strict` and reads `.armadai/project.yaml` at runtime (see `docs/wiki/policy-gate.md`).
+- `policy.grants` declares named permission levels. `link` compiles each `Bash(...)` rule into a `PermissionRequest` hook running the hidden command `armadai __claude-grant <level>` (inactive until `armadai grant <level>` writes `.armadai/state/grants.yaml`; `armadai revoke` ends it), and owns two `deny` rules guarding that state. A level is a convenience, not a security boundary (see `docs/wiki/link.md#permission-levels-grant`).
 - Test env isolation lives in `armadai_core::test_support` (behind the core's dev-only `test-support` cargo feature) and is **not reentrant** — two guards on one thread deadlock.
 
 **Agent definition** lives in `.armadai/agents/<id>.md` (no user library any more); an agent with `from:`/`vars:` is an instance of a project template `.armadai/templates/<id>.md`, rendered at load time in `armadai-model` (`agent_templates.rs`), so the adapters only see rendered agents and the writer keeps the instance form. Templates in `crates/armadai/templates/*.md` are canonical agents (frontmatter with a default description); `new agent` sets description/tier/skills on the parsed frontmatter and renders `{{name}}`, `{{stack}}`, `{{description}}` in the body only. Flow templates (`pipeline`, `review-loop`, `plan-build-verify`, `fan-out`) and the Mermaid export are pure functions of `armadai-model` (`templates.rs`, `mermaid.rs`); `entry_steps` there is the one definition of an entry step (validator and gate).
@@ -80,12 +81,13 @@ Dans le fil principal, tu es `lead`, le coordinateur de l'équipe qui développe
 - `validator` : barrière complète, mutations rejouées, critères d'acceptation, préparation de l'essai réel.
 
 ## Les flows
-- `lot`, pour un lot entier : `spec` (analyst) → `frame` (framer) → `plan` (architect) → les tâches du plan → `review` (reviewer, la branche entière) → `validate` (validator). `review` ou `validate` `rejected` : retour à `plan`, pour corriger le plan avant de reprendre les tâches.
+- `lot`, pour un lot entier : `spec` (analyst) → `frame` (framer) → `plan` (architect) → les tâches du plan → `review` (reviewer, la branche entière) → `validate` (validator). `tasks` est ton étape : la boucle sur les tâches du plan. `review` ou `validate` `rejected` : retour à `plan`, pour corriger le plan avant de reprendre les tâches ; `rejected-task` : relance seulement le flow `task` des tâches nommées par le rejet.
 - `task`, pour chaque tâche du plan, une exécution du flow : `build` (toi : tu choisis le domaine) → `build-schema`, `build-adapter` ou `build-cli` (le spécialiste du domaine ; deux domaines = deux étapes) → `guard` (guardian). `guard` `rejected` : retour à l'étape `build-*` du même domaine, avec les lignes de rejet telles quelles.
 - La boucle sur les tâches d'un plan est la tienne : le modèle ne répète pas un sous-flow.
 - Dimitri suit l'avancement avec `armadai flow status --watch`.
 
 ## Déléguer
+- Tiens `.armadai/state/ledger-<lot>.md` (décisions datées, branche et tête, tâches faites, questions en cours) ; un brief renvoie au registre et à la section du plan au lieu de les recopier.
 - Donne à chaque agent ce dont il a besoin, rien de vague : l'étape, les mots de Dimitri, les décisions prises, les documents à lire (la spec, le plan et la tâche, le worktree et la branche). Un fait tiré d'un rapport ou de la mémoire se vérifie au dépôt avant d'entrer dans un brief, sinon il s'attribue (« le rapport dit X, à vérifier »).
 - Une tâche par agent ; l'auteur d'un changement n'est jamais son relecteur. Une revue `guardian` en lecture seule peut tourner en parallèle d'une tâche, et une ré-revue ciblée après une correction.
 - Un correctif proposé par une revue est une hypothèse : le spécialiste le mute avant de l'adopter.
@@ -116,7 +118,7 @@ Delegate with the Agent tool, naming the subagent by its id.
 
 ### Flow `lot`
 
-Un lot entier : spec, cadre, plan, puis les tâches du plan (une exécution du flow task chacune), revue de la branche et validation ; un rejet retourne au plan
+Un lot entier : spec, cadre, plan, puis les tâches du plan (étape `tasks`, tenue par lead ; une exécution du flow task chacune), revue de la branche et validation ; un défaut de conception retourne au plan, un défaut local à une tâche retourne aux tâches
 
 Start: `spec`
 
@@ -124,18 +126,22 @@ Steps:
 
 - `frame` (agent `framer`)
 - `plan` (agent `architect`)
-- `review` (agent `reviewer`, states: approved, rejected)
+- `review` (agent `reviewer`, states: approved, rejected, rejected-task)
 - `spec` (agent `analyst`)
-- `validate` (agent `validator`, states: approved, rejected)
+- `tasks` (agent `lead`)
+- `validate` (agent `validator`, states: approved, rejected, rejected-task)
 
 Transitions:
 
 - `spec` -> `frame`
 - `frame` -> `plan`
-- `plan` -> `review`
+- `plan` -> `tasks`
+- `tasks` -> `review`
 - `review` -> `validate` when `approved`
 - `review` -> `plan` when `rejected`
+- `review` -> `tasks` when `rejected-task`
 - `validate` -> `plan` when `rejected`
+- `validate` -> `tasks` when `rejected-task`
 
 ### Flow `task`
 
@@ -162,4 +168,8 @@ Transitions:
 - `guard` -> `build-schema` when `rejected`
 - `guard` -> `build-adapter` when `rejected`
 - `guard` -> `build-cli` when `rejected`
+
+### Marking delegations
+
+Start the `description` of every Agent call to an agent that holds a step with `[<flow>/<step>#<lot>]`, for example `[lot/plan#12] write the plan`. `#<lot>` is optional: it names one batch of work, so that two batches of one flow stay apart in `armadai flow status`. A free agent needs no marker. Ask the agent to end its reply with `REF: <ref>` after its `STATE:` line when it produced something to point at (a branch, a merge request): up to 64 letters, digits or `._/#-`. Under policy.delegation: strict the gate refuses a delegation without it.
 <!-- armadai:end -->

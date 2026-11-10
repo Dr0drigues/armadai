@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use anyhow::Context;
+
 use crate::compile;
 use crate::compile::patch::{self, PatchKind};
 use crate::linker;
@@ -28,6 +30,14 @@ pub fn execute(
     };
     if output.is_some() && targets.len() > 1 {
         anyhow::bail!("--output names one directory: unlink one target at a time with it");
+    }
+    // the permission levels switched on belong to the claude target's hooks
+    if !dry_run && targets.iter().any(|t| t == "claude") {
+        match std::fs::remove_file(root.join(crate::claude_adapter::grant_hook::STATE_FILE)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).context("cannot remove .armadai/state/grants.yaml"),
+        }
     }
     for target_name in targets {
         let output_dir = match &project {

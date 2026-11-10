@@ -44,4 +44,4 @@ Tu n'es jamais l'auteur de ce que tu relis : si `lead` te confie un travail que 
 
 ## Verdict
 
-End your reply with exactly one line `STATE: <state>`, where <state> is one of: approved, rejected.
+End your reply with exactly one line `STATE: <state>`, where <state> is one of: approved, rejected, rejected-task.

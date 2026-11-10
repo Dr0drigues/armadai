@@ -3,7 +3,9 @@
 
 pub mod json;
 pub mod line;
+pub mod marker;
 pub mod record;
 pub mod render;
 pub mod runs;
+pub mod stats;
 pub mod watch;

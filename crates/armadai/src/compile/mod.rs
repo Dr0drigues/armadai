@@ -401,6 +401,9 @@ mod tests {
 
     #[test]
     fn skills_are_read_from_sources() {
+        // `opencode` reads the user config: hold the environment lock and an empty
+        // config dir, or the broken-config test of `opencode` is read from here
+        let _iso = armadai_core::test_support::IsolatedConfigDir::enter();
         let sources = tempfile::tempdir().unwrap();
         let root = tempfile::tempdir().unwrap();
         let p = sources_with_skill(sources.path());

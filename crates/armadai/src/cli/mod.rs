@@ -1,5 +1,6 @@
 mod config;
 pub(crate) mod flow;
+mod grant;
 mod graph;
 pub mod init;
 mod inspect;
@@ -135,6 +136,55 @@ pub enum Command {
     Flow {
         #[command(subcommand)]
         what: flow::FlowCommand,
+    },
+    /// Switch a named permission level (policy.grants) on for a while, or list the levels
+    #[command(
+        long_about = "Switch a permission level of `policy.grants` on for a while, or list the \
+            levels and their state. A level is a set of native permission rules that `armadai \
+            link` turned into hooks, inactive until you run this command. A bound is required: \
+            --until <step> (a delegation to the step ends the level; needs the delegation \
+            markers of `link`), --for <duration>, --until-time <HH:MM> (local time, tomorrow \
+            when it has passed), or `until:` in the level. The state is \
+            .armadai/state/grants.yaml. A grant never lifts a `deny` rule: a level whose rule is \
+            a deny rule of .claude/settings.json or settings.local.json is refused. Run it \
+            yourself in a terminal: an agent is stopped from running it.",
+        after_help = "Examples:\n  \
+            armadai grant\n  \
+            armadai grant auto-until-mr --until publish\n  \
+            armadai grant read-logs --for 2h\n  \
+            armadai grant read-logs --until-time 18:00"
+    )]
+    Grant {
+        /// Level to switch on (a key of policy.grants); the levels and their state when omitted
+        level: Option<String>,
+        /// End the level once a delegation to this step is recorded (<flow>/<step>, or a step of one flow)
+        #[arg(long, requires = "level", value_name = "STEP")]
+        until: Option<String>,
+        /// End the level after this long: 30m, 2h, 1h30m
+        #[arg(
+            long = "for",
+            requires = "level",
+            conflicts_with = "until_time",
+            value_name = "DURATION"
+        )]
+        span: Option<String>,
+        /// End the level at this local time (tomorrow when it has passed)
+        #[arg(long, requires = "level", value_name = "HH:MM")]
+        until_time: Option<String>,
+    },
+    /// Switch permission levels off (one, or all)
+    #[command(
+        group(clap::ArgGroup::new("what").required(true).args(["level", "all"])),
+        after_help = "Examples:\n  \
+            armadai revoke auto-until-mr\n  \
+            armadai revoke --all"
+    )]
+    Revoke {
+        /// The level to switch off
+        level: Option<String>,
+        /// Switch every active level off
+        #[arg(long)]
+        all: bool,
     },
     /// Validate the project (.armadai/) or a starter pack
     #[command(
@@ -379,6 +429,14 @@ pub enum Command {
     /// delegation topology. Hidden from help.
     #[command(hide = true, name = "__claude-policy-gate")]
     ClaudePolicyGate,
+    /// Internal: called by the Claude Code `PermissionRequest` hook of a
+    /// permission level (`policy.grants`). Reads the hook JSON from stdin and
+    /// allows the call only while the level is active. Hidden from help.
+    #[command(hide = true, name = "__claude-grant")]
+    ClaudeGrant {
+        /// The permission level
+        level: String,
+    },
     /// Internal: called by the Claude Code sub-agent hooks. Reads the hook
     /// JSON from stdin and appends the event to the session log under
     /// `.armadai/state/claude/`. Hidden from help.
@@ -475,6 +533,13 @@ pub fn handle(cli: Cli) -> anyhow::Result<()> {
             open,
         } => graph::execute(flow, format, view, open),
         Command::Flow { what } => flow::execute(what),
+        Command::Grant {
+            level,
+            until,
+            span,
+            until_time,
+        } => grant::execute_grant(level, until, span, until_time),
+        Command::Revoke { level, all: _ } => grant::execute_revoke(level),
         Command::Validate { path, json } => validate::execute(path, json),
         Command::Migrate {
             path,
@@ -519,6 +584,9 @@ pub fn handle(cli: Cli) -> anyhow::Result<()> {
             Ok(())
         }
         Command::ClaudePolicyGate => crate::claude_adapter::policy_gate::gate_from_stdin(),
+        Command::ClaudeGrant { level } => {
+            crate::claude_adapter::grant_hook::grant_from_stdin(&level)
+        }
         Command::RecordFlowEvent => crate::flow_status::record::record_from_stdin(),
         Command::ClaudeStatusline => flow::statusline_main(),
         Command::ClaudeSubagentStatusline => flow::subagent_statusline_main(),
@@ -567,6 +635,7 @@ mod tests {
         let hidden = hidden_subcommand_names();
         for name in [
             "__claude-policy-gate",
+            "__claude-grant",
             "__record-flow-event",
             "__claude-statusline",
             "__claude-subagent-statusline",
@@ -643,6 +712,8 @@ mod tests {
             "inspect",
             "graph",
             "flow",
+            "grant",
+            "revoke",
             "validate",
             "config",
             "models",

@@ -338,3 +338,10 @@ fn ui_is_written_only_when_it_is_not_the_default() {
         "schema_version: 1\nui:\n  subagent_status_line: true\n"
     );
 }
+
+#[test]
+fn a_policy_without_grants_is_written_back_byte_for_byte() {
+    let text = "schema_version: 1\npolicy:\n  delegation: strict\n  free_agents:\n  - explorer\n";
+    let m: Manifest = armadai_model::yaml::from_str(text).unwrap();
+    assert_eq!(render_manifest(&m), text);
+}

@@ -517,7 +517,7 @@ fn json_prints_the_session_as_the_schema_says() {
     assert_eq!((code, err.as_str()), (Some(0), ""));
     assert!(out.ends_with("}\n"), "one document and a newline: {out:?}");
     let got: serde_json::Value = serde_json::from_str(&out).unwrap();
-    let step = |s: &str, mark: &str, sign: &str, state: Option<&str>| serde_json::json!({"step": s, "mark": mark, "sign": sign, "state": state, "note": null});
+    let step = |s: &str, mark: &str, sign: &str, state: Option<&str>| serde_json::json!({"step": s, "mark": mark, "sign": sign, "state": state, "note": null, "ref": null});
     let tr = |at: &str, from: &str, to: &str, state: &str| serde_json::json!({"at": at, "from": from, "to": to, "state": state});
     assert_eq!(
         got,
@@ -530,6 +530,7 @@ fn json_prints_the_session_as_the_schema_says() {
             },
             "runs": [{
                 "flow": "deliver",
+                "lot": null,
                 "status": "in-progress",
                 "steps": [
                     step("design", "done", "✓", Some("done")),
@@ -1367,4 +1368,321 @@ fn ctrl_c_ignored_by_the_parent_stays_ignored() {
         alive,
         "SIGINT was ignored by the parent, the watch must ignore it too"
     );
+}
+
+// ---- flow stats ----
+
+/// design (4m12s), build (30s), guard rejects (12s), build (45s), guard
+/// approves (41s), validate (1h02m05s); each call also writes the second
+/// `stop` of an invocation, with no state.
+fn stats_events() -> Vec<Ev> {
+    let t = T0;
+    vec![
+        (t, true, "a1", "architect", None),
+        (t + 252, false, "a1", "architect", Some("done")),
+        (t + 253, false, "a1", "architect", None),
+        (t + 300, true, "a2", "dev", None),
+        (t + 330, false, "a2", "dev", None),
+        (t + 331, false, "a2", "dev", None),
+        (t + 400, true, "a3", "qa", None),
+        (t + 412, false, "a3", "qa", Some("rejected")),
+        (t + 413, false, "a3", "qa", None),
+        (t + 500, true, "a4", "dev", None),
+        (t + 545, false, "a4", "dev", None),
+        (t + 546, false, "a4", "dev", None),
+        (t + 600, true, "a5", "qa", None),
+        (t + 641, false, "a5", "qa", Some("approved")),
+        (t + 642, false, "a5", "qa", None),
+        (t + 700, true, "a6", "ops", None),
+        (t + 4425, false, "a6", "ops", Some("approved")),
+        (t + 4426, false, "a6", "ops", None),
+        // the main thread: stopped, never started, no type
+        (t + 5000, false, "m1", "", None),
+    ]
+}
+
+const STATS_TEXT: &str = "\
+flow stats  session s1  by agent
+AGENT      CALLS  RESUMED  MEDIAN  MAX    TOTAL  STATES                  REJECTED  LOOPS
+architect      1        0  4m12s   4m12s  4m12s  done 1                  -         0
+dev            2        0  37s     45s    1m15s  -                       -         1
+ops            1        0  1h02m   1h02m  1h02m  approved 1              -         0
+qa             2        0  26s     41s    53s    approved 1, rejected 1  50%       0
+durations run from a start to the first stop of the same agent: a resumed agent counts once, so they are lower bounds
+states count each verdict rendered, a resumed agent can render several
+";
+
+#[test]
+fn stats_by_agent_prints_the_table_and_its_note() {
+    let env = Env::new();
+    env.log("s1", &stats_events(), T0 + 10);
+    let (code, out, err) = env.run(&env.root(), &["flow", "stats"]);
+    assert_eq!(
+        (code, out.as_str(), err.as_str()),
+        (Some(0), STATS_TEXT, "")
+    );
+    // the same as naming the session and the default grouping
+    let named = env.run(
+        &env.root(),
+        &["flow", "stats", "--session", "s1", "--by", "agent"],
+    );
+    assert_eq!(named.1, STATS_TEXT);
+}
+
+#[test]
+fn stats_json_is_versioned_and_keeps_every_key() {
+    let env = Env::new();
+    env.log("s1", &stats_events(), T0 + 10);
+    let (code, out, err) = env.run(&env.root(), &["flow", "stats", "--json"]);
+    assert_eq!((code, err.as_str()), (Some(0), ""));
+    let got: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let want = serde_json::json!({
+        "schema": "armadai.flow-stats/1",
+        "sessions": ["s1"],
+        "by": "agent",
+        "groups": [
+            {"key": "architect", "calls": 1, "resumed": 0,
+             "duration_s": {"median": 252, "max": 252, "total": 252},
+             "states": {"done": 1}, "rejection_rate": null, "loops": 0},
+            {"key": "dev", "calls": 2, "resumed": 0,
+             "duration_s": {"median": 37, "max": 45, "total": 75},
+             "states": {}, "rejection_rate": null, "loops": 1},
+            {"key": "ops", "calls": 1, "resumed": 0,
+             "duration_s": {"median": 3725, "max": 3725, "total": 3725},
+             "states": {"approved": 1}, "rejection_rate": null, "loops": 0},
+            {"key": "qa", "calls": 2, "resumed": 0,
+             "duration_s": {"median": 26, "max": 41, "total": 53},
+             "states": {"approved": 1, "rejected": 1}, "rejection_rate": 0.5, "loops": 0},
+        ],
+        "unmarked_calls": 0,
+    });
+    assert_eq!(got, want);
+}
+
+#[test]
+fn stats_by_lot_without_a_marker_says_so_in_one_line_and_succeeds() {
+    let env = Env::new();
+    env.log("s1", &stats_events(), T0 + 10);
+    for by in ["lot", "step"] {
+        let (code, out, err) = env.run(&env.root(), &["flow", "stats", "--by", by]);
+        assert_eq!(
+            (code, out.as_str(), err.as_str()),
+            (
+                Some(0),
+                "no call is marked: --by step and --by lot need [flow/step#lot] markers (see armadai flow status)\n",
+                ""
+            ),
+            "--by {by}"
+        );
+    }
+    let (code, out, _) = env.run(&env.root(), &["flow", "stats", "--by", "lot", "--json"]);
+    let got: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        (
+            &got["schema"],
+            &got["by"],
+            &got["groups"],
+            &got["unmarked_calls"]
+        ),
+        (
+            &serde_json::json!("armadai.flow-stats/1"),
+            &serde_json::json!("lot"),
+            &serde_json::json!([]),
+            &serde_json::json!(6)
+        )
+    );
+}
+
+#[test]
+fn stats_by_step_and_lot_group_the_marked_calls_and_name_the_others() {
+    let env = Env::new();
+    let mark = |ts: u64, agent: &str, step: &str, lot: Option<&str>| {
+        let mut m = serde_json::json!({"ts": ts, "event": "mark", "agent_type": agent,
+            "flow": "deliver", "step": step});
+        if let Some(l) = lot {
+            m["lot"] = l.into();
+        }
+        format!("{m}\n")
+    };
+    let mut log = String::new();
+    log += &mark(T0, "dev", "build", Some("12"));
+    log += &event_lines(&[
+        (T0 + 1, true, "b1", "dev", None),
+        (T0 + 31, false, "b1", "dev", None),
+    ]);
+    log += &mark(T0 + 40, "qa", "guard", Some("12"));
+    log += &event_lines(&[
+        (T0 + 41, true, "b2", "qa", None),
+        (T0 + 53, false, "b2", "qa", Some("rejected")),
+    ]);
+    log += &mark(T0 + 60, "dev", "build", Some("7"));
+    log += &event_lines(&[
+        (T0 + 61, true, "b3", "dev", None),
+        (T0 + 106, false, "b3", "dev", None),
+    ]);
+    // no marker for this one
+    log += &event_lines(&[
+        (T0 + 110, true, "b4", "ops", None),
+        (T0 + 120, false, "b4", "ops", None),
+    ]);
+    env.raw_log("s1", &log, T0 + 10);
+    let (code, out, _) = env.run(&env.root(), &["flow", "stats", "--by", "step"]);
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        out,
+        "\
+flow stats  session s1  by step
+STEP           CALLS  RESUMED  MEDIAN  MAX  TOTAL  STATES      REJECTED  LOOPS
+deliver/build      2        0  37s     45s  1m15s  -           -         0
+deliver/guard      1        0  12s     12s  12s    rejected 1  100%      0
+durations run from a start to the first stop of the same agent: a resumed agent counts once, so they are lower bounds
+states count each verdict rendered, a resumed agent can render several
+1 call is not marked and is left out of --by step
+"
+    );
+    let (_, out, _) = env.run(&env.root(), &["flow", "stats", "--by", "lot"]);
+    assert_eq!(
+        out,
+        "\
+flow stats  session s1  by lot
+LOT  CALLS  RESUMED  MEDIAN  MAX  TOTAL  STATES      REJECTED  LOOPS
+12       2        0  21s     30s  42s    rejected 1  100%      0
+7        1        0  45s     45s  45s    -           -         0
+durations run from a start to the first stop of the same agent: a resumed agent counts once, so they are lower bounds
+states count each verdict rendered, a resumed agent can render several
+1 call is not marked and is left out of --by lot
+"
+    );
+}
+
+#[test]
+fn stats_names_several_unmarked_calls_in_the_plural() {
+    let env = Env::new();
+    let mark = serde_json::json!({"ts": T0, "event": "mark", "agent_type": "dev",
+        "flow": "deliver", "step": "build", "lot": "12"});
+    let mut log = format!("{mark}\n");
+    log += &event_lines(&[
+        (T0 + 1, true, "b1", "dev", None),
+        (T0 + 31, false, "b1", "dev", None),
+        (T0 + 110, true, "b4", "ops", None),
+        (T0 + 120, false, "b4", "ops", None),
+        (T0 + 130, true, "b5", "architect", None),
+        (T0 + 140, false, "b5", "architect", None),
+    ]);
+    env.raw_log("s1", &log, T0 + 10);
+    let (code, out, _) = env.run(&env.root(), &["flow", "stats", "--by", "lot"]);
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        out.lines().last(),
+        Some("2 calls are not marked and are left out of --by lot")
+    );
+}
+
+#[test]
+fn stats_without_a_log_is_the_existing_message_and_an_empty_document() {
+    let env = Env::new();
+    let (code, out, err) = env.run(&env.root(), &["flow", "stats"]);
+    assert_eq!(
+        (code, out.as_str(), err.as_str()),
+        (
+            Some(0),
+            "no flow activity recorded yet (link installs the hooks; start a flow in Claude Code)\n",
+            ""
+        )
+    );
+    let (code, out, _) = env.run(&env.root(), &["flow", "stats", "--json"]);
+    let got: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        got,
+        serde_json::json!({"schema": "armadai.flow-stats/1", "sessions": [], "by": "agent",
+            "groups": [], "unmarked_calls": 0})
+    );
+}
+
+#[test]
+fn stats_of_a_flow_with_no_call_in_the_session_says_which_flow() {
+    let env = Env::new();
+    env.log("s1", &stats_events(), T0 + 10);
+    // `ship` holds `rel` only, which never ran
+    let (code, out, err) = env.run(&env.root(), &["flow", "stats", "ship"]);
+    assert_eq!(
+        (code, out.as_str(), err.as_str()),
+        (Some(0), "no call of flow ship in this session\n", "")
+    );
+    let (_, out, _) = env.run(&env.root(), &["flow", "stats", "ship", "--json"]);
+    let got: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(
+        (&got["groups"], &got["unmarked_calls"]),
+        (&serde_json::json!([]), &serde_json::json!(0))
+    );
+    let (code, out, _) = env.run(&env.root(), &["flow", "stats", "ship", "--all"]);
+    assert_eq!(
+        (code, out.as_str()),
+        (Some(0), "no call of flow ship in these sessions\n")
+    );
+    // no log at all: the general line, whatever the flow
+    let none = Env::new();
+    let (_, out, _) = none.run(&none.root(), &["flow", "stats", "ship"]);
+    assert!(out.starts_with("no flow activity recorded yet"), "{out}");
+}
+
+#[test]
+fn stats_refuses_an_unknown_flow_or_session_with_the_way_forward() {
+    let env = Env::new();
+    env.log("s1", &stats_events(), T0 + 10);
+    let (code, _, err) = env.run(&env.root(), &["flow", "stats", "nope"]);
+    assert_eq!(code, Some(1));
+    assert!(
+        err.contains("unknown flow `nope`; flows: deliver, ship"),
+        "{err}"
+    );
+    let (code, _, err) = env.run(&env.root(), &["flow", "stats", "--session", "zz"]);
+    assert_eq!(code, Some(1));
+    assert!(
+        err.contains("no session `zz` recorded; see `armadai flow status --list`"),
+        "{err}"
+    );
+}
+
+#[test]
+fn stats_all_reads_every_session_and_a_flow_keeps_its_own_agents() {
+    let env = Env::new();
+    env.log("s1", &stats_events(), T0 + 10);
+    env.log(
+        "s2",
+        &[
+            (T0 + 9000, true, "z1", "dev", None),
+            (T0 + 9010, false, "z1", "dev", None),
+            (T0 + 9100, true, "r1", "rel", None),
+            (T0 + 9107, false, "r1", "rel", None),
+        ],
+        T0 + 20,
+    );
+    let (_, out, _) = env.run(&env.root(), &["flow", "stats", "--all", "--json"]);
+    let got: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(got["sessions"], serde_json::json!(["s1", "s2"]));
+    let calls = |key: &str| {
+        got["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|g| g["key"] == key)
+            .map(|g| g["calls"].clone())
+    };
+    assert_eq!(
+        (calls("dev"), calls("rel")),
+        (Some(3.into()), Some(1.into()))
+    );
+    // `ship` holds `rel` only
+    let (_, out, _) = env.run(&env.root(), &["flow", "stats", "ship", "--all", "--json"]);
+    let got: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let keys: Vec<&str> = got["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|g| g["key"].as_str().unwrap())
+        .collect();
+    assert_eq!(keys, ["rel"]);
 }

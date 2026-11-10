@@ -23,7 +23,7 @@ claude: agent vigie skills: compiled (preloaded through the subagent `skills` fi
 claude: agents tags: not-compiled (informational, no Claude Code field; 4 agents: capitaine, cartographe, charpentier, vigie)
 claude: agents temperature: not-compiled (no equivalent in Claude Code subagents; 4 agents: capitaine, cartographe, charpentier, vigie)
 claude: flow mission: approximated (rendered as guidance in CLAUDE.md, not enforced)
-claude: flow recording: compiled (hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback), UserPromptExpansion in .claude/settings.json)
+claude: flow recording: compiled (hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback, Agent|Task), UserPromptExpansion in .claude/settings.json)
 claude: skill code-nautique: compiled
 
 === .claude/agents/cartographe.md
@@ -168,6 +168,16 @@ Termine par un resume avec le nombre de trouvailles par severite.
             "async": true
           }
         ]
+      },
+      {
+        "matcher": "Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __record-flow-event",
+            "async": true
+          }
+        ]
       }
     ],
     "UserPromptExpansion": [
@@ -286,4 +296,8 @@ Transitions:
 - `capitaine` -> `vigie`
 - `capitaine` -> `charpentier`
 - `capitaine` -> `cartographe`
+
+### Marking delegations
+
+Start the `description` of every Agent call to an agent that holds a step with `[<flow>/<step>#<lot>]`, for example `[lot/plan#12] write the plan`. `#<lot>` is optional: it names one batch of work, so that two batches of one flow stay apart in `armadai flow status`. A free agent needs no marker. Ask the agent to end its reply with `REF: <ref>` after its `STATE:` line when it produced something to point at (a branch, a merge request): up to 64 letters, digits or `._/#-`.
 <!-- armadai:end -->

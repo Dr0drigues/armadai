@@ -149,6 +149,23 @@ pub struct Policy {
     pub delegation: Delegation,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub free_agents: Vec<String>,
+    /// Named permission levels, activated by `armadai grant`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub grants: BTreeMap<String, Grant>,
+}
+
+/// A named permission level: native permission rules a user may switch on for a while.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Grant {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Native permission rules, e.g. `Bash(git push origin feature/*)`.
+    #[serde(default)]
+    pub allow: Vec<String>,
+    /// Default end of the level: a step id, or `<flow>/<step>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
 }
 
 fn is_off(d: &Delegation) -> bool {

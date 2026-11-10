@@ -260,6 +260,20 @@ fn compile_with(
             Status::NotCompiled,
             Some(super::report::RECORDING_CLAUDE_ONLY),
         );
+        plan.report.push(
+            T,
+            "delegation marker",
+            Status::NotCompiled,
+            Some(super::report::UI_CLAUDE_ONLY),
+        );
+    }
+    if !project.manifest.policy.grants.is_empty() {
+        plan.report.push(
+            T,
+            "policy grants",
+            Status::NotCompiled,
+            Some(super::report::UI_CLAUDE_ONLY),
+        );
     }
     if project.manifest.ui.status_line {
         plan.report.push(
@@ -667,6 +681,47 @@ mod tests {
             .find(|l| l.element == element)
             .unwrap_or_else(|| panic!("no `{element}` in\n{}", plan.report.render_text()));
         (l.status, l.reason.clone())
+    }
+
+    #[test]
+    fn a_project_with_a_flow_says_the_delegation_marker_is_claude_only() {
+        let agents: [(&str, &[u8]); 1] =
+            [(".armadai/agents/dev.md", b"---\ndescription: d\n---\nB\n")];
+        let flow: (&str, &[u8]) = (
+            ".armadai/flows/ship.yaml",
+            b"steps:\n  build: { agent: dev }\n",
+        );
+        let plan = compile(&[M, agents[0], flow]).unwrap();
+        assert_eq!(
+            line(&plan, "delegation marker"),
+            (Status::NotCompiled, Some("Claude Code only".into()))
+        );
+        let plan = compile(&[M, agents[0]]).unwrap();
+        assert!(
+            plan.report
+                .lines
+                .iter()
+                .all(|l| l.element != "delegation marker")
+        );
+    }
+
+    #[test]
+    fn levels_are_not_compiled_for_opencode() {
+        let grants: (&str, &[u8]) = (".armadai/project.yaml", b"schema_version: 1\npolicy:\n  grants:\n    lvl:\n      allow: [\"Bash(echo *)\"]\n      until: step\n");
+        let agent: (&str, &[u8]) = (".armadai/agents/dev.md", b"---\ndescription: d\n---\nB\n");
+        let flow: (&str, &[u8]) = (".armadai/flows/f.yaml", b"steps:\n  step: { agent: dev }\n");
+        let plan = compile(&[grants, agent, flow]).unwrap();
+        assert_eq!(
+            line(&plan, "policy grants"),
+            (Status::NotCompiled, Some("Claude Code only".into()))
+        );
+        let plan = compile(&[M, agent]).unwrap();
+        assert!(
+            plan.report
+                .lines
+                .iter()
+                .all(|l| l.element != "policy grants")
+        );
     }
 
     #[test]

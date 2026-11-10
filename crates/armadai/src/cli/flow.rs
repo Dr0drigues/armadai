@@ -84,28 +84,50 @@ pub enum FlowCommand {
         #[arg(long, value_enum, default_value = "auto")]
         color: ColorArg,
     },
+    /// Show calls, durations, verdicts and loops of a session, per agent, step or lot
+    #[command(
+        long_about = "Show how a Claude Code session went, from the events the recording hooks \
+            wrote under .armadai/state/claude/: per group, the calls, the resumed ones, the \
+            median, maximum and total duration, the states rendered, the share of rejections \
+            (`rejected` or `rejected-*`, for a step that declares one) and the loops.\n\n\
+            A call is a sub-agent that started. Its duration runs from its start to its first \
+            stop: an agent resumed by SendMessage counts once and its later segments are not \
+            timed, so durations are lower bounds. --by agent needs no marker; --by step and \
+            --by lot count the calls marked `[flow/step#lot]` (see `armadai link`) and set the \
+            others aside. Without --session, the latest session.",
+        after_help = "Examples:\n  \
+            armadai flow stats\n  \
+            armadai flow stats deliver --by step\n  \
+            armadai flow stats --all --by lot\n  \
+            armadai flow stats --json"
+    )]
+    Stats {
+        /// Only the calls and loops of this flow (id under .armadai/flows/)
+        flow: Option<String>,
+        /// Session id (see `flow status --list`); the latest one when omitted
+        #[arg(long, conflicts_with = "all")]
+        session: Option<String>,
+        /// Every recorded session together
+        #[arg(long)]
+        all: bool,
+        /// What to group by
+        #[arg(long, value_enum, default_value = "agent")]
+        by: ByArg,
+        /// Print JSON (schema armadai.flow-stats/1) on stdout, and nothing else
+        #[arg(long)]
+        json: bool,
+    },
 }
 
-pub fn execute(cmd: FlowCommand) -> anyhow::Result<()> {
-    let FlowCommand::Status {
-        flow,
-        session,
-        watch,
-        list,
-        json,
-        line,
-        format,
-        color,
-    } = cmd;
-    anstream::ColorChoice::write_global(match color {
-        ColorArg::Auto => anstream::ColorChoice::Auto,
-        ColorArg::Always => anstream::ColorChoice::Always,
-        ColorArg::Never => anstream::ColorChoice::Never,
-    });
-    if line {
-        anstream::println!("{}", line_text(flow, session));
-        return Ok(());
-    }
+#[derive(clap::ValueEnum, Clone, Copy)]
+pub enum ByArg {
+    Agent,
+    Step,
+    Lot,
+}
+
+/// The project root and the project (valid), with `flow` checked against its flows.
+fn open_project(flow: &Option<String>) -> anyhow::Result<(PathBuf, Project)> {
     let cwd = std::env::current_dir()?;
     let Some(root) = crate::claude_adapter::policy_gate::resolve_project(&cwd) else {
         // the same advice as every project command (legacy included)
@@ -123,7 +145,7 @@ pub fn execute(cmd: FlowCommand) -> anyhow::Result<()> {
             bail!("the project is invalid; run `armadai validate`")
         }
     };
-    if let Some(id) = &flow
+    if let Some(id) = flow
         && !project.flows.contains_key(id)
     {
         if project.flows.is_empty() {
@@ -134,6 +156,108 @@ pub fn execute(cmd: FlowCommand) -> anyhow::Result<()> {
             project.flows.keys().cloned().collect::<Vec<_>>().join(", ")
         );
     }
+    Ok((root, project))
+}
+
+fn stats_command(
+    flow: Option<String>,
+    session: Option<String>,
+    all: bool,
+    by: ByArg,
+    json: bool,
+) -> anyhow::Result<()> {
+    use crate::flow_status::stats::{By, stats};
+    let (root, project) = open_project(&flow)?;
+    let ids: Vec<String> = if all {
+        // oldest first, the order the events happened in
+        (render::sessions(&root).into_iter().rev())
+            .map(|s| s.0)
+            .collect()
+    } else if let Some(id) = session {
+        let path = log_path(&root, &id).with_context(|| {
+            format!("`{id}` is not a session id; see `armadai flow status --list`")
+        })?;
+        if !path.is_file() {
+            bail!("no session `{id}` recorded; see `armadai flow status --list`");
+        }
+        vec![id]
+    } else {
+        render::latest_session(&root).into_iter().collect()
+    };
+    // shortcut: the sessions of --all are read as one log, so a run may straddle two sessions (only loops read from runs); split per session when that shows
+    let events: Vec<FlowEvent> = (ids.iter())
+        .filter_map(|id| log_path(&root, id))
+        .flat_map(|p| read_log(&p))
+        .collect();
+    let by = match by {
+        ByArg::Agent => By::Agent,
+        ByArg::Step => By::Step,
+        ByArg::Lot => By::Lot,
+    };
+    let found = stats(&project, &events, by, flow.as_deref());
+    if json {
+        let doc = crate::flow_status::json::stats_document(&ids, &found);
+        anstream::println!("{}", serde_json::to_string_pretty(&doc)?);
+        return Ok(());
+    }
+    if let Some(f) = flow
+        .as_deref()
+        .filter(|_| !events.is_empty() && found.groups.is_empty() && found.unmarked_calls == 0)
+    {
+        let which = if all {
+            "these sessions"
+        } else {
+            "this session"
+        };
+        anstream::println!("no call of flow {f} in {which}");
+    } else if found.groups.is_empty() && found.unmarked_calls == 0 {
+        anstream::println!("{NO_ACTIVITY}");
+    } else if found.groups.is_empty() && !found.any_marked {
+        anstream::println!("{}", render::NO_MARKER);
+    } else {
+        let scope = match ids.as_slice() {
+            [one] if !all => format!("session {one}"),
+            _ => format!("all sessions ({})", ids.len()),
+        };
+        anstream::print!("{}", render::render_stats(&found, &scope));
+    }
+    Ok(())
+}
+
+pub fn execute(cmd: FlowCommand) -> anyhow::Result<()> {
+    let FlowCommand::Status {
+        flow,
+        session,
+        watch,
+        list,
+        json,
+        line,
+        format,
+        color,
+    } = cmd
+    else {
+        let FlowCommand::Stats {
+            flow,
+            session,
+            all,
+            by,
+            json,
+        } = cmd
+        else {
+            unreachable!("two commands")
+        };
+        return stats_command(flow, session, all, by, json);
+    };
+    anstream::ColorChoice::write_global(match color {
+        ColorArg::Auto => anstream::ColorChoice::Auto,
+        ColorArg::Always => anstream::ColorChoice::Always,
+        ColorArg::Never => anstream::ColorChoice::Never,
+    });
+    if line {
+        anstream::println!("{}", line_text(flow, session));
+        return Ok(());
+    }
+    let (root, project) = open_project(&flow)?;
     if list {
         let rows: Vec<(String, u64, usize)> = (render::sessions(&root).into_iter())
             .map(|(id, at)| {

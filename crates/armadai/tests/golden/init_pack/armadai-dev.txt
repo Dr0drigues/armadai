@@ -29,7 +29,7 @@ claude: agent schema-specialist skills: compiled (preloaded through the subagent
 claude: agents tags: not-compiled (informational, no Claude Code field; 6 agents: adapter-specialist, cli-specialist, dev-lead, qa-specialist, release-manager, schema-specialist)
 claude: agents temperature: not-compiled (no equivalent in Claude Code subagents; 5 agents: adapter-specialist, cli-specialist, qa-specialist, release-manager, schema-specialist)
 claude: flow delivery: approximated (rendered as guidance in CLAUDE.md, not enforced)
-claude: flow recording: compiled (hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback), UserPromptExpansion in .claude/settings.json)
+claude: flow recording: compiled (hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback, Agent|Task), UserPromptExpansion in .claude/settings.json)
 claude: flow release: approximated (rendered as guidance in CLAUDE.md, not enforced)
 claude: flow release step qa: approximated (states and on_failure rendered as guidance)
 claude: skill rust-conventions: compiled
@@ -195,6 +195,16 @@ Implementation with type definitions, parsing and validation logic, and integrat
             "async": true
           }
         ]
+      },
+      {
+        "matcher": "Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __record-flow-event",
+            "async": true
+          }
+        ]
       }
     ],
     "UserPromptExpansion": [
@@ -336,4 +346,8 @@ Transitions:
 
 - `qa` -> `release` when `approved`
 - `qa` -> `lead` when `rejected`
+
+### Marking delegations
+
+Start the `description` of every Agent call to an agent that holds a step with `[<flow>/<step>#<lot>]`, for example `[lot/plan#12] write the plan`. `#<lot>` is optional: it names one batch of work, so that two batches of one flow stay apart in `armadai flow status`. A free agent needs no marker. Ask the agent to end its reply with `REF: <ref>` after its `STATE:` line when it produced something to point at (a branch, a merge request): up to 64 letters, digits or `._/#-`.
 <!-- armadai:end -->

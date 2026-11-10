@@ -136,8 +136,28 @@ impl Compiler for ClaudeCompiler {
                 "flow recording",
                 Status::Compiled,
                 Some(
-                    "hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback), \
+                    "hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback, Agent|Task), \
                      UserPromptExpansion in .claude/settings.json",
+                ),
+            );
+        }
+        if !project.manifest.policy.grants.is_empty() {
+            plan.report.push(
+                T,
+                "policy grants",
+                Status::Compiled,
+                Some(
+                    "PermissionRequest hooks (armadai __claude-grant), one per rule; inactive \
+                     until armadai grant",
+                ),
+            );
+            plan.report.push(
+                T,
+                "grant state guard",
+                Status::Compiled,
+                Some(
+                    "deny rules Bash(armadai grant *) and Edit(/.armadai/state/grants.yaml) in \
+                     .claude/settings.json",
                 ),
             );
         }
@@ -468,8 +488,21 @@ fn claude_md(coordinator: &str, lead: &Agent, project: &Project) -> String {
     for (fid, flow) in &project.flows {
         out.push_str(&flow_section(fid, flow));
     }
+    if !project.flows.is_empty() {
+        out.push_str(MARKING_SECTION);
+        if strict {
+            out.push_str(MARKING_STRICT);
+        }
+        out.push('\n');
+    }
     out
 }
+
+/// How the coordinator marks a delegation, so `armadai flow status` can place it.
+const MARKING_SECTION: &str = "\n### Marking delegations\n\nStart the `description` of every Agent call to an agent that holds a step with `[<flow>/<step>#<lot>]`, for example `[lot/plan#12] write the plan`. `#<lot>` is optional: it names one batch of work, so that two batches of one flow stay apart in `armadai flow status`. A free agent needs no marker. Ask the agent to end its reply with `REF: <ref>` after its `STATE:` line when it produced something to point at (a branch, a merge request): up to 64 letters, digits or `._/#-`.";
+
+const MARKING_STRICT: &str =
+    " Under policy.delegation: strict the gate refuses a delegation without it.";
 
 pub(super) fn flow_section(fid: &str, flow: &Flow) -> String {
     let mut out = format!("\n### Flow `{fid}`\n\n");
@@ -619,6 +652,39 @@ mod tests {
         );
     }
 
+    const FLOW_STEP: (&str, &[u8]) = (".armadai/flows/f.yaml", b"steps:\n  step: { agent: dev }\n");
+
+    #[test]
+    fn levels_are_reported_with_their_hooks_and_the_state_guard() {
+        let grants: (&str, &[u8]) = (".armadai/project.yaml", b"schema_version: 1\npolicy:\n  grants:\n    lvl:\n      allow: [\"Bash(echo *)\"]\n      until: step\n");
+        let plan = compile(&[grants, DEV, FLOW_STEP]).unwrap();
+        let l = |e: &str| {
+            let l = line(&plan, e);
+            (l.status, l.reason.clone())
+        };
+        assert_eq!(
+            l("policy grants"),
+            (
+                Status::Compiled,
+                Some("PermissionRequest hooks (armadai __claude-grant), one per rule; inactive until armadai grant".into())
+            )
+        );
+        assert_eq!(
+            l("grant state guard"),
+            (
+                Status::Compiled,
+                Some("deny rules Bash(armadai grant *) and Edit(/.armadai/state/grants.yaml) in .claude/settings.json".into())
+            )
+        );
+        let plan = compile(&[M, DEV]).unwrap();
+        assert!(
+            plan.report
+                .lines
+                .iter()
+                .all(|l| l.element != "policy grants" && l.element != "grant state guard")
+        );
+    }
+
     #[test]
     fn a_project_with_a_flow_reports_its_recording_hooks() {
         let plan = compile(&[M, DEV, REV, DELIVER]).unwrap();
@@ -628,7 +694,7 @@ mod tests {
             (
                 Status::Compiled,
                 Some(
-                    "hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback), \
+                    "hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback, Agent|Task), \
                      UserPromptExpansion in .claude/settings.json"
                 )
             )
@@ -918,6 +984,39 @@ mod tests {
             ),
             FLOW,
         ]
+    }
+
+    const MARKING: &str = "\n### Marking delegations\n\nStart the `description` of every Agent call to an agent that holds a step with `[<flow>/<step>#<lot>]`, for example `[lot/plan#12] write the plan`. `#<lot>` is optional: it names one batch of work, so that two batches of one flow stay apart in `armadai flow status`. A free agent needs no marker. Ask the agent to end its reply with `REF: <ref>` after its `STATE:` line when it produced something to point at (a branch, a merge request): up to 64 letters, digits or `._/#-`.";
+
+    #[test]
+    fn the_block_ends_with_the_marking_section_when_there_is_a_flow() {
+        let plan = compile(&team()).unwrap();
+        let block = &plan.blocks[0].1;
+        assert!(block.ends_with(&format!("{MARKING}\n")), "{block}");
+        assert_eq!(block.matches("### Marking delegations").count(), 1);
+        // not strict: no sentence about the gate
+        assert!(!block.contains("the gate refuses"), "{block}");
+        let mut strict = team();
+        strict[0] = (
+            ".armadai/project.yaml",
+            b"schema_version: 1\ncoordinator: lead\npolicy:\n  delegation: strict\n",
+        );
+        let plan = compile(&strict).unwrap();
+        assert!(
+            plan.blocks[0].1.ends_with(&format!(
+                "{MARKING} Under policy.delegation: strict the gate refuses a delegation without it.\n"
+            )),
+            "{}",
+            plan.blocks[0].1
+        );
+    }
+
+    #[test]
+    fn a_coordinator_without_a_flow_gets_no_marking_section() {
+        let mut files = team();
+        files.pop(); // the flow
+        let plan = compile(&files).unwrap();
+        assert!(!plan.blocks[0].1.contains("Marking delegations"));
     }
 
     #[test]

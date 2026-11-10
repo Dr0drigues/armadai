@@ -1,0 +1,70 @@
+{
+  "schema": "armadai.flow-status/1",
+  "session": {
+    "id": "s1",
+    "started_at": "2026-10-22T09:15:09Z",
+    "last_event_at": "2026-10-22T09:15:45Z"
+  },
+  "runs": [
+    {
+      "flow": "deliver",
+      "lot": "menu",
+      "status": "finished",
+      "steps": [
+        {
+          "step": "design",
+          "mark": "done",
+          "sign": "✓",
+          "state": "done",
+          "note": null,
+          "ref": null
+        },
+        {
+          "step": "build",
+          "mark": "done",
+          "sign": "✓",
+          "state": "done",
+          "note": null,
+          "ref": "feature/menu"
+        },
+        {
+          "step": "guard",
+          "mark": "done",
+          "sign": "✓",
+          "state": "approved",
+          "note": null,
+          "ref": "feature/review"
+        },
+        {
+          "step": "validate",
+          "mark": "done",
+          "sign": "✓",
+          "state": "done",
+          "note": null,
+          "ref": null
+        }
+      ],
+      "loops": [],
+      "transitions": [
+        {
+          "at": "2026-10-22T09:15:20Z",
+          "from": "design",
+          "to": "build",
+          "state": "done"
+        },
+        {
+          "at": "2026-10-22T09:15:30Z",
+          "from": "build",
+          "to": "guard",
+          "state": "done"
+        },
+        {
+          "at": "2026-10-22T09:15:40Z",
+          "from": "guard",
+          "to": "validate",
+          "state": "approved"
+        }
+      ]
+    }
+  ]
+}

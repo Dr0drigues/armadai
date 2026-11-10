@@ -19,6 +19,16 @@
             "async": true
           }
         ]
+      },
+      {
+        "matcher": "Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __record-flow-event",
+            "async": true
+          }
+        ]
       }
     ],
     "SubagentStart": [

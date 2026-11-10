@@ -1,0 +1,10 @@
+steps:
+  design: { agent: architect }
+  build: { agent: dev }
+  guard: { agent: qa, states: [approved, rejected] }
+  validate: { agent: ops }
+links:
+  - { from: design, to: build }
+  - { from: build, to: guard }
+  - { from: guard, to: build, when: rejected }
+  - { from: guard, to: validate, when: approved }

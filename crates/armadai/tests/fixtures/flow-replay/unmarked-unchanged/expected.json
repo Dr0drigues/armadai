@@ -1,0 +1,126 @@
+{
+  "schema": "armadai.flow-status/1",
+  "session": {
+    "id": "s1",
+    "started_at": "2026-10-22T09:15:10Z",
+    "last_event_at": "2026-10-22T09:16:25Z"
+  },
+  "runs": [
+    {
+      "flow": "deliver",
+      "status": "finished",
+      "steps": [
+        {
+          "step": "design",
+          "mark": "done",
+          "sign": "✓",
+          "state": "done",
+          "note": null
+        },
+        {
+          "step": "build",
+          "mark": "done",
+          "sign": "✓",
+          "state": "done",
+          "note": null
+        },
+        {
+          "step": "guard",
+          "mark": "done",
+          "sign": "✓",
+          "state": "approved",
+          "note": null
+        },
+        {
+          "step": "validate",
+          "mark": "done",
+          "sign": "✓",
+          "state": "done",
+          "note": null
+        }
+      ],
+      "loops": [
+        {
+          "from": "build",
+          "to": "guard",
+          "times": 2
+        }
+      ],
+      "transitions": [
+        {
+          "at": "2026-10-22T09:15:20Z",
+          "from": "design",
+          "to": "build",
+          "state": "done"
+        },
+        {
+          "at": "2026-10-22T09:15:30Z",
+          "from": "build",
+          "to": "guard",
+          "state": "done"
+        },
+        {
+          "at": "2026-10-22T09:15:40Z",
+          "from": "guard",
+          "to": "build",
+          "state": "rejected"
+        },
+        {
+          "at": "2026-10-22T09:15:50Z",
+          "from": "build",
+          "to": "guard",
+          "state": "done"
+        },
+        {
+          "at": "2026-10-22T09:16:00Z",
+          "from": "guard",
+          "to": "validate",
+          "state": "approved"
+        }
+      ]
+    },
+    {
+      "flow": "deliver",
+      "status": "in-progress",
+      "steps": [
+        {
+          "step": "design",
+          "mark": "done",
+          "sign": "✓",
+          "state": "done",
+          "note": null
+        },
+        {
+          "step": "build",
+          "mark": "done",
+          "sign": "✓",
+          "state": "done",
+          "note": null
+        },
+        {
+          "step": "guard",
+          "mark": "pending",
+          "sign": "○",
+          "state": null,
+          "note": null
+        },
+        {
+          "step": "validate",
+          "mark": "pending",
+          "sign": "○",
+          "state": null,
+          "note": null
+        }
+      ],
+      "loops": [],
+      "transitions": [
+        {
+          "at": "2026-10-22T09:16:20Z",
+          "from": "design",
+          "to": "build",
+          "state": "done"
+        }
+      ]
+    }
+  ]
+}

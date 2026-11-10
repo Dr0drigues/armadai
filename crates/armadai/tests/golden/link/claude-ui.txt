@@ -25,6 +25,10 @@ Transitions:
 
 - `plan` -> `build`
 - `build` -> `plan` when `blocked`
+
+### Marking delegations
+
+Start the `description` of every Agent call to an agent that holds a step with `[<flow>/<step>#<lot>]`, for example `[lot/plan#12] write the plan`. `#<lot>` is optional: it names one batch of work, so that two batches of one flow stay apart in `armadai flow status`. A free agent needs no marker. Ask the agent to end its reply with `REF: <ref>` after its `STATE:` line when it produced something to point at (a branch, a merge request): up to 64 letters, digits or `._/#-`. Under policy.delegation: strict the gate refuses a delegation without it.
 <!-- armadai:end -->
 
 === .claude/agents/dev.md ===
@@ -88,6 +92,16 @@ End your reply with exactly one line `STATE: <state>`, where <state> is one of: 
       },
       {
         "matcher": "SubagentHandback",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __record-flow-event",
+            "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "Agent|Task",
         "hooks": [
           {
             "type": "command",
@@ -179,7 +193,7 @@ claude: agent lead tier: not-compiled (the coordinator runs as the main session 
 claude: agents tags: not-compiled (informational, no Claude Code field; 1 agent: dev)
 claude: agents temperature: not-compiled (no equivalent in Claude Code subagents; 1 agent: dev)
 claude: automation fmt: compiled (hook PostToolUse in .claude/settings.json)
-claude: flow recording: compiled (hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback), UserPromptExpansion in .claude/settings.json)
+claude: flow recording: compiled (hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback, Agent|Task), UserPromptExpansion in .claude/settings.json)
 claude: flow ship: approximated (rendered as guidance in CLAUDE.md; delegation topology enforced by the gate)
 claude: flow ship step build: approximated (states and on_failure rendered as guidance)
 claude: policy delegation=strict: compiled (enforced: delegation topology, by the PreToolUse gate)

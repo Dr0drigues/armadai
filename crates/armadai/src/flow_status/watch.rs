@@ -168,12 +168,14 @@ mod tests {
                     mark: m.clone(),
                     state: None,
                     note: None,
+                    reference: None,
                 })
                 .collect(),
             loops: vec![],
             transitions: vec![],
             finished: false,
             interrupted: false,
+            lot: None,
         }
     }
 

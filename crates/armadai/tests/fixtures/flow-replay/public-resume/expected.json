@@ -1,0 +1,74 @@
+{
+  "schema": "armadai.flow-status/1",
+  "session": {
+    "id": "s1",
+    "started_at": "2026-10-22T09:15:09Z",
+    "last_event_at": "2026-10-22T09:21:45Z"
+  },
+  "runs": [
+    {
+      "flow": "lot",
+      "lot": "12",
+      "status": "in-progress",
+      "steps": [
+        {
+          "step": "spec",
+          "mark": "done",
+          "sign": "✓",
+          "state": "done",
+          "note": null,
+          "ref": null
+        },
+        {
+          "step": "frame",
+          "mark": "done",
+          "sign": "✓",
+          "state": "done",
+          "note": null,
+          "ref": null
+        },
+        {
+          "step": "plan",
+          "mark": "pending",
+          "sign": "○",
+          "state": null,
+          "note": null,
+          "ref": null
+        },
+        {
+          "step": "tasks",
+          "mark": "coordinator",
+          "sign": "~",
+          "state": null,
+          "note": "coordinator, not recorded",
+          "ref": null
+        },
+        {
+          "step": "review",
+          "mark": "pending",
+          "sign": "○",
+          "state": null,
+          "note": null,
+          "ref": null
+        },
+        {
+          "step": "validate",
+          "mark": "pending",
+          "sign": "○",
+          "state": null,
+          "note": null,
+          "ref": null
+        }
+      ],
+      "loops": [],
+      "transitions": [
+        {
+          "at": "2026-10-22T09:21:40Z",
+          "from": "spec",
+          "to": "frame",
+          "state": "done"
+        }
+      ]
+    }
+  ]
+}

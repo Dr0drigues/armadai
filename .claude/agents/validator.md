@@ -44,4 +44,4 @@ Aucune commande en arrière-plan. Dans ta réponse à `lead`, liste chaque comma
 
 ## Verdict
 
-End your reply with exactly one line `STATE: <state>`, where <state> is one of: approved, rejected.
+End your reply with exactly one line `STATE: <state>`, where <state> is one of: approved, rejected, rejected-task.

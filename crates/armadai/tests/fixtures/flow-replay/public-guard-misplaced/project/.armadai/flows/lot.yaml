@@ -1,0 +1,5 @@
+steps:
+  spec: { agent: analyst }
+  review: { agent: guardian, states: [approved, rejected] }
+links:
+  - { from: spec, to: review }

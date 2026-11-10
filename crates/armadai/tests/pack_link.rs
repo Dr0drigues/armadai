@@ -415,7 +415,7 @@ fn the_gate_reads_the_pack_flows() {
             "cwd": env.root().to_string_lossy(),
             "tool_name": "Agent",
             "agent_type": "",
-            "tool_input": {"subagent_type": target},
+            "tool_input": {"subagent_type": target, "description": "[ship/build] work"},
         })
         .to_string()
     };
