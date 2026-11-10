@@ -124,7 +124,8 @@ pub struct Run {
 ///   one, attributed as by a command; no command, other lot or restart of an
 ///   entry closes it, only its natural end does. (4) An unmarked `start`
 ///   follows the rules above and never extends a run a marker opened. (5) A
-///   `mark` naming a flow or step the project lacks is ignored. (6) Without
+///   `mark` naming a flow or step the project lacks, or a step its agent does
+///   not hold, is ignored. (6) Without
 ///   any `mark` line nothing above applies. The `REF:` of the first stop
 ///   recorded for an `agent_id` shows on its step.
 pub fn runs(project: &Project, events: &[FlowEvent]) -> Vec<Run> {
@@ -583,12 +584,16 @@ impl<'p> Builder<'p> {
         run.show_started(sid, ambiguous);
     }
 
-    /// Notes a `mark` line, unless it names a flow or step the project lacks.
+    /// Notes a `mark` line, unless it names a flow or step the project lacks, or a
+    /// step its agent does not hold.
     fn note_mark(&mut self, e: &FlowEvent) {
         let (Some(flow), Some(step)) = (&e.flow, &e.step) else {
             return;
         };
-        if (self.project.flows.get(flow)).is_some_and(|f| f.steps.contains_key(step)) {
+        let held = (self.project.flows.get(flow))
+            .and_then(|f| f.steps.get(step))
+            .is_some_and(|s| s.agent == e.agent_type);
+        if held {
             self.marks.push((
                 e.agent_type.clone(),
                 flow.clone(),
@@ -3748,5 +3753,21 @@ mod tests {
         assert_eq!(got.len(), 1);
         assert_eq!(lot_of(&got[0]), Some("x"));
         assert_eq!(step_of(&got[0], "build").mark, Mark::Running);
+    }
+
+    /// Rule 5: a mark naming a step its agent does not hold is ignored; the
+    /// start is inferred as one with no marker.
+    #[test]
+    fn a_mark_naming_a_step_of_another_agent_is_ignored() {
+        let plain = seq(&[&step(20, "a2", "dev", None)]);
+        let noisy = seq(&[
+            &[mark(10, "dev", "deliver", "guard", Some("x"))],
+            &step(20, "a2", "dev", None),
+        ]);
+        assert_eq!(runs(&deliver(), &noisy), runs(&deliver(), &plain));
+        let got = runs(&deliver(), &noisy);
+        assert_eq!(got[0].lot, None);
+        assert_eq!(step_of(&got[0], "guard").mark, Mark::Pending);
+        assert_eq!(step_of(&got[0], "build").mark, Mark::Done);
     }
 }
