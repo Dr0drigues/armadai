@@ -87,7 +87,7 @@ Running `armadai` without a subcommand prints the help.
 | `armadai graph [flow]` | Draw a flow, every flow or the team (`--view`), as Mermaid, Markdown (`md`), DOT, JSON or ASCII (`--format`), or open it in mermaid.live (`--open`) |
 | `armadai init [--project] [--pack <name>]` | Initialize the user configuration, or a project (empty or from a starter pack) |
 | `armadai skills list/show/sync/search/add/info` | Manage and discover skills |
-| `armadai models check/update/list` | Check and rewrite deprecated model ids, list linked projects |
+| `armadai models check/update/list/tiers/sync` | Check and rewrite deprecated model ids, list linked projects, show the built-in tier table, download the models.dev catalog (network) |
 | `armadai config starters-dir list/add/remove` | Custom starter pack directories |
 | `armadai update` | Self-update to the latest release |
 | `armadai completion <shell>` | Generate shell completions |
