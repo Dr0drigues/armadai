@@ -80,6 +80,7 @@ Toutes ont été lues par l'architecte le **2026-11-10** par WebFetch ; les lien
 | D21 | https://code.claude.com/docs/en/statusline | « The `command` field runs in a shell, so you can also use inline commands instead of a script file. » |
 | D22 | idem | « **Multiple lines**: each `echo` or `print` statement displays as a separate row. » |
 | D23 | idem | « If a new update triggers while your script is still running, Claude Code cancels the in-flight script. » |
+| D24 | https://code.claude.com/docs/en/permission-modes | « In addition to file edits, `acceptEdits` mode auto-approves common filesystem Bash commands: `mkdir`, `touch`, `rm`, `rmdir`, `mv`, `cp`, and `sed`. […] Like file edits, auto-approval applies only to paths inside your working directory or `additionalDirectories`. » (lue par le guardian, relue par l'architecte le 2026-11-10 : extrait conforme ; le passage omis est « Except for `touch`, these commands are also auto-approved when prefixed with safe environment variables such as `LANG=C` or `NO_COLOR=1`, or process wrappers such as `timeout`, `nice`, or `nohup`. ») |
 
 **À lire en tâche** (non lu, rien n'est supposé) : un hook `PreToolUse` sur `SendMessage` et les champs de son `tool_input` (P1.0) ; le repli de la bande au-dessus du prompt et `claude plugin test` (`plugins/mods/interface`, `plugins/mods/test`, P4.0).
 
@@ -459,7 +460,7 @@ Chaque tâche finit barrière verte. Les mutations citées sont le minimum ; le 
   - `flow stats` et `armadai.flow-stats/1`.
 - [ ] `project-format.md` : `policy.grants` et les codes de P2.1.
 - [ ] `link.md` : les hooks de grant et les règles de garde.
-- Vérification : `/usr/bin/grep -rn "/Users/" docs/` rend 0 ligne, compte cité dans le rapport.
+- Vérification : le diff de la tâche n'ajoute aucun chemin de machine (`git diff <base>.. | /usr/bin/grep '^+' | /usr/bin/grep -c '/Users/'` rend 0, hors citation du motif).
 - Commit : `docs: document delegation markers, grants and flow stats`
 
 ### PR 2
