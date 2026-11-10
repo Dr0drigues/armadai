@@ -115,7 +115,7 @@ pub struct Run {
 ///   `agent_type`; when several remain with different `(flow, step, lot)`, the
 ///   start (each such start, none consumes) is `?` "ambiguous marker" on the
 ///   step of each of them, in a run of each `(flow, lot)` (opened when there is
-///   none), and no link is taken. The marks left when a sub-agent stops are
+///   none), and no link is taken. The marks left when a started sub-agent stops are
 ///   dropped: those of a burst all precede its starts. (2) A `start` of an
 ///   `agent_id` seen before (a resume) never consumes a `mark`: it inherits its
 ///   marker, stays unplaced when that was ambiguous, and is inferred when it
@@ -140,8 +140,9 @@ pub fn runs(project: &Project, events: &[FlowEvent]) -> Vec<Run> {
         unsure_ids: BTreeSet::new(),
     };
     for e in merge_stops(events) {
-        if e.event == EventKind::Stop {
+        if e.event == EventKind::Stop && b.seen.contains(&e.agent_id) {
             // the marks of a burst all precede its starts: what is left is orphaned
+            // (a stop of the main thread, never started, says nothing of them)
             b.marks.clear();
         }
         let targets = match e.event {
@@ -3732,5 +3733,20 @@ mod tests {
             step_of(&got[0], "build"),
             &view("build", Mark::Done, Some("done"), None)
         );
+    }
+
+    /// A stop of the main thread (never started, no type) between a `mark` and
+    /// its `start` does not drop the mark.
+    #[test]
+    fn a_main_thread_stop_does_not_drop_a_pending_mark() {
+        let events = seq(&[
+            &[mark(1, "dev", "deliver", "build", Some("x"))],
+            &[stop(2, "m1", "", None)],
+            &[start(3, "a1", "dev")],
+        ]);
+        let got = runs(&deliver(), &events);
+        assert_eq!(got.len(), 1);
+        assert_eq!(lot_of(&got[0]), Some("x"));
+        assert_eq!(step_of(&got[0], "build").mark, Mark::Running);
     }
 }
