@@ -68,6 +68,7 @@ fn run(r: &Run) -> Value {
         "status": status,
         "steps": r.steps.iter().map(|v| json!({
             "step": v.step,
+            "agent": v.agent,
             "mark": v.mark.name(),
             "sign": v.mark.sign(),
             "state": v.state,
@@ -100,6 +101,7 @@ mod tests {
     fn v(step: &str, mark: Mark, state: Option<&str>, note: Option<&str>) -> StepView {
         StepView {
             step: step.into(),
+            agent: format!("{step}-agent"),
             mark,
             state: state.map(str::to_string),
             note: note.map(str::to_string),
@@ -208,10 +210,10 @@ mod tests {
                     "lot": "menu",
                     "status": "in-progress",
                     "steps": [
-                        {"step": "design", "mark": "done", "sign": "✓", "state": "done", "note": null, "ref": null},
-                        {"step": "build", "mark": "done", "sign": "✓", "state": "done", "note": null, "ref": "feature/menu"},
-                        {"step": "guard", "mark": "running", "sign": "●", "state": null, "note": null, "ref": null},
-                        {"step": "validate", "mark": "pending", "sign": "○", "state": null, "note": null, "ref": null}
+                        {"step": "design", "agent": "design-agent", "mark": "done", "sign": "✓", "state": "done", "note": null, "ref": null},
+                        {"step": "build", "agent": "build-agent", "mark": "done", "sign": "✓", "state": "done", "note": null, "ref": "feature/menu"},
+                        {"step": "guard", "agent": "guard-agent", "mark": "running", "sign": "●", "state": null, "note": null, "ref": null},
+                        {"step": "validate", "agent": "validate-agent", "mark": "pending", "sign": "○", "state": null, "note": null, "ref": null}
                     ],
                     "loops": [{"from": "build", "to": "guard", "times": 2}],
                     "transitions": [
@@ -224,8 +226,8 @@ mod tests {
                     "lot": null,
                     "status": "finished",
                     "steps": [
-                        {"step": "triage", "mark": "done", "sign": "✓", "state": "done", "note": null, "ref": null},
-                        {"step": "check", "mark": "done", "sign": "✓", "state": "approved", "note": null, "ref": null}
+                        {"step": "triage", "agent": "triage-agent", "mark": "done", "sign": "✓", "state": "done", "note": null, "ref": null},
+                        {"step": "check", "agent": "check-agent", "mark": "done", "sign": "✓", "state": "approved", "note": null, "ref": null}
                     ],
                     "loops": [],
                     "transitions": [
@@ -237,10 +239,10 @@ mod tests {
                     "lot": null,
                     "status": "interrupted",
                     "steps": [
-                        {"step": "frame", "mark": "coordinator", "sign": "~", "state": null, "note": "coordinator, not recorded", "ref": null},
-                        {"step": "check", "mark": "unsure", "sign": "?", "state": null, "note": "no STATE line", "ref": null},
-                        {"step": "verify", "mark": "unexpected", "sign": "✗", "state": "scope_changed", "note": "undeclared state", "ref": null},
-                        {"step": "ship", "mark": "not-run", "sign": "-", "state": null, "note": null, "ref": null}
+                        {"step": "frame", "agent": "frame-agent", "mark": "coordinator", "sign": "~", "state": null, "note": "coordinator, not recorded", "ref": null},
+                        {"step": "check", "agent": "check-agent", "mark": "unsure", "sign": "?", "state": null, "note": "no STATE line", "ref": null},
+                        {"step": "verify", "agent": "verify-agent", "mark": "unexpected", "sign": "✗", "state": "scope_changed", "note": "undeclared state", "ref": null},
+                        {"step": "ship", "agent": "ship-agent", "mark": "not-run", "sign": "-", "state": null, "note": null, "ref": null}
                     ],
                     "loops": [],
                     "transitions": []

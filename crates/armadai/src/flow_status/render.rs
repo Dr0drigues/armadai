@@ -335,6 +335,7 @@ mod tests {
     fn view(step: &str, mark: Mark, state: Option<&str>, note: Option<&str>) -> StepView {
         StepView {
             step: step.into(),
+            agent: format!("{step}-agent"),
             mark,
             state: state.map(str::to_string),
             note: note.map(str::to_string),

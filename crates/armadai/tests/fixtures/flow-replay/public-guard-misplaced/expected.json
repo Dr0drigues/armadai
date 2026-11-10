@@ -13,6 +13,7 @@
       "steps": [
         {
           "step": "build-cli",
+          "agent": "cli-specialist",
           "mark": "done",
           "sign": "✓",
           "state": "done",
@@ -21,6 +22,7 @@
         },
         {
           "step": "guard",
+          "agent": "guardian",
           "mark": "done",
           "sign": "✓",
           "state": "approved",
@@ -63,6 +65,7 @@
       "steps": [
         {
           "step": "spec",
+          "agent": "analyst",
           "mark": "done",
           "sign": "✓",
           "state": "done",
@@ -71,6 +74,7 @@
         },
         {
           "step": "review",
+          "agent": "guardian",
           "mark": "pending",
           "sign": "○",
           "state": null,

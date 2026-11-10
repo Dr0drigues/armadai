@@ -517,7 +517,7 @@ fn json_prints_the_session_as_the_schema_says() {
     assert_eq!((code, err.as_str()), (Some(0), ""));
     assert!(out.ends_with("}\n"), "one document and a newline: {out:?}");
     let got: serde_json::Value = serde_json::from_str(&out).unwrap();
-    let step = |s: &str, mark: &str, sign: &str, state: Option<&str>| serde_json::json!({"step": s, "mark": mark, "sign": sign, "state": state, "note": null, "ref": null});
+    let step = |s: &str, agent: &str, mark: &str, sign: &str, state: Option<&str>| serde_json::json!({"step": s, "agent": agent, "mark": mark, "sign": sign, "state": state, "note": null, "ref": null});
     let tr = |at: &str, from: &str, to: &str, state: &str| serde_json::json!({"at": at, "from": from, "to": to, "state": state});
     assert_eq!(
         got,
@@ -533,10 +533,10 @@ fn json_prints_the_session_as_the_schema_says() {
                 "lot": null,
                 "status": "in-progress",
                 "steps": [
-                    step("design", "done", "✓", Some("done")),
-                    step("build", "done", "✓", Some("done")),
-                    step("guard", "running", "●", None),
-                    step("validate", "pending", "○", None),
+                    step("design", "architect", "done", "✓", Some("done")),
+                    step("build", "dev", "done", "✓", Some("done")),
+                    step("guard", "qa", "running", "●", None),
+                    step("validate", "ops", "pending", "○", None),
                 ],
                 "loops": [{"from": "build", "to": "guard", "times": 2}],
                 "transitions": [
@@ -630,9 +630,9 @@ impl Env {
     }
 }
 
-const NEW_LINE: &str = "deliver ● guard 2/4 (loops 1)\n";
-const MID_LINE: &str = "deliver ○ build 1/4\n";
-const S_LINE: &str = "deliver ● design 0/4\n";
+const NEW_LINE: &str = "deliver ● guard (qa) 2/4 (loops 1)\n";
+const MID_LINE: &str = "deliver ○ build (dev) 1/4\n";
+const S_LINE: &str = "deliver ● design (architect) 0/4\n";
 
 #[test]
 fn line_prints_the_latest_log_without_a_session_id_and_the_one_asked_for_with_it() {
@@ -1104,9 +1104,14 @@ fn subagent_statusline_prints_one_json_line_per_row_it_overrides() {
     assert_eq!((code, err.as_str()), (Some(0), ""));
     let row: serde_json::Value = serde_json::from_str(out.trim_end_matches('\n')).unwrap();
     assert_eq!(out.matches('\n').count(), 1, "{out:?}");
+    // the row of an agent is the line of the run without the agent piece
+    let without_agent =
+        line.trim_end_matches('\n')
+            .replacen("\u{1b}[90m(architect)\u{1b}[0m ", "", 1);
+    assert_ne!(without_agent, line.trim_end_matches('\n'));
     assert_eq!(
         row,
-        serde_json::json!({"id": "t1", "content": line.trim_end_matches('\n')})
+        serde_json::json!({"id": "t1", "content": without_agent})
     );
     assert_eq!(
         strip_sgr(row["content"].as_str().unwrap()),
@@ -1159,7 +1164,8 @@ fn subagent_statusline_without_a_session_id_falls_back_to_the_latest_log() {
     assert_eq!(row["id"], "t1");
     assert_eq!(
         strip_sgr(row["content"].as_str().unwrap()),
-        NEW_LINE.trim_end_matches('\n')
+        // a row names no agent: the agent is the row's
+        "deliver ● guard 2/4 (loops 1)"
     );
 }
 
@@ -1685,4 +1691,86 @@ fn stats_all_reads_every_session_and_a_flow_keeps_its_own_agents() {
         .map(|g| g["key"].as_str().unwrap())
         .collect();
     assert_eq!(keys, ["rel"]);
+}
+
+// ---- optional steps ----
+
+/// `check` is optional and never runs: the run ends on `release`.
+fn optional_project(env: &Env) {
+    let a = env.root().join(".armadai");
+    for agent in ["sa", "sb", "sc", "sd", "se"] {
+        std::fs::write(
+            a.join(format!("agents/{agent}.md")),
+            "---\ndescription: d\n---\nB\n",
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        a.join("flows/opt.yaml"),
+        "steps:\n  design: { agent: sa }\n  build: { agent: sb }\n  check: { agent: sc, optional: true }\n  release: { agent: sd }\nlinks:\n  - { from: design, to: build }\n  - { from: build, to: check }\n  - { from: check, to: release }\n",
+    )
+    .unwrap();
+    let events: Vec<Ev> = vec![
+        (T0 + 10, true, "o1", "sa", None),
+        (T0 + 11, false, "o1", "sa", None),
+        (T0 + 20, true, "o2", "sb", None),
+        (T0 + 21, false, "o2", "sb", None),
+        (T0 + 30, true, "o3", "sd", None),
+        (T0 + 31, false, "o3", "sd", None),
+    ];
+    env.log("s1", &events, T0 + 100);
+}
+
+#[test]
+fn a_skipped_step_reads_in_text_markdown_and_json_and_the_run_finishes() {
+    let env = Env::new();
+    optional_project(&env);
+    let (code, out, err) = env.run(&env.root(), &["flow", "status", "opt"]);
+    assert_eq!((code, err.as_str()), (Some(0), ""));
+    assert_eq!(
+        out,
+        "session s1 (UTC)\n\
+         \n\
+         opt  finished\n\
+         \x20 ✓ design   done\n\
+         \x20 ✓ build    done\n\
+         \x20 ⤼ check    (skipped)\n\
+         \x20 ✓ release  done\n\
+         \x20 09:15:20  design → build  (done)\n\
+         \x20 09:15:30  build → release  (done)\n"
+    );
+    let (_, md, _) = env.run(&env.root(), &["flow", "status", "opt", "--format", "md"]);
+    assert!(
+        md.contains("| design | ✓ | done |\n| build | ✓ | done |\n| check | ⤼ | (skipped) |\n| release | ✓ | done |\n"),
+        "{md}"
+    );
+    let (_, js, _) = env.run(&env.root(), &["flow", "status", "opt", "--json"]);
+    let doc: serde_json::Value = serde_json::from_str(&js).unwrap();
+    let steps: Vec<(&str, &str, &str, &str)> = doc["runs"][0]["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| {
+            (
+                s["step"].as_str().unwrap(),
+                s["agent"].as_str().unwrap(),
+                s["mark"].as_str().unwrap(),
+                s["sign"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        steps,
+        [
+            ("design", "sa", "done", "✓"),
+            ("build", "sb", "done", "✓"),
+            ("check", "sc", "skipped", "⤼"),
+            ("release", "sd", "done", "✓"),
+        ]
+    );
+    assert_eq!(doc["runs"][0]["steps"][2]["note"], "skipped");
+    assert_eq!(doc["runs"][0]["status"], "finished");
+    // `--line` does not count it: 3 steps done of 3, and a finished run names no agent
+    let (_, line, _) = env.line(&env.root(), &["opt"], "");
+    assert_eq!(line, "opt finished 3/3\n");
 }

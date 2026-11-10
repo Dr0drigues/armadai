@@ -13,6 +13,7 @@
       "steps": [
         {
           "step": "design",
+          "agent": "architect",
           "mark": "done",
           "sign": "✓",
           "state": "done",
@@ -21,6 +22,7 @@
         },
         {
           "step": "build",
+          "agent": "dev",
           "mark": "done",
           "sign": "✓",
           "state": "done",
@@ -29,6 +31,7 @@
         },
         {
           "step": "guard",
+          "agent": "qa",
           "mark": "done",
           "sign": "✓",
           "state": "approved",
@@ -37,6 +40,7 @@
         },
         {
           "step": "validate",
+          "agent": "ops",
           "mark": "pending",
           "sign": "○",
           "state": null,
@@ -67,6 +71,7 @@
       "steps": [
         {
           "step": "patch",
+          "agent": "dev",
           "mark": "done",
           "sign": "✓",
           "state": "done",
@@ -75,6 +80,7 @@
         },
         {
           "step": "verify",
+          "agent": "qa",
           "mark": "done",
           "sign": "✓",
           "state": "approved",

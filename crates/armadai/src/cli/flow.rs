@@ -508,7 +508,7 @@ fn paint_line(line: &str) -> String {
         _ if line.starts_with("session ") || line.starts_with("SESSION ") => style::header(),
         Some('✓') => style::ok(),
         Some('●') => style::running(),
-        Some('○' | '~') => style::muted(),
+        Some('○' | '~' | '⤼') => style::muted(),
         Some('?') => style::warn(),
         Some('✗') => style::err(),
         // a run's heading: `<flow>  in progress|interrupted|finished`
@@ -518,7 +518,7 @@ fn paint_line(line: &str) -> String {
     format!("{s}{line}{s:#}")
 }
 
-const MARKS: [Mark; 7] = [
+const MARKS: [Mark; 8] = [
     Mark::Done,
     Mark::Running,
     Mark::Pending,
@@ -526,6 +526,7 @@ const MARKS: [Mark; 7] = [
     Mark::Unexpected,
     Mark::Relay,
     Mark::NotRun,
+    Mark::Skipped,
 ];
 
 /// A line of the animated image: a line with a box (`[`, a sign, a space) gets its marks painted, any other
@@ -636,12 +637,12 @@ pub(crate) fn painted(pieces: &[(Piece, String)]) -> String {
         .map(|(piece, text)| {
             let s = match piece {
                 Piece::Flow => style::accent(),
-                Piece::Progress | Piece::Status => style::muted(),
+                Piece::Progress | Piece::Status | Piece::Agent => style::muted(),
                 Piece::Loops => style::warn(),
                 Piece::Mark(m) => match m {
                     Mark::Done => style::ok(),
                     Mark::Running => style::running(),
-                    Mark::Pending | Mark::Relay => style::muted(),
+                    Mark::Pending | Mark::Relay | Mark::Skipped => style::muted(),
                     Mark::Unsure => style::warn(),
                     Mark::Unexpected => style::err(),
                     Mark::NotRun => anstyle::Style::new(),
@@ -783,6 +784,7 @@ mod tests {
             (Mark::Unsure, style::warn()),
             (Mark::Unexpected, style::err()),
             (Mark::NotRun, anstyle::Style::new()),
+            (Mark::Skipped, style::muted()),
         ];
         for (m, s) in cases {
             let name = m.name();

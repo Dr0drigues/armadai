@@ -13,6 +13,7 @@
       "steps": [
         {
           "step": "spec",
+          "agent": "analyst",
           "mark": "done",
           "sign": "✓",
           "state": "done",
@@ -21,6 +22,7 @@
         },
         {
           "step": "frame",
+          "agent": "framer",
           "mark": "done",
           "sign": "✓",
           "state": "done",
@@ -29,6 +31,7 @@
         },
         {
           "step": "plan",
+          "agent": "architect",
           "mark": "pending",
           "sign": "○",
           "state": null,
@@ -37,6 +40,7 @@
         },
         {
           "step": "tasks",
+          "agent": "lead",
           "mark": "coordinator",
           "sign": "~",
           "state": null,
@@ -45,6 +49,7 @@
         },
         {
           "step": "review",
+          "agent": "reviewer",
           "mark": "pending",
           "sign": "○",
           "state": null,
@@ -53,6 +58,7 @@
         },
         {
           "step": "validate",
+          "agent": "validator",
           "mark": "pending",
           "sign": "○",
           "state": null,

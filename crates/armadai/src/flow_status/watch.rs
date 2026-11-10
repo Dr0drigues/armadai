@@ -165,6 +165,7 @@ mod tests {
                 .iter()
                 .map(|(s, m)| StepView {
                     step: (*s).into(),
+                    agent: format!("{s}-agent"),
                     mark: m.clone(),
                     state: None,
                     note: None,
@@ -229,6 +230,37 @@ links not drawn:
   ○ validate  pending
 "
         );
+    }
+
+    #[test]
+    fn a_skipped_step_is_drawn_with_its_sign() {
+        let p = project(&[("deliver", DELIVER)]);
+        let mut r = run(
+            "deliver",
+            &[
+                ("design", Mark::Done),
+                ("build", Mark::Done),
+                ("guard", Mark::Running),
+                ("validate", Mark::Skipped),
+            ],
+        );
+        r.steps[3].note = Some("skipped".into());
+        let out = frame(&p, &[r], "s1", 0, BIG);
+        let boxes: Vec<&str> = out
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with('['))
+            .collect();
+        assert_eq!(
+            boxes,
+            [
+                "[✓ ▶ design (architect)  ]",
+                "[✓ build (dev)  ]",
+                "[● guard (qa) |]",
+                "[⤼ validate (ops) ■  ]"
+            ]
+        );
+        assert!(out.ends_with("  ⤼ validate  (skipped)\n"), "{out}");
     }
 
     /// Two ticks of `run`: same shape, one character apart (`|` then `/`), on the

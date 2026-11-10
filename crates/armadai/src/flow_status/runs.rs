@@ -18,6 +18,9 @@ pub enum Mark {
     Relay,
     /// A step before the one a run opened at: not seen in this session.
     NotRun,
+    /// An `optional` step that never started: a step it reaches started, or
+    /// the run is over.
+    Skipped,
 }
 
 impl Mark {
@@ -31,6 +34,7 @@ impl Mark {
             Mark::Unexpected => "✗",
             Mark::Relay => "~",
             Mark::NotRun => "-",
+            Mark::Skipped => "⤼",
         }
     }
 
@@ -44,6 +48,7 @@ impl Mark {
             Mark::Unexpected => "unexpected",
             Mark::Relay => "coordinator",
             Mark::NotRun => "not-run",
+            Mark::Skipped => "skipped",
         }
     }
 }
@@ -51,6 +56,8 @@ impl Mark {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepView {
     pub step: String,
+    /// The agent that holds the step (the first flow's for a group `a | b`).
+    pub agent: String,
     pub mark: Mark,
     pub state: Option<String>,
     pub note: Option<String>,
@@ -304,6 +311,7 @@ impl<'p> Building<'p> {
             let relay = coordinator == Some(flow.steps[s].agent.as_str());
             StepView {
                 step: s.to_string(),
+                agent: flow.steps[s].agent.clone(),
                 mark: if relay { Mark::Relay } else { Mark::Pending },
                 state: None,
                 note: relay.then(|| "coordinator, not recorded".to_string()),
@@ -392,8 +400,11 @@ impl<'p> Building<'p> {
         let (mut out, mut crossed) = (Vec::new(), BTreeSet::new());
         while let Some((t, path)) = todo.pop() {
             if !relay(t) {
-                out.push((t, path));
-            } else if crossed.insert(t) {
+                out.push((t, path.clone()));
+            }
+            // a step of the coordinator, and an optional one that has not started, are
+            // crossed: what follows them can start without them
+            if (relay(t) || self.skippable(t)) && crossed.insert(t) {
                 let path = [path, vec![t]].concat();
                 todo.extend(
                     next_steps(self.flow, t, None)
@@ -403,6 +414,25 @@ impl<'p> Building<'p> {
             }
         }
         out
+    }
+
+    /// An `optional` step that has not started in this run.
+    fn skippable(&self, step: &str) -> bool {
+        self.flow.steps.get(step).is_some_and(|s| s.optional)
+            && (self.run.steps.iter())
+                .any(|v| v.step == step && matches!(v.mark, Mark::Pending | Mark::Skipped))
+    }
+
+    /// Shows the optional steps not started as skipped (a step they reach
+    /// started, or the run is over); `only`: just those.
+    fn skip(&mut self, only: Option<&[&str]>) {
+        for v in &mut self.run.steps {
+            let named = only.is_none_or(|o| o.contains(&v.step.as_str()));
+            if named && v.mark == Mark::Pending && self.flow.steps[&v.step].optional {
+                v.mark = Mark::Skipped;
+                v.note = Some("skipped".to_string());
+            }
+        }
     }
 
     fn running(&self) -> bool {
@@ -424,6 +454,12 @@ impl<'p> Building<'p> {
     /// state `from` leads with. Read before `from`'s view changes: `from` may be
     /// the step that starts.
     fn take_link(&mut self, from: &str, crossed: &[&str], to: &str, ts: u64, tick: usize) {
+        // an optional step crossed is skipped, and is no hop of the link
+        self.skip(Some(crossed));
+        let crossed: Vec<&str> = (crossed.iter().copied())
+            .filter(|c| !self.flow.steps[*c].optional || self.view(c).mark != Mark::Skipped)
+            .collect();
+        let crossed = crossed.as_slice();
         let mut state = self.leads_with(from).map(str::to_string);
         let mut prev = from.to_string();
         let left = self.stopped[from];
@@ -444,8 +480,10 @@ impl<'p> Building<'p> {
 
     /// The view of a step that starts.
     fn show_started(&mut self, step: &str, ambiguous: bool) {
+        let agent = self.view(step).agent.clone();
         *self.view(step) = StepView {
             step: step.to_string(),
+            agent,
             mark: if ambiguous {
                 Mark::Unsure
             } else {
@@ -913,8 +951,10 @@ impl<'p> Builder<'p> {
             }
             Some(s) => (Mark::Unexpected, Some(s), Some("undeclared state")),
         };
+        let agent = run.view(step).agent.clone();
         *run.view(step) = StepView {
             step: step.to_string(),
+            agent,
             mark,
             state: state.map(str::to_string),
             note: note.map(str::to_string),
@@ -936,12 +976,16 @@ impl<'p> Builder<'p> {
             }
         }
         // a loop back to the same step through the coordinator holds nothing open
-        let to_take =
-            (run.flow.steps.keys()).any(|t| run.linked_from(t).is_some_and(|(s, _)| &s != t));
+        // an optional step not started holds nothing open (what follows it does)
+        let to_take = (run.flow.steps.keys())
+            .any(|t| !run.skippable(t) && run.linked_from(t).is_some_and(|(s, _)| &s != t));
         // a `?` or `✗` step never ends a run
         let unknown =
             (run.run.steps.iter()).any(|v| matches!(v.mark, Mark::Unsure | Mark::Unexpected));
         run.run.finished = !run.running() && !to_take && !unknown;
+        if run.run.finished {
+            run.skip(None);
+        }
         // the run a command opened ends the attribution; later sub-agents are inferred
         if self.attributed == Some(i) && self.open[i].run.finished {
             self.attributed = None;
@@ -1112,11 +1156,22 @@ mod tests {
     fn view(step: &str, mark: Mark, state: Option<&str>, note: Option<&str>) -> StepView {
         StepView {
             step: step.into(),
+            agent: String::new(),
             mark,
             state: state.map(str::to_string),
             note: note.map(str::to_string),
             reference: None,
         }
+    }
+
+    /// `runs`, the agent of each step blanked: the helpers below build views
+    /// without one, and `steps_say_their_agent` reads it.
+    fn runs(project: &Project, events: &[FlowEvent]) -> Vec<Run> {
+        let mut found = super::runs(project, events);
+        for v in found.iter_mut().flat_map(|r| r.steps.iter_mut()) {
+            v.agent.clear();
+        }
+        found
     }
 
     fn t(
@@ -3848,5 +3903,136 @@ mod tests {
         let mut out = vec![mark(ts - 1, agent, "deliver", step, Some("x"))];
         out.extend(self::step(ts, id, agent, state));
         out
+    }
+
+    // ---- optional steps (`skipped`) ----
+
+    /// `check` is optional: `release` can follow `guard` without it.
+    const OPTIONAL: &str = "steps:\n  design: { agent: architect }\n  build: { agent: dev }\n  guard: { agent: qa }\n  check: { agent: ops, optional: true }\n  release: { agent: lead }\nlinks:\n  - { from: design, to: build }\n  - { from: build, to: guard }\n  - { from: guard, to: check }\n  - { from: check, to: release }\n";
+    /// The optional step is the last one.
+    const OPTIONAL_LAST: &str = "steps:\n  design: { agent: architect }\n  build: { agent: dev }\n  check: { agent: ops, optional: true }\nlinks:\n  - { from: design, to: build }\n  - { from: build, to: check }\n";
+
+    fn marks(run: &Run) -> Vec<(&str, Mark)> {
+        run.steps
+            .iter()
+            .map(|v| (v.step.as_str(), v.mark.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn an_optional_step_is_skipped_once_a_step_it_reaches_starts() {
+        let p = project(&[("opt", OPTIONAL)]);
+        let events = seq(&[
+            &step(10, "a1", "architect", None),
+            &step(20, "a2", "dev", None),
+            &step(30, "a3", "qa", None),
+            &[start(40, "a4", "lead")],
+        ]);
+        let got = runs(&p, &events);
+        assert_eq!(got.len(), 1);
+        assert_eq!(
+            marks(&got[0]),
+            [
+                ("design", Mark::Done),
+                ("build", Mark::Done),
+                ("guard", Mark::Done),
+                ("check", Mark::Skipped),
+                ("release", Mark::Running),
+            ]
+        );
+        assert_eq!(
+            got[0].steps[3],
+            view("check", Mark::Skipped, None, Some("skipped"))
+        );
+        // the link taken goes from `guard` to `release`, not into the skipped step
+        assert_eq!(
+            got[0].transitions.last(),
+            Some(&t(40, "guard", "release", Some("done")))
+        );
+        assert!(got[0].transitions.iter().all(|x| x.2 != "check"));
+    }
+
+    #[test]
+    fn an_optional_step_stays_pending_while_nothing_started_after_it() {
+        let p = project(&[("opt", OPTIONAL)]);
+        let events = seq(&[
+            &step(10, "a1", "architect", None),
+            &step(20, "a2", "dev", None),
+            &step(30, "a3", "qa", None),
+        ]);
+        let got = runs(&p, &events);
+        assert_eq!(got[0].steps[3].mark, Mark::Pending);
+        // what follows it still has a link to take
+        assert!(!got[0].finished);
+    }
+
+    #[test]
+    fn an_optional_step_that_runs_is_not_skipped() {
+        let p = project(&[("opt", OPTIONAL)]);
+        let events = seq(&[
+            &step(10, "a1", "architect", None),
+            &step(20, "a2", "dev", None),
+            &step(30, "a3", "qa", None),
+            &step(40, "a4", "ops", None),
+            &step(50, "a5", "lead", None),
+        ]);
+        let got = runs(&p, &events);
+        assert_eq!(got.len(), 1);
+        assert!(
+            got[0].steps.iter().all(|v| v.mark == Mark::Done),
+            "{:?}",
+            marks(&got[0])
+        );
+        assert!(got[0].finished);
+    }
+
+    /// An optional step left pending holds nothing open: the run finishes and shows it skipped.
+    #[test]
+    fn a_run_finishes_over_a_last_optional_step_and_shows_it_skipped() {
+        let p = project(&[("opt", OPTIONAL_LAST)]);
+        let events = seq(&[
+            &step(10, "a1", "architect", None),
+            &step(20, "a2", "dev", None),
+        ]);
+        let got = runs(&p, &events);
+        assert_eq!(
+            marks(&got[0]),
+            [
+                ("design", Mark::Done),
+                ("build", Mark::Done),
+                ("check", Mark::Skipped)
+            ]
+        );
+        assert!(got[0].finished);
+        assert_eq!(
+            got[0].steps[2],
+            view("check", Mark::Skipped, None, Some("skipped"))
+        );
+    }
+
+    #[test]
+    fn steps_say_their_agent() {
+        let p = project(&[("opt", OPTIONAL)]);
+        let events = seq(&[
+            &step(10, "a1", "architect", None),
+            &step(20, "a2", "dev", None),
+        ]);
+        let got = super::runs(&p, &events);
+        let agents: Vec<(&str, &str)> = got[0]
+            .steps
+            .iter()
+            .map(|v| (v.step.as_str(), v.agent.as_str()))
+            .collect();
+        // as pending, running and finished views alike
+        assert_eq!(
+            agents,
+            [
+                ("design", "architect"),
+                ("build", "dev"),
+                ("guard", "qa"),
+                ("check", "ops"),
+                ("release", "lead")
+            ]
+        );
     }
 }
