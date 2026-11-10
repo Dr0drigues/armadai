@@ -563,6 +563,24 @@ fn check_grants(o: &mut Out, project: &Project) {
                 Some("a grant never lifts a `deny`: drop the rule from one of them".into()),
             );
         }
+        // only a `Bash` rule is answered by the hook: the request of a file tool carries
+        // a path that a rule must be anchored and resolved against, which a hook does not
+        for rule in g.allow.iter().filter(|r| {
+            !r.trim().is_empty() && r.split('(').next().is_none_or(|t| t.trim() != "Bash")
+        }) {
+            o.emit(
+                man,
+                Severity::Warning,
+                "grant-unsupported-rule",
+                Some((rule, false)),
+                format!("grant `{name}` lists `{rule}`, and a level answers `Bash` rules only"),
+                Some(
+                    "the rule is never granted: write a `Bash(...)` rule, or put it in \
+                     native.claude.permissions.allow"
+                        .into(),
+                ),
+            );
+        }
         let Some(until) = g.until.as_deref() else {
             continue;
         };

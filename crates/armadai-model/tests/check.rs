@@ -1489,6 +1489,43 @@ fn a_bare_until_held_by_two_flows_is_ambiguous() {
 }
 
 #[test]
+fn a_grant_rule_that_is_not_bash_is_a_warning() {
+    let ds = grants(
+        "policy:\n  grants:\n    g:\n      allow: [\"Bash(ls)\", \"Edit(/src/*)\", \"Read\", \"Bashful(x)\", \"mcp__s__t\"]\n",
+        &[],
+    );
+    let hits: Vec<_> = ds
+        .iter()
+        .filter(|d| d.code == "grant-unsupported-rule")
+        .collect();
+    assert_eq!(
+        hits.iter().map(|d| d.message.as_str()).collect::<Vec<_>>(),
+        [
+            "grant `g` lists `Edit(/src/*)`, and a level answers `Bash` rules only",
+            "grant `g` lists `Read`, and a level answers `Bash` rules only",
+            "grant `g` lists `Bashful(x)`, and a level answers `Bash` rules only",
+            "grant `g` lists `mcp__s__t`, and a level answers `Bash` rules only",
+        ]
+    );
+    assert!(hits.iter().all(|d| d.severity == Severity::Warning));
+    assert_eq!(
+        hits[0].hint.as_deref(),
+        Some(
+            "the rule is never granted: write a `Bash(...)` rule, or put it in native.claude.permissions.allow"
+        )
+    );
+    // a Bash-only level says nothing
+    let ds = grants(
+        "policy:\n  grants:\n    g:\n      allow: [\"Bash(ls)\", \"Bash(git *)\"]\n",
+        &[],
+    );
+    assert!(
+        ds.iter().all(|d| d.code != "grant-unsupported-rule"),
+        "{ds:?}"
+    );
+}
+
+#[test]
 fn a_grant_rule_equal_to_a_native_deny_is_an_error() {
     let ds = grants(
         "policy:\n  grants:\n    g:\n      allow: [\"Bash(rm *)\", \"Bash(rm *) -f\", \"Bash(git push *)\"]\nnative:\n  claude:\n    permissions:\n      deny: [\"Bash(rm *)\", \"Bash(git push *) --force\"]\n",

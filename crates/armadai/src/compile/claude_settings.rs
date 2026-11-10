@@ -152,13 +152,18 @@ pub fn hook_entries(project: &Project) -> anyhow::Result<Vec<HookEntry>> {
 pub const GRANT_GUARD_RULES: [&str; 2] =
     ["Bash(armadai grant *)", "Edit(/.armadai/state/grants.yaml)"];
 
-/// One `PermissionRequest` entry per (level, rule), levels and rules in order: the
+/// One `PermissionRequest` entry per (level, `Bash` rule), levels and rules in order: the
 /// matcher is the rule's tool name, `if` the rule itself (best effort, hooks doc D2-D4),
 /// the command `armadai __claude-grant <level>`. None without `policy.grants`.
 pub fn grant_entries(project: &Project) -> Vec<HookEntry> {
     let mut out = Vec::new();
     for (level, grant) in &project.manifest.policy.grants {
-        for rule in &grant.allow {
+        // a rule that is not a `Bash` rule is never answered (`grant-unsupported-rule`)
+        for rule in grant
+            .allow
+            .iter()
+            .filter(|r| crate::claude_adapter::grant_hook::rule_tool(r) == "Bash")
+        {
             out.push(HookEntry {
                 event: "PermissionRequest".into(),
                 matcher: Some(crate::claude_adapter::grant_hook::rule_tool(rule).to_string()),
@@ -1075,11 +1080,16 @@ mod tests {
             vec![
                 grant("Bash", "auto-until-mr", "Bash(git push origin feature/*)"),
                 grant("Bash", "auto-until-mr", "Bash(git push:*)"),
-                grant("Read", "zeta", "Read(/logs/*)"),
             ]
         );
+        // `zeta` lists a `Read` rule only: no hook, a level answers `Bash` rules alone
+        assert!(
+            grant_entries(&p)
+                .iter()
+                .all(|e| e.command != "armadai __claude-grant zeta")
+        );
         let hooks = hook_entries(&p).unwrap();
-        assert_eq!(&hooks[hooks.len() - 3..], grant_entries(&p).as_slice());
+        assert_eq!(&hooks[hooks.len() - 2..], grant_entries(&p).as_slice());
     }
 
     #[test]
@@ -1138,9 +1148,6 @@ mod tests {
             json!([
                 {"matcher": "Bash", "hooks": [{"type": "command", "command": "armadai __claude-grant auto-until-mr", "if": "Bash(git push origin feature/*)"}]},
                 {"matcher": "Bash", "hooks": [{"type": "command", "command": "armadai __claude-grant auto-until-mr", "if": "Bash(git push:*)"}]},
-                {"matcher": "Read", "hooks": [
-                    {"type": "command", "command": "armadai __claude-grant zeta", "if": "Read(/logs/*)"}
-                ]}
             ])
         );
         assert_eq!(

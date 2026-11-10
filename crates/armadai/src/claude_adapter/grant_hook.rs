@@ -11,7 +11,12 @@
 //!
 //! The rule: **`allow` only when everything is established**; any error, doubt or
 //! missing piece is "no opinion". The `if` filter is best effort, so this hook checks the
-//! call against the rules of its level itself, and answers only for a simple command.
+//! call against the rules of its level itself, and answers only for a simple `Bash`
+//! command. It never answers for another tool: the permissions page (2026-11-10) says an
+//! allow rule on a file applies only when both the requested path and the file it resolves
+//! to match, which a hook does not redo (measured: an `Edit` through a symlink under
+//! `src/` wrote outside it under an `Edit(/src/**)` level). A rule that is not a `Bash`
+//! rule is reported by the validator (`grant-unsupported-rule`) and gets no hook.
 
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -66,6 +71,14 @@ fn is_simple(command: &str) -> bool {
         && !command
             .chars()
             .any(|c| "&|;<>()`$\\\"'{}*?[]~!#\n\r\0".contains(c))
+}
+
+/// A command that mentions the state file or `armadai` itself: a level never answers for
+/// it, whatever its rules say, so an agent cannot switch a level on (or rewrite the state)
+/// by a form the `deny` rules do not cover.
+fn names_grant_machinery(command: &str) -> bool {
+    let c = command.to_ascii_lowercase();
+    c.contains("grants.yaml") || c.contains("armadai")
 }
 
 /// Whether `text` matches `pattern`, where `*` is any run of characters.
@@ -135,14 +148,14 @@ pub fn decide(
     {
         return None;
     }
-    let covered = if tool == "Bash" {
-        let command = v.pointer("/tool_input/command").and_then(Value::as_str)?;
-        is_simple(command) && rules.iter().any(|r| bash_rule_covers(r, command))
-    } else {
-        // `if` on the hook entry filters the arguments of other tools
-        rules.iter().any(|r| rule_tool(r) == tool)
-    };
-    covered.then(allow)
+    if tool != "Bash" {
+        return None;
+    }
+    let command = v.pointer("/tool_input/command").and_then(Value::as_str)?;
+    (is_simple(command)
+        && !names_grant_machinery(command)
+        && rules.iter().any(|r| bash_rule_covers(r, command)))
+    .then(allow)
 }
 
 /// Whether a `mark` line for `step` (`<flow>/<step>`, or a bare step id) was logged at or
@@ -156,6 +169,8 @@ pub fn marked_since_in_logs(root: &Path, step: &str, since: DateTime<Utc>) -> bo
         Err(_) => return true,
     };
     let since_secs = since.timestamp().max(0) as u64;
+    // marks are logged to the second: compare a file's time at that precision too
+    let since_floor = DateTime::<Utc>::from_timestamp(since.timestamp(), 0).unwrap_or(since);
     for entry in entries {
         let Ok(entry) = entry else { return true };
         let path = entry.path();
@@ -167,15 +182,20 @@ pub fn marked_since_in_logs(root: &Path, step: &str, since: DateTime<Utc>) -> bo
             .and_then(|m| m.modified())
             .ok()
             .map(DateTime::<Utc>::from);
-        if touched.is_some_and(|t| t < since) {
+        if touched.is_some_and(|t| t < since_floor) {
             continue;
         }
         let Ok(text) = std::fs::read_to_string(&path) else {
             return true;
         };
         for line in text.lines() {
+            // a line torn by a concurrent write, in a log touched since `since`, may have
+            // been the mark: the level is over
             let Ok(ev) = serde_json::from_str::<crate::flow_status::record::FlowEvent>(line) else {
-                continue;
+                if line.trim().is_empty() {
+                    continue;
+                }
+                return true;
             };
             if ev.event != crate::flow_status::record::EventKind::Mark || ev.ts < since_secs {
                 continue;
@@ -426,15 +446,68 @@ mod tests {
         );
     }
 
+    /// A file tool is never answered: its rule is anchored and its path resolved by Claude
+    /// Code (symlinks included), which a hook does not redo. Measured on 2026-11-10: an
+    /// `Edit` through a link under `src/` wrote outside it under an `Edit(/src/**)` level.
     #[test]
-    fn other_tools_are_judged_by_the_tool_of_the_rule() {
+    fn a_tool_other_than_bash_gets_no_opinion() {
         let st = state(Some(END), None);
+        let edit = |path: &str| {
+            serde_json::json!({
+                "session_id": "s", "cwd": "/p", "hook_event_name": "PermissionRequest",
+                "tool_name": "Edit", "tool_input": { "file_path": path },
+            })
+            .to_string()
+        };
+        for path in ["/etc/passwd", "/src/a.rs", "/src/lnk/t.txt"] {
+            assert_eq!(
+                run(&edit(path), Some(&st), &["Edit(/src/*)"]),
+                None,
+                "{path}"
+            );
+        }
+        for name in [
+            "Edit",
+            "Write",
+            "NotebookEdit",
+            "Read",
+            "WebFetch",
+            "mcp__s__t",
+        ] {
+            assert_eq!(
+                run(&tool(name), Some(&st), &[&format!("{name}(*)"), name]),
+                None,
+                "{name}"
+            );
+        }
+        // control: the same state answers a Bash rule
         assert_eq!(
-            run(&tool("Edit"), Some(&st), &["Edit(/src/*)"]).as_deref(),
+            run(&bash("echo hi"), Some(&st), &["Bash(echo *)"]).as_deref(),
             Some(ALLOW)
         );
-        assert_eq!(run(&tool("Read"), Some(&st), &["Edit(/src/*)"]), None);
-        assert_eq!(run(&tool("Edit"), Some(&st), &["Bash(echo *)"]), None);
+    }
+
+    /// A level, however broad, never answers for a command that names the state file or
+    /// `armadai`: those forms are not all covered by the `deny` rules link writes.
+    #[test]
+    fn a_command_naming_the_grant_machinery_gets_no_opinion() {
+        let st = state(Some(END), None);
+        for (command, rule) in [
+            ("cp x .armadai/state/grants.yaml", "Bash(cp *)"),
+            ("cat .armadai/state/grants.yaml", "Bash(cat *)"),
+            ("tee grants.yaml", "Bash(tee *)"),
+            ("armadai grant lvl", "Bash(armadai *)"),
+            ("./target/debug/armadai grant lvl", "Bash(./target/debug/*)"),
+            ("env ARMADAI_CONFIG_DIR=x ls", "Bash(env *)"),
+            ("sh -c ls", "Bash(sh *)"),
+        ] {
+            let want_none = command != "sh -c ls";
+            assert_eq!(
+                run(&bash(command), Some(&st), &[rule]).is_none(),
+                want_none,
+                "{command}"
+            );
+        }
     }
 
     #[test]
@@ -491,7 +564,7 @@ mod tests {
                 &mark(before, "evolution", "publish"),
                 &mark(after, "evolution", "review"),
                 &mark(after, "other", "publish"),
-                "not json",
+                "",
                 r#"{"ts":1,"event":"start","agent_id":"x","agent_type":"a","state":null}"#,
             ],
         );
@@ -523,6 +596,54 @@ mod tests {
         )
         .unwrap();
         assert!(!marked_since_in_logs(root, "evolution/publish", since));
+    }
+
+    #[test]
+    fn a_torn_line_in_a_log_touched_since_the_start_counts_as_marked() {
+        let dir = tempfile::tempdir().unwrap();
+        let since = at("2026-01-01T00:00:00Z");
+        let torn = r#"{"ts":1794400000,"event":"mark","agent_type":"a","flow":"evolution","ste"#;
+        log(dir.path(), "a.jsonl", &[torn]);
+        assert!(marked_since_in_logs(dir.path(), "evolution/publish", since));
+        // a log not touched since is not read, torn or not
+        let path = dir
+            .path()
+            .join(crate::flow_status::record::LOGS_DIR)
+            .join("a.jsonl");
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH)
+            .unwrap();
+        assert!(!marked_since_in_logs(
+            dir.path(),
+            "evolution/publish",
+            since
+        ));
+    }
+
+    #[test]
+    fn a_log_touched_in_the_second_of_the_start_is_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let t0 = 1_700_000_000_i64;
+        let mark =
+            format!(r#"{{"ts":{t0},"event":"mark","agent_type":"a","flow":"f","step":"s"}}"#);
+        log(dir.path(), "a.jsonl", &[&mark]);
+        let path = dir
+            .path()
+            .join(crate::flow_status::record::LOGS_DIR)
+            .join("a.jsonl");
+        // written 0.3 s into the second, the level started 0.6 s into it
+        let mtime = std::time::UNIX_EPOCH + std::time::Duration::new(t0 as u64, 300_000_000);
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        let since = DateTime::<Utc>::from_timestamp(t0, 600_000_000).unwrap();
+        assert!(marked_since_in_logs(dir.path(), "f/s", since));
     }
 
     #[test]
