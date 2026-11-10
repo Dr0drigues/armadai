@@ -3,10 +3,11 @@
 //! ArmadAI ships with default skill sources baked into
 //! `skills_registry::sync` (`default_sources`). This module lets users and
 //! projects declare *additional* registry sources: top-level `skills:`,
-//! `starters:`… lists in `~/.config/armadai/registries.yaml` (user; that file
-//! has no `registries:` wrapper) and/or a `registries:` section of a legacy
-//! project config (`armadai.yaml`, `.armadai/config.yaml`; the new
-//! `.armadai/project.yaml` has none, see #479). Consumed by
+//! `starters:` lists in `~/.config/armadai/registries.yaml` (user; that file has no
+//! `registries:` wrapper, and no `agents:` or `models:` list: nothing reads them) and/or a
+//! `registries:` section of a legacy project config (`armadai.yaml`,
+//! `.armadai/config.yaml`; the new `.armadai/project.yaml` has none, see #479; its
+//! type is `project::LegacyRegistries`). Consumed by
 //! `skills_registry::cache` (skills) and `starters_registry` (starter packs).
 
 use std::collections::HashSet;
@@ -51,17 +52,13 @@ impl RegistrySource {
     }
 }
 
-/// Custom registry sources declared by the user or a project, grouped by
-/// registry kind. Absent keys deserialize to empty vecs.
+/// Custom registry sources declared by the user, grouped by registry kind. Absent keys
+/// deserialize to empty vecs; a key nothing reads (`agents:`, `models:`) is ignored.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct RegistriesConfig {
     #[serde(default)]
-    pub agents: Vec<RegistrySource>,
-    #[serde(default)]
     pub skills: Vec<RegistrySource>,
-    #[serde(default)]
-    pub models: Vec<RegistrySource>,
     #[serde(default)]
     pub starters: Vec<RegistrySource>,
 }
@@ -258,68 +255,54 @@ fn is_plain_url(url: &str) -> bool {
 mod tests {
     use super::*;
 
-    #[derive(Deserialize)]
-    struct Wrapper {
-        registries: RegistriesConfig,
+    fn src(url: &str) -> RegistrySource {
+        RegistrySource {
+            url: url.to_string(),
+            kind: None,
+        }
     }
+
+    const FOUR_KEYS: &str = r#"
+agents:
+  - url: https://example.com/agents.git
+skills:
+  - url: https://example.com/skills.git
+models:
+  - url: https://example.com/models.json
+starters:
+  - url: https://example.com/starters.git
+"#;
 
     #[test]
     fn deserializes_full_registries_yaml() {
-        let yaml = r#"
-registries:
-  agents:
-    - url: https://example.com/agents.git
-  skills:
-    - url: https://example.com/skills.git
-  models:
-    - url: https://example.com/models.json
-"#;
-        let wrapper: Wrapper = armadai_model::yaml::from_str(yaml).unwrap();
-        assert_eq!(
-            wrapper.registries.agents,
-            vec![RegistrySource {
-                url: "https://example.com/agents.git".to_string(),
-                kind: None
-            }]
-        );
-        assert_eq!(
-            wrapper.registries.skills,
-            vec![RegistrySource {
-                url: "https://example.com/skills.git".to_string(),
-                kind: None
-            }]
-        );
-        assert_eq!(
-            wrapper.registries.models,
-            vec![RegistrySource {
-                url: "https://example.com/models.json".to_string(),
-                kind: None
-            }]
-        );
-        assert!(wrapper.registries.starters.is_empty());
+        // The real shape of the user file: top-level keys, no `registries:` wrapper.
+        let cfg: RegistriesConfig = armadai_model::yaml::from_str(FOUR_KEYS).unwrap();
+        assert_eq!(cfg.skills, vec![src("https://example.com/skills.git")]);
+        assert_eq!(cfg.starters, vec![src("https://example.com/starters.git")]);
     }
 
     #[test]
     fn missing_keys_default_to_empty_vecs() {
-        let yaml = r#"
-registries:
-  agents:
-    - url: https://example.com/agents.git
-"#;
-        let wrapper: Wrapper = armadai_model::yaml::from_str(yaml).unwrap();
-        assert_eq!(wrapper.registries.agents.len(), 1);
-        assert!(wrapper.registries.skills.is_empty());
-        assert!(wrapper.registries.models.is_empty());
-        assert!(wrapper.registries.starters.is_empty());
+        let yaml = "skills:\n  - url: https://example.com/skills.git\n";
+        let cfg: RegistriesConfig = armadai_model::yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.skills.len(), 1);
+        assert!(cfg.starters.is_empty());
     }
 
     #[test]
     fn default_is_all_empty() {
         let cfg = RegistriesConfig::default();
-        assert!(cfg.agents.is_empty());
         assert!(cfg.skills.is_empty());
-        assert!(cfg.models.is_empty());
         assert!(cfg.starters.is_empty());
+    }
+
+    #[test]
+    fn load_user_registries_ignores_agents_and_models() {
+        let iso = crate::test_support::IsolatedConfigDir::enter();
+        std::fs::write(iso.config_dir().join("registries.yaml"), FOUR_KEYS).unwrap();
+        let cfg = load_user_registries();
+        assert_eq!(cfg.skills, vec![src("https://example.com/skills.git")]);
+        assert_eq!(cfg.starters, vec![src("https://example.com/starters.git")]);
     }
 
     #[test]
@@ -575,9 +558,7 @@ registries:
         }
 
         let cfg = load_user_registries();
-        assert!(cfg.agents.is_empty());
         assert!(cfg.skills.is_empty());
-        assert!(cfg.models.is_empty());
 
         match orig {
             Some(v) => unsafe { std::env::set_var("ARMADAI_CONFIG_DIR", v) },

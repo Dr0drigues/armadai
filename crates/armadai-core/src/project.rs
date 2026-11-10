@@ -68,9 +68,21 @@ pub struct ProjectConfig {
     /// Project-level custom registry sources, merged with the user-level
     /// `~/.config/armadai/registries.yaml` and built-in defaults. See
     /// `crate::registries`. Consumed by `skills_registry::cache::effective_sources`
-    /// and `starters_registry::effective_starter_sources`.
+    /// and `starters_registry::effective_starter_sources`; `migrate` also reads the
+    /// `agents` and `models` lists, to report them as dropped.
     #[serde(default)]
-    pub registries: Option<crate::registries::RegistriesConfig>,
+    pub registries: Option<LegacyRegistries>,
+}
+
+/// What a legacy project config declared under `registries:`, read only by `migrate`
+/// (the user's `registries.yaml` has no `agents:` or `models:` any more).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct LegacyRegistries {
+    pub agents: Vec<crate::registries::RegistrySource>,
+    pub skills: Vec<crate::registries::RegistrySource>,
+    pub models: Vec<crate::registries::RegistrySource>,
+    pub starters: Vec<crate::registries::RegistrySource>,
 }
 
 /// Reference to an agent — resolved at runtime.

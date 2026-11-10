@@ -176,13 +176,19 @@ pub fn effective_sources() -> Vec<String> {
 
     let user = armadai_core::registries::load_user_registries();
     let project = armadai_core::project::find_project_config().map(|(_, cfg)| cfg);
-    let project_registries = project.as_ref().and_then(|cfg| cfg.registries.as_ref());
+    // skills only: the legacy `agents`/`models`/`starters` lists are not skill sources
+    let project_registries = project.and_then(|cfg| cfg.registries).map(|r| {
+        armadai_core::registries::RegistriesConfig {
+            skills: r.skills,
+            ..Default::default()
+        }
+    });
 
     armadai_core::registries::resolved_sources(
         armadai_core::registries::RegistryKind::Skills,
         &default_refs,
         &user,
-        project_registries,
+        project_registries.as_ref(),
     )
 }
 

@@ -604,7 +604,8 @@ starters:
     kind: archive
 ```
 
-`agents` and `models` registry sources are read by no command; they are dropped with that reason.
+`agents` and `models` registry sources are read by no command; they are dropped with that reason. `registries.yaml` itself has only the `skills:` and
+`starters:` lists; an `agents:` or `models:` key left in it is ignored, without error.
 
 Known limits, also stated in every report:
 
