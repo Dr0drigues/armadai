@@ -3,11 +3,11 @@
 /// Performance tier for model selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ModelTier {
-    /// Cheap and fast (haiku, flash, gpt-4o-mini).
+    /// Cheap and fast (haiku, flash, luna).
     Fast,
-    /// Balanced performance (sonnet, pro, gpt-4o).
+    /// Balanced performance (sonnet, pro, sol).
     Pro,
-    /// Maximum capability (opus, ultra, o3-pro).
+    /// Maximum capability (opus, ultra, astra).
     Max,
 }
 
@@ -228,7 +228,8 @@ pub fn resolve_tier_placeholder(model: &str, provider: &str) -> Option<String> {
     parse_latest_placeholder(model).map(|tier| resolve_model_for_tier(catalog, tier))
 }
 
-/// Hardcoded fallback model for a given provider and tier.
+/// Fallback model for a given provider and tier, read from the table built
+/// into the binary (`data/models.json`).
 ///
 /// Used when the model registry cache is unavailable.
 ///
@@ -474,31 +475,41 @@ mod tests {
 
     #[test]
     fn test_fallback_models_per_tier() {
+        use ModelTier::*;
+        let rows = [
+            ("anthropic", Fast, "claude-haiku-5-5"),
+            ("anthropic", Pro, "claude-sonnet-5-5"),
+            ("anthropic", Max, "claude-opus-5-5"),
+            ("google", Fast, "gemini-3.6-flash"),
+            ("google", Pro, "gemini-3.1-pro-preview"),
+            // Google has no Max row: its Max is its Pro.
+            ("google", Max, "gemini-3.1-pro-preview"),
+            ("openai", Fast, "gpt-6-luna"),
+            ("openai", Pro, "gpt-6.1-sol"),
+            ("openai", Max, "gpt-6-astra"),
+        ];
+        for (vendor, tier, want) in rows {
+            assert_eq!(
+                fallback_model_for_tier(vendor, tier),
+                want,
+                "{vendor} {tier:?}"
+            );
+        }
+    }
+
+    /// A vendor the table does not know gets the `anthropic` row.
+    #[test]
+    fn an_unknown_vendor_falls_back_to_the_anthropic_row() {
+        use ModelTier::*;
         assert_eq!(
-            fallback_model_for_tier("anthropic", ModelTier::Fast),
-            "claude-haiku-4-5-20251001"
+            fallback_model_for_tier("nonesuch", Fast),
+            "claude-haiku-5-5"
         );
         assert_eq!(
-            fallback_model_for_tier("anthropic", ModelTier::Pro),
-            "claude-sonnet-4-5-20250929"
+            fallback_model_for_tier("nonesuch", Pro),
+            "claude-sonnet-5-5"
         );
-        assert_eq!(
-            fallback_model_for_tier("anthropic", ModelTier::Max),
-            "claude-opus-4-6"
-        );
-        assert_eq!(
-            fallback_model_for_tier("google", ModelTier::Fast),
-            "gemini-2.5-flash"
-        );
-        assert_eq!(
-            fallback_model_for_tier("google", ModelTier::Pro),
-            "gemini-2.5-pro"
-        );
-        assert_eq!(
-            fallback_model_for_tier("openai", ModelTier::Fast),
-            "gpt-4o-mini"
-        );
-        assert_eq!(fallback_model_for_tier("openai", ModelTier::Max), "o3-pro");
+        assert_eq!(fallback_model_for_tier("nonesuch", Max), "claude-opus-5-5");
     }
 
     // ── `latest:*` placeholders ──────────────────────────────────
@@ -665,15 +676,20 @@ mod tests {
 
     #[test]
     fn test_resolve_model_for_tier_fallback() {
-        // Without cache, falls back to hardcoded values
-        let fast = resolve_model_for_tier("anthropic", ModelTier::Fast);
-        let pro = resolve_model_for_tier("anthropic", ModelTier::Pro);
-        let max = resolve_model_for_tier("anthropic", ModelTier::Max);
-
-        // Should be one of: cached model or fallback
-        assert!(fast.contains("haiku") || fast == "claude-haiku-4-5-20251001");
-        assert!(pro.contains("sonnet") || pro == "claude-sonnet-4-5-20250929");
-        assert!(max.contains("opus") || max == "claude-opus-4-6");
+        // An empty config dir holds no catalog: the embedded table answers.
+        let _iso = crate::test_support::IsolatedConfigDir::enter();
+        assert_eq!(
+            resolve_model_for_tier("anthropic", ModelTier::Fast),
+            "claude-haiku-5-5"
+        );
+        assert_eq!(
+            resolve_model_for_tier("anthropic", ModelTier::Pro),
+            "claude-sonnet-5-5"
+        );
+        assert_eq!(
+            resolve_model_for_tier("anthropic", ModelTier::Max),
+            "claude-opus-5-5"
+        );
     }
 
     #[test]

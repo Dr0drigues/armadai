@@ -52,31 +52,66 @@ mod tests {
 
     #[test]
     fn test_embedded_alias_known() {
-        let result = resolve_alias("gemini-3.0-pro");
-        assert_eq!(result, Some("latest:pro".to_string()));
+        let _iso = crate::test_support::IsolatedConfigDir::enter();
+        assert_eq!(resolve_alias("gpt-4o"), Some("gpt-6-luna".to_string()));
+        assert_eq!(
+            resolve_alias("gemini-2.5-pro"),
+            Some("gemini-3.8-flash".to_string())
+        );
     }
 
     #[test]
     fn test_alias_unknown_returns_none() {
-        let result = resolve_alias("claude-sonnet-4-5");
-        assert_eq!(result, None);
+        let _iso = crate::test_support::IsolatedConfigDir::enter();
+        assert_eq!(resolve_alias("claude-sonnet-5-5"), None);
     }
 
+    /// The embedded table has no chain, so a local file supplies one:
+    /// `a -> b -> c` resolves to `c`.
     #[test]
     fn test_transitive_resolution() {
-        // gemini-1.0-pro → gemini-2.0-pro (direct embedded)
-        // If we had a chain, it would resolve transitively.
-        // Test with embedded: gemini-1.0-pro → gemini-2.0-pro
-        let result = resolve_alias("gemini-1.0-pro");
-        assert_eq!(result, Some("gemini-2.0-pro".to_string()));
+        let iso = crate::test_support::IsolatedConfigDir::enter();
+        std::fs::write(
+            iso.config_dir().join("model-aliases.json"),
+            r#"{"gpt-6-luna": "luna-x", "luna-x": "luna-y"}"#,
+        )
+        .unwrap();
+        // gpt-4o -> gpt-6-luna (embedded) -> luna-x -> luna-y (local)
+        assert_eq!(resolve_alias("gpt-4o"), Some("luna-y".to_string()));
     }
 
     #[test]
     fn test_circular_alias_safe() {
-        // With only embedded aliases, no circularity exists.
-        // But the algorithm protects against it via the `seen` set.
-        // We verify the function terminates and returns a valid result.
-        let result = resolve_alias("gpt-3.5-turbo");
-        assert_eq!(result, Some("gpt-4o-mini".to_string()));
+        let iso = crate::test_support::IsolatedConfigDir::enter();
+        std::fs::write(
+            iso.config_dir().join("model-aliases.json"),
+            r#"{"cyc-a": "cyc-b", "cyc-b": "cyc-a"}"#,
+        )
+        .unwrap();
+        // Terminates on the `seen` set; the walk stops before looping back.
+        assert_eq!(resolve_alias("cyc-a"), Some("cyc-b".to_string()));
+    }
+
+    #[test]
+    fn every_alias_points_somewhere_else() {
+        let _iso = crate::test_support::IsolatedConfigDir::enter();
+        let table = &crate::model_table::model_table().aliases;
+        assert!(!table.is_empty());
+        for (from, to) in table {
+            assert_ne!(from, to, "{from} aliases itself");
+            assert!(!to.contains("latest"), "{from} -> {to} is a placeholder");
+            let end = resolve_alias(from).unwrap_or_else(|| panic!("{from} resolves to nothing"));
+            assert_ne!(&end, from, "{from} loops back to itself");
+            assert!(!end.contains("latest"), "{from} ends at {end}");
+            // `resolve_alias` stops quietly on a cycle: walk the table itself.
+            let mut at = to;
+            for _ in 0..table.len() {
+                match table.get(at) {
+                    Some(next) => at = next,
+                    None => break,
+                }
+                assert_ne!(at, from, "{from} is on an alias cycle");
+            }
+        }
     }
 }

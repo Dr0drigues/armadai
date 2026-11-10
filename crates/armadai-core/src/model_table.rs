@@ -54,4 +54,28 @@ mod tests {
             assert!(t.tiers.contains_key(vendor), "missing vendor {vendor}");
         }
     }
+
+    #[test]
+    fn every_table_entry_classifies_to_its_tier() {
+        use crate::model_resolution::{ModelTier, classify_model_tier, effective_tier};
+        let mut seen = 0;
+        for (vendor, row) in &model_table().tiers {
+            let entries = [
+                (ModelTier::Fast, Some(&row.fast)),
+                (ModelTier::Pro, Some(&row.pro)),
+                (ModelTier::Max, row.max.as_ref()),
+            ];
+            for (tier, id) in entries {
+                let Some(id) = id else { continue };
+                assert!(!id.contains("latest"), "{vendor} {tier:?}: {id}");
+                assert_eq!(
+                    classify_model_tier(id, vendor),
+                    Some(effective_tier(vendor, tier)),
+                    "{vendor} {tier:?}: {id}"
+                );
+                seen += 1;
+            }
+        }
+        assert_eq!(seen, 8, "the table has eight entries");
+    }
 }
