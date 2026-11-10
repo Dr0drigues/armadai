@@ -252,9 +252,7 @@ const BROAD_WHEN_GLOB: &[&str] = &["cp", "mv", "rsync", "ln", "tar"];
 
 /// A `Bash` rule that lets through far more than one command, judged on its text alone.
 fn is_broad_bash_rule(rule: &str) -> bool {
-    if rule == "Bash" {
-        return true;
-    }
+    // a bare `Bash` is never granted at all (`grant-unsupported-rule`), so it lets nothing through
     let Some(spec) = rule.strip_prefix("Bash(").and_then(|r| r.strip_suffix(')')) else {
         return false;
     };

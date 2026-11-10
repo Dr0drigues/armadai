@@ -1586,7 +1586,6 @@ fn optional_start_step_declared_and_guessed() {
 fn a_broad_grant_rule_is_a_warning() {
     let hint = "a grant is a convenience, not a boundary; name the exact command, such as `Bash(python3 scripts/release.py)`";
     for rule in [
-        "Bash",
         "Bash(*)",
         "Bash(* --x)",
         "Bash(python3 x.py)",
@@ -1632,8 +1631,16 @@ fn a_broad_grant_rule_is_a_warning() {
         assert!(!broad(&format!("{word} a b")), "{word} without a glob");
     }
     let ds = grants(
-        "policy:\n  grants:\n    g:\n      allow: [\"Bash(git push origin feature/*)\", \"Bash(cp a b)\", \"Bash(git:status)\"]\n",
+        "policy:\n  grants:\n    g:\n      allow: [\"Bash(git push origin feature/*)\", \"Bash(cp a b)\", \"Bash(glab mr create *)\"]\n",
         &[],
     );
     assert!(ds.iter().all(|d| d.code != "grant-broad-rule"), "{ds:?}");
+    // a bare `Bash` is never granted: unsupported, not broad
+    let ds = grants("policy:\n  grants:\n    g:\n      allow: [\"Bash\"]\n", &[]);
+    let codes: Vec<_> = ds
+        .iter()
+        .map(|d| d.code)
+        .filter(|c| c.starts_with("grant-"))
+        .collect();
+    assert_eq!(codes, ["grant-unsupported-rule"], "{ds:?}");
 }

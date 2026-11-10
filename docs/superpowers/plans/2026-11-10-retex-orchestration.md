@@ -494,7 +494,7 @@ Chaque tâche finit barrière verte. Les mutations citées sont le minimum ; le 
 - Commit : `feat(flow-status): skipped optional steps and the step agent in --line`
 
 **P4.3 Barre enchaînée** (`adapter-specialist`)
-- Fichiers : `claude_adapter/statusline_chain.rs` (nouveau), `cli/flow.rs` (`statusline_main`), `compile/claude.rs` (ligne de rapport).
+- Fichiers : `claude_adapter/statusline_chain.rs` (nouveau), `cli/flow.rs` (`statusline_main`), `cli/link.rs` (ligne de rapport T16).
 - Interface :
   ```rust
   /// The user's statusLine command from `$CLAUDE_CONFIG_DIR/settings.json`, else
@@ -505,10 +505,13 @@ Chaque tâche finit barrière verte. Les mutations citées sont le minimum ; le 
   pub fn run_user(command: &str, stdin: &[u8], limit: Duration) -> Option<String>;
   ```
 - [ ] `statusline_main` lit le JSON brut une fois, imprime la sortie de l'utilisateur telle quelle (fin de ligne retirée), puis la ligne du flow sur la ligne suivante (D22). Échec, délai d'1 s ou barre absente : la ligne du flow seule, code 0. Une commande égale à la nôtre est ignorée, pour éviter une récursion.
+- [ ] Garde de récursion : la commande enfant reçoit `ARMADAI_STATUSLINE_CHAINED` ; un `__claude-statusline` qui la trouve posée n'enchaîne pas (§6).
+- [ ] Délai dépassé : la commande enfant est lancée dans son propre groupe de processus, et c'est tout le groupe qui est tué, pas seulement `sh`.
+- [ ] La sortie lue de l'enfant est bornée à 64 Kio.
 - [ ] Windows : pas d'enchaînement (`shortcut:` commenté dans le code), ligne du flow seule.
 - [ ] Rapport : T16 ; une `statusLine` du projet qui n'est pas la nôtre reste `not-compiled`, comme aujourd'hui.
 - Tests :
-  - Avec un faux `HOME` (sous `env_lock`, valeurs lues sous le verrou) et des commandes jetables `printf user-bar`, `exit 3`, `sleep 5` :
+  - Tests unitaires avec l'environnement injecté (une fermeture `env`, pas d'`env_lock`) ; les tests du binaire retirent `CLAUDE_CONFIG_DIR` et `ARMADAI_STATUSLINE_CHAINED` de leur environnement. Un faux `HOME` et des commandes jetables `printf user-bar`, `exit 3`, `sleep 5` :
     - sortie à deux lignes, à égalité ;
     - échec : ligne du flow seule ;
     - délai : ligne du flow seule ;
@@ -599,7 +602,7 @@ Sources, mot pour mot :
 - Commit : `feat(link): show the warnings of grant levels`
 
 **D2 Documentation de la PR 2** (`cli-specialist`)
-- Fichiers : `docs/wiki/flow-status.md` (`skipped`, `--line`, `steps[].agent`, la bande, le mod du panneau mis à jour, risque 5), `docs/wiki/link.md` (barre enchaînée, `ui.flow_band`), `docs/wiki/project-format.md` (`optional`, `ui.flow_band`, `optional-start-step`, `pack-test-path-escapes`), `docs/wiki/starter-packs.md` (`tests:` et `pack test`, avec la phrase : « `pack test` exécute les scripts du pack avec vos droits, dans une copie isolée et avec un `HOME` temporaire ; il n'isole pas le réseau »), `CLAUDE.md` (liste : `pack` … `test`).
+- Fichiers : `docs/wiki/flow-status.md` (`skipped`, `--line`, `steps[].agent`, la bande, le mod du panneau mis à jour, risque 5), `docs/wiki/link.md` (barre enchaînée, avec la phrase : le `refreshInterval` de l'utilisateur est remplacé par celui de notre barre, soit 5 s ; `ui.flow_band`), `docs/wiki/project-format.md` (`optional`, `ui.flow_band`, `optional-start-step`, `pack-test-path-escapes`), `docs/wiki/starter-packs.md` (`tests:` et `pack test`, avec la phrase : « `pack test` exécute les scripts du pack avec vos droits, dans une copie isolée et avec un `HOME` temporaire ; il n'isole pas le réseau »), `CLAUDE.md` (liste : `pack` … `test`).
 - Commit : `docs: document optional steps, the chained status line and pack test`
 
 ### Ordre et dépendances
@@ -739,6 +742,9 @@ Dimitri est absent ; son mandat : « continue en autonomie » et « Prends les r
 **P2.3**
 - Heure en double : la première occurrence.
 
+**P4.3**
+- Garde de récursion par la variable `ARMADAI_STATUSLINE_CHAINED`, posée sur la commande enfant : un ajout de l'auteur, adopté par défaut.
+
 **P1**
 - Une `mark` qui désigne une étape que l'agent ne tient pas est ignorée.
 - Les `mark` non consommées sont jetées au `stop` d'un agent déjà vu.
@@ -769,3 +775,4 @@ Dimitri est absent ; son mandat : « continue en autonomie » et « Prends les r
 - P1.0 : **P1.0 (mesurée le 2026-11-10, Claude Code 2.1.319, `claude -p --model haiku`, projet jetable, 10 lancements).** (i) Positif : le `PreToolUse` d'un appel `Agent` porte `tool_input.description` intact et `tool_use_id`. (ii) Confirmé : le `SubagentStart` ne porte ni `tool_use_id` ni `description`, seulement `agent_id`, `agent_type` et le `prompt_id` du tour. (iii) 8 répétitions de deux `Agent` parallèles vers un même agent : les `PreToolUse` arrivent toujours dans l'ordre des appels (8 sur 8, 100 à 240 ms d'écart), tous avant le premier `SubagentStart`, et les deux `SubagentStart` à 2 à 8 ms l'un de l'autre. L'appariement `start` ↔ `mark` ne se lit pas dans la charge et reste à vérifier avec deux agents distincts : la règle « `?` marqueur ambigu » de P1.3 s'applique. `SubagentStop` est parfois émis deux fois pour un même `agent_id` (3 répétitions sur 8) : à dédoublonner. (iv) Un `SendMessage` vers un agent terminé produit un nouveau `SubagentStart` du même `agent_id`, ~0,3 s après le `PreToolUse` de `SendMessage` ; ce `tool_input` est `{to, summary, message, type, recipient, recipient_kind, content}`, où `to` et `recipient` sont l'`agent_id`, sans description. Aucun critère d'arrêt. Pièges de banc : écrire une ligne de journal en une seule écriture (les hooks parallèles mêlent les lignes sinon) ; générer le `settings.json` de sonde par `jq`.
 - P2.0 : **P2.0 (mesurée le 2026-11-10, Claude Code 2.1.319, `claude -p --model haiku --permission-mode default`, projet jetable, 5 lancements utiles).** (a) `PreToolUse` + `if` rendant `allow` face à une règle `ask` : appel refusé (D5 confirmé). (b) `PermissionRequest` + même `if` rendant `allow` : l'appel s'exécute. (c) Face à une règle `deny`, les deux hooks rendant `allow` : l'appel reste refusé et `PermissionRequest` n'est pas appelé. (d) `if` filtre : le hook ne tourne pas pour `echo other` ; il tourne pour `echo grant-probe x && echo y` et pour une commande illisible (`eval …`), qui s'exécute car la règle `ask` ne la reconnaît pas (D4 et D16 : pas une frontière). (b) et (c) positifs : P2 par `PermissionRequest` avec `if`. Limites : mesuré en `claude -p` ; la répétition interactive de (b) reste à l'essai réel de Dimitri.
 - P4.0 : —
+- P4.3, durée ajoutée à la barre : — (à remplir par l'auteur : mesure d'une barre rapide, et du pire cas, environ 1 s)
