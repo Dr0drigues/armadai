@@ -840,6 +840,7 @@ mod tests {
             "designer",
             "guardian",
             "validator",
+            "reviewer",
         ] {
             std::fs::write(
                 a.join(format!("agents/{agent}.md")),
@@ -1690,6 +1691,42 @@ mod tests {
                 true,
             )]
         );
+    }
+
+    /// The `lot` flow of the repo (plan 3.2): `rejected-task` goes back to the
+    /// coordinator's `tasks` step, never to `plan`.
+    #[test]
+    fn a_rejected_task_verdict_goes_back_to_the_tasks_step() {
+        let p = project_with(
+            COORDINATED,
+            &[(
+                "lot",
+                "start: spec\nsteps:\n  frame: { agent: framer }\n  plan: { agent: architect }\n  tasks: { agent: lead }\n  review: { agent: reviewer, states: [approved, rejected, rejected-task] }\n  spec: { agent: analyst }\n  validate: { agent: validator, states: [approved, rejected, rejected-task] }\nlinks:\n  - { from: spec, to: frame }\n  - { from: frame, to: plan }\n  - { from: plan, to: tasks }\n  - { from: tasks, to: review }\n  - { from: review, to: validate, when: approved }\n  - { from: review, to: plan, when: rejected }\n  - { from: review, to: tasks, when: rejected-task }\n  - { from: validate, to: plan, when: rejected }\n  - { from: validate, to: tasks, when: rejected-task }\n",
+            )],
+        );
+        let events = seq(&[
+            &step(10, "a1", "analyst", None),
+            &step(20, "a2", "framer", None),
+            &step(30, "a3", "architect", None),
+            &step(40, "a4", "reviewer", Some("approved")),
+            &step(50, "a5", "validator", Some("rejected-task")),
+            &[start(60, "a6", "reviewer")],
+        ]);
+        let got = runs(&p, &events);
+        assert_eq!(got.len(), 1);
+        assert_eq!(
+            got[0].transitions,
+            vec![
+                t(20, "spec", "frame", Some("done")),
+                t(30, "frame", "plan", Some("done")),
+                t(40, "plan", "tasks", Some("done")),
+                t(40, "tasks", "review", None),
+                t(50, "review", "validate", Some("approved")),
+                t(60, "validate", "tasks", Some("rejected-task")),
+                t(60, "tasks", "review", None),
+            ]
+        );
+        assert!(got[0].steps.contains(&done("plan", "done")));
     }
 
     /// A loop back to the same step through the coordinator: the step may run
