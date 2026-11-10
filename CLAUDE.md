@@ -168,4 +168,8 @@ Transitions:
 - `guard` -> `build-schema` when `rejected`
 - `guard` -> `build-adapter` when `rejected`
 - `guard` -> `build-cli` when `rejected`
+
+### Marking delegations
+
+Start the `description` of every Agent call to an agent that holds a step with `[<flow>/<step>#<lot>]`, for example `[lot/plan#12] write the plan`. `#<lot>` is optional: it names one batch of work, so that two batches of one flow stay apart in `armadai flow status`. A free agent needs no marker. Ask the agent to end its reply with `REF: <ref>` after its `STATE:` line when it produced something to point at (a branch, a merge request): up to 64 letters, digits or `._/#-`. Under policy.delegation: strict the gate refuses a delegation without it.
 <!-- armadai:end -->
