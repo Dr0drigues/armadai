@@ -113,9 +113,13 @@ pub struct Run {
 ///   places the sub-agent that follows instead of inference. (1) A `start` of
 ///   a new `agent_id` consumes the oldest unconsumed `mark` of its
 ///   `agent_type`; when several remain with different `(flow, step, lot)`, the
-///   start (and as many starts after it as there were marks) is `?`
-///   "ambiguous marker" and no run moves. (2) A `start` of an `agent_id` seen
-///   before (a resume) inherits its last marker and consumes nothing. (3) A
+///   start (each such start, none consumes) is `?` "ambiguous marker" on the
+///   step of each of them, in a run of each `(flow, lot)` (opened when there is
+///   none), and no link is taken. The marks left when a sub-agent stops are
+///   dropped: those of a burst all precede its starts. (2) A `start` of an
+///   `agent_id` seen before (a resume) never consumes a `mark`: it inherits its
+///   marker, stays unplaced when that was ambiguous, and is inferred when it
+///   had none. (3) A
 ///   marked `start` goes to the open run of the `(flow, lot)` pair, or opens
 ///   one, attributed as by a command; no command, other lot or restart of an
 ///   entry closes it, only its natural end does. (4) An unmarked `start`
@@ -132,10 +136,14 @@ pub fn runs(project: &Project, events: &[FlowEvent]) -> Vec<Run> {
         attributed: None,
         marks: Vec::new(),
         marker_of: HashMap::new(),
-        unsure: HashMap::new(),
+        seen: BTreeSet::new(),
         unsure_ids: BTreeSet::new(),
     };
     for e in merge_stops(events) {
+        if e.event == EventKind::Stop {
+            // the marks of a burst all precede its starts: what is left is orphaned
+            b.marks.clear();
+        }
         let targets = match e.event {
             EventKind::Command => {
                 // a line without a name, or naming no flow, is no boundary
@@ -441,8 +449,8 @@ struct Builder<'p> {
     marks: Vec<Mark3>,
     /// `agent_id` -> its marker, for a resume.
     marker_of: HashMap<String, Mark3>,
-    /// `agent_type` -> (starts still ambiguous, the markers they may carry).
-    unsure: HashMap<String, (usize, Vec<Mark3>)>,
+    /// Every `agent_id` that has started: a second start is a resume.
+    seen: BTreeSet<String>,
     /// Sub-agents whose marker was ambiguous: placed nowhere.
     unsure_ids: BTreeSet<String>,
 }
@@ -598,13 +606,14 @@ impl<'p> Builder<'p> {
             .filter(|i| !self.open[*i].run.finished)
     }
 
-    /// A start: placed by its marker when it has one, else inferred.
+    /// A start: placed by its marker when it has one, else inferred. A resume
+    /// (an `agent_id` seen before) never takes a `mark`: it keeps its marker,
+    /// stays unplaced when it was ambiguous, or is inferred when it had none.
     fn start_event(&mut self, e: &FlowEvent) -> Vec<(usize, String)> {
-        self.unsure_ids.remove(&e.agent_id);
-        // a resume keeps its marker and consumes no `mark`
-        let marker = match self.marker_of.get(&e.agent_id) {
-            Some(m) => Some(m.clone()),
-            None => self.take_mark(e),
+        let marker = if self.seen.insert(e.agent_id.clone()) {
+            self.take_mark(e)
+        } else {
+            self.marker_of.get(&e.agent_id).cloned()
         };
         match marker {
             Some(m) => self.start_marked(&m, e),
@@ -617,38 +626,22 @@ impl<'p> Builder<'p> {
     }
 
     /// The marker a new `agent_id` consumes: the oldest unconsumed `mark` of
-    /// its type. Several that differ: none, the start is shown `?` and
-    /// remembered in `unsure_ids`.
+    /// its type. Several that differ: none is consumed, the start is shown `?`
+    /// in the run of each and remembered in `unsure_ids`.
     fn take_mark(&mut self, e: &FlowEvent) -> Option<Mark3> {
         let mine: Vec<usize> = (self.marks.iter().enumerate())
             .filter(|(_, m)| m.0 == e.agent_type)
             .map(|(i, _)| i)
             .collect();
-        let (left, mut cands) = self.unsure.remove(&e.agent_type).unwrap_or_default();
-        if left > 0 {
-            self.show_unsure(e, &cands);
-            if left > 1 {
-                self.unsure
-                    .insert(e.agent_type.clone(), (left - 1, std::mem::take(&mut cands)));
-            }
-            return None;
-        }
         let first = self.marks.get(*mine.first()?)?.clone();
         if mine.iter().any(|i| self.marks[*i] != first) {
-            // the marks of the type are all unattributable: they go, and so
-            // many starts after this one are `?` too
             let mut cands: Vec<Mark3> = Vec::new();
-            for i in mine.iter().rev() {
-                let m = self.marks.remove(*i);
-                if !cands.contains(&m) {
-                    cands.insert(0, m);
+            for i in &mine {
+                if !cands.contains(&self.marks[*i]) {
+                    cands.push(self.marks[*i].clone());
                 }
             }
-            let n = mine.len();
             self.show_unsure(e, &cands);
-            if n > 1 {
-                self.unsure.insert(e.agent_type.clone(), (n - 1, cands));
-            }
             return None;
         }
         let m = self.marks.remove(mine[0]);
@@ -656,28 +649,25 @@ impl<'p> Builder<'p> {
         Some(m)
     }
 
-    /// An ambiguous marked start: `?` on the steps its markers name, in the
-    /// runs that already exist; no run moves.
+    /// An ambiguous marked start: `?` on the step each of its markers names, in
+    /// the run of its `(flow, lot)` (opened when there is none); no link moves.
     fn show_unsure(&mut self, e: &FlowEvent, cands: &[Mark3]) {
         self.tick += 1;
         self.unsure_ids.insert(e.agent_id.clone());
         for (_, flow, step, lot) in cands {
-            if let Some(i) = self.marked_run(flow, lot) {
-                let v = self.open[i].view(step);
-                if v.mark == Mark::Pending {
-                    v.mark = Mark::Unsure;
-                    v.note = Some("ambiguous marker".to_string());
-                }
+            let i = self.marked_run_or_open(flow, lot);
+            let v = self.open[i].view(step);
+            if v.mark == Mark::Pending {
+                v.mark = Mark::Unsure;
+                v.note = Some("ambiguous marker".to_string());
             }
         }
     }
 
-    /// A start the coordinator marked: the open run of its `(flow, lot)`, or a
-    /// new one, attributed as by a command.
-    fn start_marked(&mut self, m: &Mark3, e: &FlowEvent) -> Vec<(usize, String)> {
-        self.tick += 1;
-        let (_, flow_id, step, lot) = m;
-        let i = self.marked_run(flow_id, lot).unwrap_or_else(|| {
+    /// The open run of a `(flow, lot)` pair a marker opened, or a new one,
+    /// attributed as by a command.
+    fn marked_run_or_open(&mut self, flow_id: &str, lot: &Option<String>) -> usize {
+        self.marked_run(flow_id, lot).unwrap_or_else(|| {
             let (id, flow) = (self.project.flows.get_key_value(flow_id)).expect("a flow id");
             let coordinator = self.project.manifest.coordinator.as_deref();
             let mut run = Building::new(id, flow, self.open.len(), coordinator);
@@ -686,7 +676,14 @@ impl<'p> Builder<'p> {
             run.run.lot = lot.clone();
             self.open.push(run);
             self.open.len() - 1
-        });
+        })
+    }
+
+    /// A start the coordinator marked: placed in the run of its `(flow, lot)`.
+    fn start_marked(&mut self, m: &Mark3, e: &FlowEvent) -> Vec<(usize, String)> {
+        self.tick += 1;
+        let (_, flow_id, step, lot) = m;
+        let i = self.marked_run_or_open(flow_id, lot);
         self.place(i, step, e.ts, false);
         let targets = vec![(i, step.clone())];
         self.assigned.insert(e.agent_id.clone(), targets.clone());
@@ -3649,6 +3646,91 @@ mod tests {
         assert_eq!(
             step_of(&got[0], "build").reference.as_deref(),
             Some("feature/three")
+        );
+    }
+
+    /// Two parallel calls to one agent at the start of two lots: nothing tells
+    /// the starts apart, so each lot shows the step `?`, never nothing.
+    #[test]
+    fn an_ambiguous_start_with_no_run_yet_opens_a_run_per_lot() {
+        let events = seq(&[
+            &[mark(1, "architect", "deliver", "design", Some("x"))],
+            &[mark(2, "architect", "deliver", "design", Some("y"))],
+            &[start(3, "a1", "architect"), start(4, "a2", "architect")],
+        ]);
+        let got = runs(&deliver(), &events);
+        assert_eq!(
+            got.iter().map(lot_of).collect::<Vec<_>>(),
+            vec![Some("x"), Some("y")]
+        );
+        for r in &got {
+            assert_eq!(
+                step_of(r, "design"),
+                &view("design", Mark::Unsure, None, Some("ambiguous marker"))
+            );
+        }
+    }
+
+    /// Rule 2: the resume of a sub-agent whose marker was ambiguous stays unplaced.
+    #[test]
+    fn an_ambiguous_sub_agent_resumed_stays_unplaced() {
+        let events = seq(&[
+            &[mark(1, "dev", "deliver", "build", Some("x"))],
+            &[mark(2, "dev", "deliver", "build", Some("y"))],
+            &[start(3, "a1", "dev"), start(4, "a2", "dev")],
+            &[stop(5, "a1", "dev", None), stop(6, "a2", "dev", None)],
+            // resumed with no mark
+            &[start(10, "a1", "dev")],
+        ]);
+        let got = runs(&deliver(), &events);
+        assert_eq!(
+            got.iter().map(lot_of).collect::<Vec<_>>(),
+            vec![Some("x"), Some("y")]
+        );
+        assert!(got.iter().all(|r| step_of(r, "build").mark == Mark::Unsure));
+    }
+
+    /// Rule 2: a resume takes no `mark`; the new call after it does.
+    #[test]
+    fn a_resume_does_not_take_the_mark_of_a_new_call() {
+        let events = seq(&[
+            &[mark(1, "dev", "deliver", "build", Some("x"))],
+            &[mark(2, "dev", "deliver", "build", Some("y"))],
+            &[start(3, "a1", "dev"), start(4, "a2", "dev")],
+            &[stop(5, "a1", "dev", None), stop(6, "a2", "dev", None)],
+            &[mark(10, "dev", "deliver", "build", Some("y"))],
+            &[start(11, "a1", "dev")],
+            &[start(12, "a3", "dev")],
+        ]);
+        let got = runs(&deliver(), &events);
+        assert_eq!(
+            got.iter().map(lot_of).collect::<Vec<_>>(),
+            vec![Some("x"), Some("y")]
+        );
+        assert_eq!(step_of(&got[0], "build").mark, Mark::Unsure);
+        assert_eq!(
+            step_of(&got[1], "build"),
+            &view("build", Mark::Running, None, None)
+        );
+    }
+
+    /// A `mark` whose call never started does not poison the next lot: marks
+    /// left over are dropped at the first stop of a sub-agent.
+    #[test]
+    fn an_orphan_mark_is_dropped_at_the_next_stop() {
+        let events = seq(&[
+            &[mark(1, "dev", "deliver", "build", Some("x"))],
+            &[mark(2, "architect", "deliver", "design", Some("y"))],
+            &step(3, "a1", "architect", None),
+            &[mark(10, "dev", "deliver", "build", Some("y"))],
+            &step(11, "a2", "dev", None),
+        ]);
+        let got = runs(&deliver(), &events);
+        assert_eq!(got.len(), 1);
+        assert_eq!(lot_of(&got[0]), Some("y"));
+        assert_eq!(
+            step_of(&got[0], "build"),
+            &view("build", Mark::Done, Some("done"), None)
         );
     }
 }

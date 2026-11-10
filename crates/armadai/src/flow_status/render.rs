@@ -620,10 +620,13 @@ mod tests {
              \x20 ● check   running\n"
         );
         let md = render_md(std::slice::from_ref(&run), "s", None);
-        assert!(md.contains("\n## hotfix #menu: finished\n"), "{md}");
-        assert!(
-            md.contains("| triage | ✓ | approved [feature/menu] (n) |\n"),
-            "{md}"
+        assert_eq!(
+            md,
+            "# Flow status: session s\n\n\
+             ## hotfix #menu: finished\n\n\
+             | Step | Mark | Status |\n|---|---|---|\n\
+             | triage | ✓ | approved [feature/menu] (n) |\n\
+             | check | ● | running |\n"
         );
     }
 }
