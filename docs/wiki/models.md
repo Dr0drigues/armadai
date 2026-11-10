@@ -2,7 +2,7 @@
 
 ArmadAI does not run agents, so it has no providers and no API keys: the assistant you link to
 picks and calls its own models. An agent carries at most a portable **tier** and, per target, an
-optional pinned model id. Everything here works offline: `link` never touches the network.
+optional pinned model id. Everything here works offline except `armadai models sync`; `link` never touches the network.
 
 ## Tier and pinned model
 
@@ -54,7 +54,8 @@ Sources, read on 2026-11-10 (the ids are copied from these pages, not from memor
 
 The same table carries the aliases `armadai models check` uses: the replacements those
 deprecation pages name. One of them moves a Pro to a Flash, `gemini-2.5-pro` to
-`gemini-3.8-flash`, as Google's deprecation page does, and `models check` proposes it. The table is refreshed from those pages at release time; to use a newer model before that, pin
+`gemini-3.8-flash`, as Google's deprecation page does, and `models check` proposes it.
+The table is refreshed from those pages at release time; to use a newer model before that, pin
 `native.<target>.model`.
 
 ## Syncing the models cache
@@ -67,7 +68,8 @@ another HTTPS catalog of the same shape.
 
 `armadai link` never reads this cache and never touches the network: the table above is what it
 uses, whatever the cache holds. No `armadai` command reads the cache today: only the core's
-resolution function (`resolve_model_for_tier`) and the frozen audit tool do. `armadai models sync`
+resolution function (`resolve_model_for_tier`, which the refresh script below uses) and the frozen
+audit tool do. `armadai models sync`
 is the only command of this page that uses the network.
 
 ## How the table is refreshed
@@ -75,7 +77,8 @@ is the only command of this page that uses the network.
 At release time, `mise run models-refresh` (`scripts/refresh-models.sh`) syncs the models.dev
 catalog into a throwaway config dir, re-resolves each tier of the table from it, and prints a
 diff against `crates/armadai-core/data/models.json`. It writes nothing in the repository and
-needs the network.
+needs the network and `python3` (pinned in `.mise.toml`), which normalizes both JSON files before
+the diff so only values differ.
 
 The diff is a proposal. A catalog id is not proof that the vendor publishes it for that tier:
 check each changed id against the vendor pages listed above, then edit `models.json` (and the
