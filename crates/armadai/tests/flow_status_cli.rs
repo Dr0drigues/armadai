@@ -1409,6 +1409,7 @@ dev            2        0  37s     45s    1m15s  -                       -      
 ops            1        0  1h02m   1h02m  1h02m  approved 1              -         0
 qa             2        0  26s     41s    53s    approved 1, rejected 1  50%       0
 durations run from a start to the first stop of the same agent: a resumed agent counts once, so they are lower bounds
+states count each verdict rendered, a resumed agent can render several
 ";
 
 #[test]
@@ -1536,6 +1537,7 @@ STEP           CALLS  RESUMED  MEDIAN  MAX  TOTAL  STATES      REJECTED  LOOPS
 deliver/build      2        0  37s     45s  1m15s  -           -         0
 deliver/guard      1        0  12s     12s  12s    rejected 1  100%      0
 durations run from a start to the first stop of the same agent: a resumed agent counts once, so they are lower bounds
+states count each verdict rendered, a resumed agent can render several
 1 call is not marked and is left out of --by step
 "
     );
@@ -1548,8 +1550,32 @@ LOT  CALLS  RESUMED  MEDIAN  MAX  TOTAL  STATES      REJECTED  LOOPS
 12       2        0  21s     30s  42s    rejected 1  100%      0
 7        1        0  45s     45s  45s    -           -         0
 durations run from a start to the first stop of the same agent: a resumed agent counts once, so they are lower bounds
+states count each verdict rendered, a resumed agent can render several
 1 call is not marked and is left out of --by lot
 "
+    );
+}
+
+#[test]
+fn stats_names_several_unmarked_calls_in_the_plural() {
+    let env = Env::new();
+    let mark = serde_json::json!({"ts": T0, "event": "mark", "agent_type": "dev",
+        "flow": "deliver", "step": "build", "lot": "12"});
+    let mut log = format!("{mark}\n");
+    log += &event_lines(&[
+        (T0 + 1, true, "b1", "dev", None),
+        (T0 + 31, false, "b1", "dev", None),
+        (T0 + 110, true, "b4", "ops", None),
+        (T0 + 120, false, "b4", "ops", None),
+        (T0 + 130, true, "b5", "architect", None),
+        (T0 + 140, false, "b5", "architect", None),
+    ]);
+    env.raw_log("s1", &log, T0 + 10);
+    let (code, out, _) = env.run(&env.root(), &["flow", "stats", "--by", "lot"]);
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        out.lines().last(),
+        Some("2 calls are not marked and are left out of --by lot")
     );
 }
 

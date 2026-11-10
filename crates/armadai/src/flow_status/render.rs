@@ -263,6 +263,7 @@ pub fn render_stats(stats: &Stats, scope: &str) -> String {
         out.push('\n');
     }
     out += "durations run from a start to the first stop of the same agent: a resumed agent counts once, so they are lower bounds\n";
+    out += "states count each verdict rendered, a resumed agent can render several\n";
     if stats.unmarked_calls > 0 && stats.by != By::Agent {
         let n = stats.unmarked_calls;
         let (calls, are) = if n == 1 {
