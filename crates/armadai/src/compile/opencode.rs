@@ -260,6 +260,12 @@ fn compile_with(
             Status::NotCompiled,
             Some(super::report::RECORDING_CLAUDE_ONLY),
         );
+        plan.report.push(
+            T,
+            "delegation marker",
+            Status::NotCompiled,
+            Some(super::report::UI_CLAUDE_ONLY),
+        );
     }
     if project.manifest.ui.status_line {
         plan.report.push(
@@ -667,6 +673,28 @@ mod tests {
             .find(|l| l.element == element)
             .unwrap_or_else(|| panic!("no `{element}` in\n{}", plan.report.render_text()));
         (l.status, l.reason.clone())
+    }
+
+    #[test]
+    fn a_project_with_a_flow_says_the_delegation_marker_is_claude_only() {
+        let agents: [(&str, &[u8]); 1] =
+            [(".armadai/agents/dev.md", b"---\ndescription: d\n---\nB\n")];
+        let flow: (&str, &[u8]) = (
+            ".armadai/flows/ship.yaml",
+            b"steps:\n  build: { agent: dev }\n",
+        );
+        let plan = compile(&[M, agents[0], flow]).unwrap();
+        assert_eq!(
+            line(&plan, "delegation marker"),
+            (Status::NotCompiled, Some("Claude Code only".into()))
+        );
+        let plan = compile(&[M, agents[0]]).unwrap();
+        assert!(
+            plan.report
+                .lines
+                .iter()
+                .all(|l| l.element != "delegation marker")
+        );
     }
 
     #[test]

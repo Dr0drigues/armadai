@@ -468,8 +468,21 @@ fn claude_md(coordinator: &str, lead: &Agent, project: &Project) -> String {
     for (fid, flow) in &project.flows {
         out.push_str(&flow_section(fid, flow));
     }
+    if !project.flows.is_empty() {
+        out.push_str(MARKING_SECTION);
+        if strict {
+            out.push_str(MARKING_STRICT);
+        }
+        out.push('\n');
+    }
     out
 }
+
+/// How the coordinator marks a delegation, so `armadai flow status` can place it.
+const MARKING_SECTION: &str = "\n### Marking delegations\n\nStart the `description` of every Agent call to an agent that holds a step with `[<flow>/<step>#<lot>]`, for example `[lot/plan#12] write the plan`. `#<lot>` is optional: it names one batch of work, so that two batches of one flow stay apart in `armadai flow status`. A free agent needs no marker. Ask the agent to end its reply with `REF: <ref>` after its `STATE:` line when it produced something to point at (a branch, a merge request): up to 64 letters, digits or `._/#-`.";
+
+const MARKING_STRICT: &str =
+    " Under policy.delegation: strict the gate refuses a delegation without it.";
 
 pub(super) fn flow_section(fid: &str, flow: &Flow) -> String {
     let mut out = format!("\n### Flow `{fid}`\n\n");
@@ -918,6 +931,39 @@ mod tests {
             ),
             FLOW,
         ]
+    }
+
+    const MARKING: &str = "\n### Marking delegations\n\nStart the `description` of every Agent call to an agent that holds a step with `[<flow>/<step>#<lot>]`, for example `[lot/plan#12] write the plan`. `#<lot>` is optional: it names one batch of work, so that two batches of one flow stay apart in `armadai flow status`. A free agent needs no marker. Ask the agent to end its reply with `REF: <ref>` after its `STATE:` line when it produced something to point at (a branch, a merge request): up to 64 letters, digits or `._/#-`.";
+
+    #[test]
+    fn the_block_ends_with_the_marking_section_when_there_is_a_flow() {
+        let plan = compile(&team()).unwrap();
+        let block = &plan.blocks[0].1;
+        assert!(block.ends_with(&format!("{MARKING}\n")), "{block}");
+        assert_eq!(block.matches("### Marking delegations").count(), 1);
+        // not strict: no sentence about the gate
+        assert!(!block.contains("the gate refuses"), "{block}");
+        let mut strict = team();
+        strict[0] = (
+            ".armadai/project.yaml",
+            b"schema_version: 1\ncoordinator: lead\npolicy:\n  delegation: strict\n",
+        );
+        let plan = compile(&strict).unwrap();
+        assert!(
+            plan.blocks[0].1.ends_with(&format!(
+                "{MARKING} Under policy.delegation: strict the gate refuses a delegation without it.\n"
+            )),
+            "{}",
+            plan.blocks[0].1
+        );
+    }
+
+    #[test]
+    fn a_coordinator_without_a_flow_gets_no_marking_section() {
+        let mut files = team();
+        files.pop(); // the flow
+        let plan = compile(&files).unwrap();
+        assert!(!plan.blocks[0].1.contains("Marking delegations"));
     }
 
     #[test]

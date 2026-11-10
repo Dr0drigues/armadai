@@ -25,6 +25,7 @@ opencode: agent web-test-analyzer: compiled
 opencode: agent web-test-analyzer model: approximated (inherited from the OpenCode session)
 opencode: agent web-test-analyzer skills: compiled (allowed through permission.skill, loading prescribed in the prompt)
 opencode: agents tags: not-compiled (informational, no OpenCode field; 5 agents: lead-analyst, web-doc-writer, web-reviewer, web-security, web-test-analyzer)
+opencode: delegation marker: not-compiled (Claude Code only)
 opencode: flow analysis: approximated (guidance only)
 opencode: flow recording: not-compiled (Claude Code only for now)
 opencode: skill analysis-standards: compiled

@@ -5,7 +5,8 @@ use serde::Serialize;
 /// Why `flow recording` is not compiled for Codex, Copilot and OpenCode.
 pub const RECORDING_CLAUDE_ONLY: &str = "Claude Code only for now";
 
-/// Why `ui.status_line` is not compiled for the targets other than Claude Code.
+/// Why `ui.status_line` and the `delegation marker` are not compiled for the targets
+/// other than Claude Code.
 pub const UI_CLAUDE_ONLY: &str = "Claude Code only";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

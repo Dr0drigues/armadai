@@ -187,6 +187,12 @@ impl Compiler for LegacyCompiler {
                 Status::NotCompiled,
                 Some(super::report::RECORDING_CLAUDE_ONLY),
             );
+            r.push(
+                t,
+                "delegation marker",
+                Status::NotCompiled,
+                Some(super::report::UI_CLAUDE_ONLY),
+            );
         }
         if project.manifest.ui.status_line {
             r.push(
@@ -359,11 +365,41 @@ mod tests {
                 (Status::NotCompiled, Some("Claude Code only for now")),
                 "{t}"
             );
+            let marker =
+                line(&plan, "delegation marker").unwrap_or_else(|| panic!("{t}: no marker"));
+            assert_eq!(
+                (marker.status, marker.reason.as_deref()),
+                (Status::NotCompiled, Some("Claude Code only")),
+                "{t}"
+            );
             assert_eq!(line(&plan, "agent dev").unwrap().status, Status::Compiled);
             assert_eq!(
                 line(&plan, "skill review-checklist").unwrap().status,
                 Status::Compiled
             );
+        }
+    }
+
+    #[test]
+    fn no_flow_no_delegation_marker_line() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".armadai/agents")).unwrap();
+        std::fs::write(
+            dir.path().join(".armadai/project.yaml"),
+            "schema_version: 1\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join(".armadai/agents/dev.md"),
+            "---\ndescription: d\n---\nB\n",
+        )
+        .unwrap();
+        let (p, _) = armadai_model::load_checked(dir.path()).unwrap();
+        for t in TARGETS {
+            let plan = LegacyCompiler { target: t }
+                .compile(&p, dir.path(), dir.path())
+                .unwrap();
+            assert!(line(&plan, "delegation marker").is_none(), "{t}");
         }
     }
 

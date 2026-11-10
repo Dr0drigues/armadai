@@ -33,6 +33,7 @@ opencode: agent starter-builder: compiled
 opencode: agent starter-builder model: approximated (inherited from the OpenCode session)
 opencode: agent starter-builder skills: compiled (allowed through permission.skill, loading prescribed in the prompt)
 opencode: agents tags: not-compiled (informational, no OpenCode field; 7 agents: agent-builder, authoring-architect, authoring-lead, authoring-reviewer, authoring-tester, skill-builder, starter-builder)
+opencode: delegation marker: not-compiled (Claude Code only)
 opencode: flow authoring: approximated (guidance only)
 opencode: flow pack: approximated (guidance only)
 opencode: flow recording: not-compiled (Claude Code only for now)
