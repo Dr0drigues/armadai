@@ -309,7 +309,7 @@ Chaque tâche finit barrière verte. Les mutations citées sont le minimum ; le 
   - `one-agent-two-flows` : un agent qui tient deux étapes de deux flows ;
   - `no-state-line` : un handback sans `STATE:` ;
   - `ref-line` : `STATE: approved` puis `REF: feature/menu`, plus une `REF:` de 65 caractères ignorée ;
-  - `public-guard-misplaced` et `public-resume` : extraits du journal public de l'équipe de ce dépôt. Identifiants de session et d'agent remplacés, aucun texte, marqueurs ajoutés à la main, résultat attendu après marquage (critère 2) ;
+  - `public-guard-misplaced` et `public-resume` : journaux synthétiques construits sur les formes mesurées du journal public. Identifiants de session et d'agent remplacés, aucun texte, marqueurs ajoutés à la main, résultat attendu après marquage (critère 2) ;
   - `unmarked-unchanged` : un journal sans marqueur dont `expected.json` est la sortie de `master` avant le lot, produite et relue avant d'écrire le code de P1.3.
 - [ ] Le test rejoue chaque `log.jsonl` contre son projet par la fonction pure (`runs` puis `json::document`) et compare le JSON entier à égalité.
 - [ ] Test d'allowlist `replay_fixtures_hold_nothing_private` : aucun fichier ne contient `/Users/` ni `/home/`. Chaque `agent_type`, flow, lot et `agent_id` appartient à une liste générique écrite dans le test (`lead`, `analyst`, `dev`, `qa`, `reviewer`, `a1`…). Mutation : glisser `/Users/x` ou un nom hors liste dans une fixture, le test rougit.
@@ -640,6 +640,25 @@ Code, messages et sorties en anglais. `‹…›` marque une valeur.
   ```
   Délai : `FAIL  tests/x.sh  timed out after 60s` ; aucun test : `pack ‹name› declares no test (tests: in pack.yaml)` ; snapshot absent : `the locked snapshot of ‹name› ‹1.4.0› is not in the cache; run armadai pack sync`.
 
+### Textes ajoutés en cours de lot (mandat du 2026-11-10, à confirmer par Dimitri)
+
+**P2.2**
+- Code `grant-unsupported-rule` (warning). Message : ``grant `g` lists `Edit(/src/*)`, and a level answers `Bash` rules only``. Hint : ``the rule is never granted: write a `Bash(...)` rule, or put it in native.claude.permissions.allow``.
+
+**P2.3**
+- Refus si `CLAUDECODE` est posé : `grant is for the person at a terminal, and this shell belongs to a Claude Code session (CLAUDECODE is set); run armadai grant in your own terminal`.
+- Heure sautée : `HH:MM does not exist in your time zone`.
+- Ligne de liste : `  <niveau>  ended (<flow>/<step> started)`.
+- `unknown grant level x; no level is declared (policy.grants in .armadai/project.yaml)` et `grant x is not active`.
+- Les deux bornes : `granted L until HH:MM or a delegation to F/S is recorded (N rules); armadai revoke L ends it`.
+- Erreurs d'étape :
+  - `X names no step of the flows of the project` ;
+  - `X is a step of several flows (a/X, b/X); write <flow>/<step>`.
+- Erreurs de saisie :
+  - `invalid duration X; write 30m, 2h or 1h30m` ;
+  - `invalid time X; write it as HH:MM (24 hours, your local time)`.
+- État illisible : `.armadai/state/grants.yaml does not read (damaged, or written by a later version); delete it and run the command again`.
+
 ## 6. Choix par défaut (mandat du 2026-11-10, à confirmer par Dimitri)
 
 Dimitri est absent ; son mandat : « continue en autonomie » et « Prends les recommandations pour les questions en me remontant les éléments choisis (je challengerai à mon retour si besoin) ». Les sept choix ci-dessous sont donc des **choix par défaut de lead**, pris sur la recommandation de l'architecte. Ce ne sont pas des réponses de Dimitri, et il peut les contester. Les tâches qu'ils touchent sont débloquées.
@@ -656,6 +675,26 @@ Dimitri est absent ; son mandat : « continue en autonomie » et « Prends les r
 - **Q5, conventions de `flow stats`** : un rejet est un état `rejected` ou `rejected-*` ; la médiane d'un nombre pair d'appels est la moyenne des deux du milieu, arrondie à la seconde inférieure (P3.1).
 - **Q6, codes de diagnostic** : `grant-empty-allow` et `grant-ambiguous-until` (nouveaux), `unknown-step` pour une étape de `until` inconnue, `bad-id` pour une clé de niveau (P2.1).
 - **Q7, textes** : T1 à T20 (§5) sont adoptés tels quels pour l'instant. Ils restent à relire par Dimitri avant la fusion de chaque PR (T1 à T13 pour la PR 1, T14 à T20 pour la PR 2), et les golden suivront ses corrections.
+
+### Choix par défaut ajoutés en cours de lot (mandat du 2026-11-10, à confirmer par Dimitri)
+
+**P2.2**
+- Un niveau ne répond qu'aux commandes `Bash`. Pour les outils de fichiers, aucun avis : le guardian a mesuré un `allow` sur `Edit /etc/passwd`, et une écriture hors règle à travers un lien.
+- Le hook ne rend aucun avis dans ces cas :
+  - une commande qui nomme `grants.yaml` ou `armadai` ;
+  - un `cwd` sous `<racine>/.armadai` ;
+  - une commande qui contient un caractère hors ASCII.
+- Le filtre de shell est plus large que Q2 : il refuse aussi `$VAR`, les guillemets, les redirections et les globs.
+- Note : sous un niveau large, `grant` est une commodité, pas une frontière (D16). Quatre contournements ont été trouvés en revue. Le point est à revoir avec Dimitri avant la fusion.
+
+**P2.3**
+- Heure en double : la première occurrence.
+
+**P1**
+- Une `mark` qui désigne une étape que l'agent ne tient pas est ignorée.
+- Les `mark` non consommées sont jetées au `stop` d'un agent déjà vu.
+- Un `start` ambigu sans run ouvre un run par `(flow, lot)`.
+- Le rejeu passe par le binaire, avec des fixtures synthétiques acceptées.
 
 ## 7. Résultats des mesures (rempli en tâche)
 
