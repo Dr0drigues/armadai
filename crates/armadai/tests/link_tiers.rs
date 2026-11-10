@@ -180,7 +180,13 @@ fn link_never_reads_the_models_cache() {
     // the printed paths carry each project's temp root: compare what follows it
     let shown = |e: &Env| e.ok(&args).replace(e.root().to_str().unwrap(), "<root>");
     assert_eq!(shown(&without), shown(&with));
-    assert_eq!(tree(&without.root()), tree(&with.root()));
+    // the manifest carries `linked_at`, to the second: the one file that may differ
+    let files = |e: &Env| {
+        let mut t = tree(&e.root());
+        t.remove(Path::new(".armadai/link-manifest.yaml")).unwrap();
+        t
+    };
+    assert_eq!(files(&without), files(&with));
     assert!(!with.read(".codex/agents/deep.toml").contains("witness"));
 }
 
