@@ -1617,6 +1617,11 @@ fn stats_of_a_flow_with_no_call_in_the_session_says_which_flow() {
         (&got["groups"], &got["unmarked_calls"]),
         (&serde_json::json!([]), &serde_json::json!(0))
     );
+    let (code, out, _) = env.run(&env.root(), &["flow", "stats", "ship", "--all"]);
+    assert_eq!(
+        (code, out.as_str()),
+        (Some(0), "no call of flow ship in these sessions\n")
+    );
     // no log at all: the general line, whatever the flow
     let none = Env::new();
     let (_, out, _) = none.run(&none.root(), &["flow", "stats", "ship"]);

@@ -200,11 +200,16 @@ fn stats_command(
         anstream::println!("{}", serde_json::to_string_pretty(&doc)?);
         return Ok(());
     }
-    if let Some(f) = flow.as_deref().filter(|_| {
-        // shortcut: --all has no wording of its own yet, it keeps the general line
-        !all && !events.is_empty() && found.groups.is_empty() && found.unmarked_calls == 0
-    }) {
-        anstream::println!("no call of flow {f} in this session");
+    if let Some(f) = flow
+        .as_deref()
+        .filter(|_| !events.is_empty() && found.groups.is_empty() && found.unmarked_calls == 0)
+    {
+        let which = if all {
+            "these sessions"
+        } else {
+            "this session"
+        };
+        anstream::println!("no call of flow {f} in {which}");
     } else if found.groups.is_empty() && found.unmarked_calls == 0 {
         anstream::println!("{NO_ACTIVITY}");
     } else if found.groups.is_empty() && !found.any_marked {
