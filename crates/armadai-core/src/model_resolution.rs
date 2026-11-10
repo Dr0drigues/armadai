@@ -70,7 +70,14 @@ pub fn classify_model_tier(id: &str, provider: &str) -> Option<ModelTier> {
                 // which matched every id beginning with that letter,
                 // moderation and omni models included.
                 None
-            } else if id.contains("mini") || id.contains("nano") {
+            } else if id.ends_with("-astra") {
+                // GPT-6 line (https://developers.openai.com/api/docs/models,
+                // read 2026-11-10): `-astra` is the flagship ("complex
+                // reasoning and coding"), so Max; `-luna` is "most
+                // efficient", the cheapest, so Fast (next branch). `-sol` and
+                // `-terra` stay Pro through the `gpt-` rule below.
+                Some(ModelTier::Max)
+            } else if id.ends_with("-luna") || id.contains("mini") || id.contains("nano") {
                 Some(ModelTier::Fast)
             } else if id.starts_with("gpt-") {
                 Some(ModelTier::Pro)
@@ -635,6 +642,22 @@ mod tests {
         assert_eq!(
             classify_model_tier("o3-pro", "openai"),
             Some(ModelTier::Max)
+        );
+        assert_eq!(
+            classify_model_tier("gpt-6-luna", "openai"),
+            Some(ModelTier::Fast)
+        );
+        assert_eq!(
+            classify_model_tier("gpt-6-astra", "openai"),
+            Some(ModelTier::Max)
+        );
+        assert_eq!(
+            classify_model_tier("gpt-6.1-sol", "openai"),
+            Some(ModelTier::Pro)
+        );
+        assert_eq!(
+            classify_model_tier("gpt-6.1-terra", "openai"),
+            Some(ModelTier::Pro)
         );
     }
 
