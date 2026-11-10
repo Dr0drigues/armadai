@@ -16,8 +16,8 @@ const FLOW: (&str, &str) = (
     "steps:\n  plan: { agent: lead }\nlinks: []\n",
 );
 
-const BAR_LINE: &str = "claude: ui.status_line: compiled (statusLine in .claude/settings.json, \
-running armadai __claude-statusline; it hides the statusLine of your user settings)";
+const BAR_LINE: &str =
+    "claude: ui.status_line: compiled (chained after your user status line when there is one)";
 const KEPT_LINE: &str = "claude: ui.status_line: not-compiled (.claude/settings.json already has \
 a statusLine; link leaves it (add armadai flow status --line to your own bar instead))";
 

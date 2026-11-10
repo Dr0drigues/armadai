@@ -811,6 +811,66 @@ fn statusline_prints_nothing_for_a_log_without_a_run() {
     assert_eq!(got, (Some(0), String::new(), String::new()));
 }
 
+impl Env {
+    /// The user's own statusLine, in the fake HOME (`$HOME/.claude/settings.json`).
+    fn user_bar(&self, command: &str) {
+        let dir = self.dir.path().join(".claude");
+        std::fs::create_dir_all(&dir).unwrap();
+        let bar = serde_json::json!({"statusLine": {"type": "command", "command": command}});
+        std::fs::write(dir.join("settings.json"), bar.to_string()).unwrap();
+    }
+}
+
+#[test]
+fn statusline_prints_the_user_bar_then_the_flow_line() {
+    let env = Env::new();
+    env.three_logs();
+    let root = env.root();
+    let stdin = format!(r#"{{"session_id":"S","cwd":"{}"}}"#, root.display());
+    let (_, flow, _) = env.statusline(env.dir.path(), &stdin);
+    assert_eq!(strip_sgr(&flow), S_LINE);
+    // the user's bar gets the same JSON on stdin; its trailing newline is dropped
+    env.user_bar("printf 'user-bar\\n'; cat > /dev/null");
+    let got = env.statusline(env.dir.path(), &stdin);
+    assert_eq!(got, (Some(0), format!("user-bar\n{flow}"), String::new()));
+    env.user_bar("cat");
+    let got = env.statusline(env.dir.path(), &stdin);
+    assert_eq!(got, (Some(0), format!("{stdin}\n{flow}"), String::new()));
+}
+
+#[test]
+fn statusline_prints_the_flow_line_alone_when_the_user_bar_fails_or_is_too_slow() {
+    let env = Env::new();
+    env.three_logs();
+    let root = env.root();
+    let stdin = format!(r#"{{"session_id":"S","cwd":"{}"}}"#, root.display());
+    let (_, flow, _) = env.statusline(env.dir.path(), &stdin);
+    for (name, command) in [
+        ("failing", "printf lost; exit 3"),
+        ("slow", "sleep 5"),
+        ("missing", "no-such-bar-command-armadai"),
+    ] {
+        env.user_bar(command);
+        let start = std::time::Instant::now();
+        let got = env.statusline(env.dir.path(), &stdin);
+        assert_eq!(got, (Some(0), flow.clone(), String::new()), "{name}");
+        // threshold of the defect: a bar that is waited for takes 5 s
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(4),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn statusline_prints_the_user_bar_alone_when_there_is_no_flow_line() {
+    let env = Env::new();
+    env.three_logs();
+    env.user_bar("printf user-bar");
+    let got = env.statusline(&env.root(), "");
+    assert_eq!(got, (Some(0), "user-bar\n".to_string(), String::new()));
+}
+
 #[test]
 fn statusline_does_not_wait_for_a_stdin_that_stays_open() {
     use std::process::Stdio;

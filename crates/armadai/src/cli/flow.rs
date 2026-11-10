@@ -569,6 +569,17 @@ const STDIN_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
 /// The JSON a status bar pipes in; `None` on a terminal, on a stdin that stays
 /// silent, or on anything that is not a JSON object.
 fn stdin_json() -> Option<serde_json::Value> {
+    parse_object(&stdin_raw()?)
+}
+
+fn parse_object(raw: &str) -> Option<serde_json::Value> {
+    serde_json::from_str(raw)
+        .ok()
+        .filter(serde_json::Value::is_object)
+}
+
+/// The raw text a status bar pipes in; `None` on a terminal or a stdin that stays silent.
+fn stdin_raw() -> Option<String> {
     use std::io::{IsTerminal, Read};
     if std::io::stdin().is_terminal() {
         return None;
@@ -580,10 +591,7 @@ fn stdin_json() -> Option<serde_json::Value> {
         let _ = std::io::stdin().read_to_string(&mut raw);
         let _ = tx.send(raw);
     });
-    let raw = rx.recv_timeout(STDIN_WAIT).ok()?;
-    serde_json::from_str(&raw)
-        .ok()
-        .filter(serde_json::Value::is_object)
+    rx.recv_timeout(STDIN_WAIT).ok()
 }
 
 /// The coloured line of `--line` (empty on any failure: a status bar must
@@ -595,11 +603,26 @@ fn line_text(flow: Option<String>, session: Option<String>) -> String {
     painted(&crate::flow_status::line::line(&runs))
 }
 
-/// `armadai __claude-statusline`: the line of the session Claude Code names in
-/// its JSON, always coloured; nothing (0 bytes) when there is nothing to show.
+/// How long the user's own status bar may take before ours prints alone.
+const CHAIN_LIMIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// `armadai __claude-statusline`: the output of the user's own status bar when there is
+/// one (same stdin, at most [`CHAIN_LIMIT`]), then the line of the session Claude Code
+/// names in its JSON, always coloured. Any failure of the user's bar leaves our line
+/// alone; exit 0 always (Claude Code blanks the bar on any other code).
 pub fn statusline_main() -> anyhow::Result<()> {
+    use crate::claude_adapter::statusline_chain as chain;
     anstream::ColorChoice::write_global(anstream::ColorChoice::Always);
-    if let Some(runs) = line_runs(None, None, true) {
+    let raw = stdin_raw();
+    let user = chain::user_command(&|k| std::env::var(k).ok())
+        .and_then(|c| chain::run_user(&c, raw.as_deref().unwrap_or("").as_bytes(), CHAIN_LIMIT))
+        .map(|out| out.trim_end_matches(['\n', '\r']).to_string())
+        .filter(|out| !out.is_empty());
+    if let Some(out) = user {
+        anstream::println!("{out}");
+    }
+    let json = raw.as_deref().and_then(parse_object);
+    if let Some((_, runs)) = session_runs(json.as_ref(), None, None, true) {
         let pieces = crate::flow_status::line::line(&runs);
         if !pieces.is_empty() {
             anstream::println!("{}", painted(&pieces));

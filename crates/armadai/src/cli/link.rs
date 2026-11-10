@@ -326,8 +326,7 @@ fn prepare(
             } else {
                 (
                     Status::Compiled,
-                    "statusLine in .claude/settings.json, running armadai __claude-statusline; \
-                     it hides the statusLine of your user settings",
+                    "chained after your user status line when there is one",
                 )
             };
             p.report.push(target, "ui.status_line", status, Some(why));

@@ -84,7 +84,7 @@ the pack's level of the same key as a whole.
 for a `statusLine` in `.claude/settings.json` that runs `armadai __claude-statusline`, which shows the
 progress of the flow in progress. It is Claude Code only. If `.claude/settings.json` already holds a
 `statusLine` that link does not own, link keeps yours and reports `not-compiled`; setting it also in
-`native.claude.statusLine` is an error. Once compiled, it replaces the status bar you had.
+`native.claude.statusLine` is an error. Once compiled, it runs your user status bar (`$CLAUDE_CONFIG_DIR/settings.json`, else `~/.claude/settings.json`) first, with the same stdin and at most 1 s, and prints its output above the flow line; if that bar fails, is too slow or is absent, only the flow line shows.
 `ui.subagent_status_line` is a boolean too (any other value is `invalid-yaml`): a status line per
 subagent showing the step it holds. It is Claude Code only.
 `ui.panel` (boolean, default `false`) asks for a panel beside the chat, and `ui.documents` is the list of
