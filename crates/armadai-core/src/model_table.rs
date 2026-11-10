@@ -31,9 +31,77 @@ pub fn model_table() -> &'static ModelTable {
     })
 }
 
+/// The embedded table with each tier re-resolved from the local models cache
+/// (`resolve_model_for_tier`), `as_of` set to `as_of`, aliases kept: what a
+/// release proposes, for a human to check against the vendors' docs.
+pub fn propose_tier_table(as_of: &str) -> serde_json::Value {
+    use crate::model_resolution::{ModelTier, resolve_model_for_tier};
+    let table = model_table();
+    let tiers: serde_json::Map<String, serde_json::Value> = table
+        .tiers
+        .iter()
+        .map(|(vendor, row)| {
+            let mut out = serde_json::Map::new();
+            out.insert(
+                "fast".into(),
+                resolve_model_for_tier(vendor, ModelTier::Fast).into(),
+            );
+            out.insert(
+                "pro".into(),
+                resolve_model_for_tier(vendor, ModelTier::Pro).into(),
+            );
+            if row.max.is_some() {
+                out.insert(
+                    "max".into(),
+                    resolve_model_for_tier(vendor, ModelTier::Max).into(),
+                );
+            }
+            (vendor.clone(), out.into())
+        })
+        .collect();
+    serde_json::json!({
+        "version": table.version,
+        "as_of": as_of,
+        "tiers": tiers,
+        "aliases": table.aliases,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn propose_reads_the_cache() {
+        let iso = crate::test_support::IsolatedConfigDir::enter();
+        let models = |ids: &[&str]| -> Vec<serde_json::Value> {
+            ids.iter().map(|id| serde_json::json!({"id": id})).collect()
+        };
+        let doc = serde_json::json!({
+            "fetched_at": "2026-11-10T00:00:00Z",
+            "providers": {
+                "anthropic": models(&["claude-haiku-9-1", "claude-sonnet-9-2", "claude-opus-9-3"]),
+                "google": models(&["gemini-9.4-flash", "gemini-9.5-pro"]),
+                "openai": models(&["gpt-9-luna", "gpt-9.1-sol", "gpt-9.2-astra"]),
+            },
+        });
+        std::fs::write(
+            iso.config_dir().join(crate::config::MODELS_CACHE_FILE),
+            serde_json::to_string(&doc).unwrap(),
+        )
+        .unwrap();
+        let expected = serde_json::json!({
+            "version": 1,
+            "as_of": "2031-01-02",
+            "tiers": {
+                "anthropic": {"fast": "claude-haiku-9-1", "pro": "claude-sonnet-9-2", "max": "claude-opus-9-3"},
+                "google": {"fast": "gemini-9.4-flash", "pro": "gemini-9.5-pro"},
+                "openai": {"fast": "gpt-9-luna", "pro": "gpt-9.1-sol", "max": "gpt-9.2-astra"},
+            },
+            "aliases": model_table().aliases,
+        });
+        assert_eq!(propose_tier_table("2031-01-02"), expected);
+    }
 
     #[test]
     fn the_embedded_table_reads() {

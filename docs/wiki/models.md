@@ -66,6 +66,17 @@ another HTTPS catalog of the same shape.
 uses, whatever the cache holds. The cache feeds the `latest:<tier>` placeholders where they are
 resolved, and `armadai models sync` is the only command of this page that uses the network.
 
+## How the table is refreshed
+
+At release time, `mise run models-refresh` (`scripts/refresh-models.sh`) syncs the models.dev
+catalog into a throwaway config dir, re-resolves each tier of the table from it, and prints a
+diff against `crates/armadai-core/data/models.json`. It writes nothing in the repository and
+needs the network.
+
+The diff is a proposal. A catalog id is not proof that the vendor publishes it for that tier:
+check each changed id against the vendor pages listed above, then edit `models.json` (and the
+table above) by hand and commit.
+
 ## Deprecated model ids
 
 Canonical agents carry a tier; a model id only appears where an agent pins one, in
