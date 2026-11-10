@@ -1711,6 +1711,7 @@ mod tests {
             &step(40, "a4", "reviewer", Some("approved")),
             &step(50, "a5", "validator", Some("rejected-task")),
             &[start(60, "a6", "reviewer")],
+            &[start(70, "a7", "architect")],
         ]);
         let got = runs(&p, &events);
         assert_eq!(got.len(), 1);
