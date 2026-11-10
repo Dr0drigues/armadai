@@ -1581,3 +1581,57 @@ fn optional_start_step_declared_and_guessed() {
     ]);
     assert!(ds.iter().all(|d| d.code != "optional-start-step"), "{ds:?}");
 }
+
+#[test]
+fn a_broad_grant_rule_is_a_warning() {
+    let hint = "a grant is a convenience, not a boundary; name the exact command, such as `Bash(python3 scripts/release.py)`";
+    for rule in [
+        "Bash",
+        "Bash(*)",
+        "Bash(* --x)",
+        "Bash(python3 x.py)",
+        "Bash(xargs rm)",
+        "Bash(cp * /tmp)",
+    ] {
+        let ds = grants(
+            &format!("policy:\n  grants:\n    g:\n      allow: [\"Bash(ls)\", \"{rule}\"]\n"),
+            &[],
+        );
+        let hits: Vec<_> = ds.iter().filter(|d| d.code == "grant-broad-rule").collect();
+        assert_eq!(hits.len(), 1, "{rule}: {ds:?}");
+        assert_eq!(
+            hits[0].message,
+            format!(
+                "grant `g` rule `{rule}` is broad: it lets through any command that this program runs"
+            )
+        );
+        assert_eq!(hits[0].hint.as_deref(), Some(hint));
+        assert_eq!(hits[0].severity, Severity::Warning);
+    }
+    for word in [
+        "python", "python3", "node", "ruby", "perl", "sh", "bash", "zsh", "env", "xargs", "eval",
+        "exec",
+    ] {
+        let ds = grants(
+            &format!("policy:\n  grants:\n    g:\n      allow: [\"Bash({word} x)\"]\n"),
+            &[],
+        );
+        assert!(ds.iter().any(|d| d.code == "grant-broad-rule"), "{word}");
+    }
+    for word in ["cp", "mv", "rsync", "ln", "tar"] {
+        let broad = |spec: &str| {
+            let ds = grants(
+                &format!("policy:\n  grants:\n    g:\n      allow: [\"Bash({spec})\"]\n"),
+                &[],
+            );
+            ds.iter().any(|d| d.code == "grant-broad-rule")
+        };
+        assert!(broad(&format!("{word} * /tmp")), "{word} with a glob");
+        assert!(!broad(&format!("{word} a b")), "{word} without a glob");
+    }
+    let ds = grants(
+        "policy:\n  grants:\n    g:\n      allow: [\"Bash(git push origin feature/*)\", \"Bash(cp a b)\"]\n",
+        &[],
+    );
+    assert!(ds.iter().all(|d| d.code != "grant-broad-rule"), "{ds:?}");
+}

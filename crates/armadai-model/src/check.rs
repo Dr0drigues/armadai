@@ -241,6 +241,29 @@ fn edit_distance(a: &str, b: &str) -> usize {
     d[a.len()][b.len()]
 }
 
+/// First words of a `Bash` rule that run whatever they are given: any command through them is let
+/// through. Incomplete by construction: a warning, not a boundary (D16).
+const BROAD_RUNNERS: &[&str] = &[
+    "python", "python3", "node", "ruby", "perl", "sh", "bash", "zsh", "env", "xargs", "eval",
+    "exec",
+];
+/// Copy and move tools: broad only with a `*` in the rule.
+const BROAD_WHEN_GLOB: &[&str] = &["cp", "mv", "rsync", "ln", "tar"];
+
+/// A `Bash` rule that lets through far more than one command, judged on its text alone.
+fn is_broad_bash_rule(rule: &str) -> bool {
+    if rule == "Bash" {
+        return true;
+    }
+    let Some(spec) = rule.strip_prefix("Bash(").and_then(|r| r.strip_suffix(')')) else {
+        return false;
+    };
+    let first = spec.split_whitespace().next().unwrap_or("");
+    spec.starts_with('*')
+        || BROAD_RUNNERS.contains(&first)
+        || (BROAD_WHEN_GLOB.contains(&first) && spec.contains('*'))
+}
+
 /// The steps a flow starts from: `start` when the flow declares it. Otherwise a
 /// heuristic: a candidate is a step no unconditional link
 /// (`when` absent or `done`) leads to: a conditional link (`when: rejected`,
@@ -578,6 +601,23 @@ fn check_grants(o: &mut Out, project: &Project) {
                 Some(
                     "the rule is never granted: write a `Bash(...)` rule, or put it in \
                      native.claude.permissions.allow"
+                        .into(),
+                ),
+            );
+        }
+        for rule in g.allow.iter().filter(|r| is_broad_bash_rule(r)) {
+            o.emit(
+                man,
+                Severity::Warning,
+                "grant-broad-rule",
+                Some((rule, false)),
+                format!(
+                    "grant `{name}` rule `{rule}` is broad: it lets through any command that \
+                     this program runs"
+                ),
+                Some(
+                    "a grant is a convenience, not a boundary; name the exact command, such as \
+                     `Bash(python3 scripts/release.py)`"
                         .into(),
                 ),
             );
