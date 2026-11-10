@@ -162,7 +162,7 @@ pub fn grant_entries(project: &Project) -> Vec<HookEntry> {
         for rule in grant
             .allow
             .iter()
-            .filter(|r| crate::claude_adapter::grant_hook::rule_tool(r) == "Bash")
+            .filter(|r| crate::claude_adapter::grant_hook::is_bash_rule(r))
         {
             out.push(HookEntry {
                 event: "PermissionRequest".into(),
@@ -1090,6 +1090,19 @@ mod tests {
         );
         let hooks = hook_entries(&p).unwrap();
         assert_eq!(&hooks[hooks.len() - 2..], grant_entries(&p).as_slice());
+    }
+
+    #[test]
+    fn only_a_bash_pattern_rule_gets_a_hook() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
+        std::fs::write(
+            dir.path().join(".armadai/project.yaml"),
+            "schema_version: 1\npolicy:\n  grants:\n    g:\n      allow: [\"Bash\", \" Bash(x)\", \"Bashful(y)\", \"Bash(ok *)\"]\n",
+        )
+        .unwrap();
+        let (p, _) = armadai_model::load_checked(dir.path()).unwrap();
+        assert_eq!(grant_entries(&p), vec![grant("Bash", "g", "Bash(ok *)")]);
     }
 
     #[test]

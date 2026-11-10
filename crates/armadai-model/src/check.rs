@@ -566,7 +566,8 @@ fn check_grants(o: &mut Out, project: &Project) {
         // only a `Bash` rule is answered by the hook: the request of a file tool carries
         // a path that a rule must be anchored and resolved against, which a hook does not
         for rule in g.allow.iter().filter(|r| {
-            !r.trim().is_empty() && r.split('(').next().is_none_or(|t| t.trim() != "Bash")
+            // `Bash(<pattern>)` exactly: a bare `Bash` or ` Bash(x)` is never granted either
+            !r.trim().is_empty() && !(r.starts_with("Bash(") && r.ends_with(')'))
         }) {
             o.emit(
                 man,

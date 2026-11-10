@@ -1491,7 +1491,7 @@ fn a_bare_until_held_by_two_flows_is_ambiguous() {
 #[test]
 fn a_grant_rule_that_is_not_bash_is_a_warning() {
     let ds = grants(
-        "policy:\n  grants:\n    g:\n      allow: [\"Bash(ls)\", \"Edit(/src/*)\", \"Read\", \"Bashful(x)\", \"mcp__s__t\"]\n",
+        "policy:\n  grants:\n    g:\n      allow: [\"Bash(ls)\", \"Edit(/src/*)\", \"Read\", \"Bashful(x)\", \"mcp__s__t\", \"Bash\", \" Bash(x)\"]\n",
         &[],
     );
     let hits: Vec<_> = ds
@@ -1505,6 +1505,8 @@ fn a_grant_rule_that_is_not_bash_is_a_warning() {
             "grant `g` lists `Read`, and a level answers `Bash` rules only",
             "grant `g` lists `Bashful(x)`, and a level answers `Bash` rules only",
             "grant `g` lists `mcp__s__t`, and a level answers `Bash` rules only",
+            "grant `g` lists `Bash`, and a level answers `Bash` rules only",
+            "grant `g` lists ` Bash(x)`, and a level answers `Bash` rules only",
         ]
     );
     assert!(hits.iter().all(|d| d.severity == Severity::Warning));
