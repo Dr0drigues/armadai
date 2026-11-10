@@ -6,6 +6,10 @@ set -u
 
 base="${TMPDIR:-/tmp}"
 base="${base%/}"
+case "$base" in
+  /?*) ;;
+  *) echo "scratch.sh: refused: the temporary base '$base' must be an absolute path" >&2; exit 1 ;;
+esac
 prefix="$base/armadai-"
 
 die() { echo "scratch.sh: $*" >&2; exit 1; }
@@ -22,14 +26,16 @@ case "${1:-}" in
     ;;
   rm)
     [ $# -eq 2 ] || die "usage: scratch.sh rm <path>"
-    path="$2"
+    path="${2%/}"
     case "$path" in
       "$prefix"?*) ;;
-      *) die "refused: '$path' does not start with $prefix" ;;
+      *) die "refused: '$2' does not start with $prefix" ;;
     esac
-    case "/$path/" in
-      */../*) die "refused: '$path' contains '..'" ;;
+    # Exactly one component after the base: no '/', so no '..' and no path through a link.
+    case "${path#"$base"/}" in
+      */*) die "refused: '$2' must be a single directory directly under $base" ;;
     esac
+    [ -L "$path" ] && die "refused: '$2' is a symbolic link"
     # Literal path, never a pattern or a glob.
     rm -rf -- "$path"
     ;;

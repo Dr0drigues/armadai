@@ -119,19 +119,28 @@ Ce qu'il faut regarder :
 
 ### 3.2 Le flow `lot` avec l'étape `tasks` (phase A)
 
-Dessin à la main du flow tel qu'A.4 l'écrira. A.4 le remplace dans ce plan par la sortie de `armadai graph lot --format mermaid`, comme le veut la skill `diagrams`.
+Sortie de `armadai graph lot --format mermaid` sur le flow écrit par A.4 (mesurée par lead), comme le veut la skill `diagrams` ; elle remplace le dessin à la main.
 
 ```mermaid
+%% flow: lot
 flowchart TD
-    spec[spec<br/>analyst] --> frame[frame<br/>framer]
-    frame --> plan[plan<br/>architect]
-    plan --> tasks[tasks<br/>lead ~]
-    tasks --> review[review<br/>reviewer]
-    review -->|approved| validate[validate<br/>validator]
-    review -->|rejected| plan
-    review -->|rejected-task| tasks
-    validate -->|rejected| plan
-    validate -->|rejected-task| tasks
+  n_spec(["spec (analyst)"])
+  n_frame["frame (framer)"]
+  n_plan["plan (architect)"]
+  n_tasks["tasks (lead)"]
+  n_review["review (reviewer)"]
+  n_validate["validate (validator)"]
+  n_spec --> n_frame
+  n_frame --> n_plan
+  n_plan --> n_tasks
+  n_tasks --> n_review
+  n_review -->|"approved"| n_validate
+  n_review -->|"rejected"| n_plan
+  n_review -->|"rejected-task"| n_tasks
+  n_validate -->|"rejected"| n_plan
+  n_validate -->|"rejected-task"| n_tasks
+  classDef startStep stroke-width:3px
+  class n_spec startStep
 ```
 
 Ce qu'il faut regarder :
