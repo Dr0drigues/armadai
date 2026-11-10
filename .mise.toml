@@ -37,3 +37,7 @@ run = "cargo build -p armadai-model"
 [tasks.ci]
 description = "Full local gate — mirrors the CI pipeline"
 depends = ["fmt-check", "clippy", "test", "build", "core-build", "model-build"]
+
+[tasks.models-refresh]
+description = "Propose a refreshed built-in tier table (network; prints a diff, writes nothing)"
+run = "scripts/refresh-models.sh"

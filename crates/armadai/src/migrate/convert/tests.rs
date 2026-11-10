@@ -687,7 +687,7 @@ fn pasted_registry_entries_read_back_whatever_their_characters() {
         .collect();
     let mut o = old(vec![agent("A")]);
     o.config = armadai_core::project::ProjectConfig {
-        registries: Some(armadai_core::registries::RegistriesConfig {
+        registries: Some(armadai_core::project::LegacyRegistries {
             starters: declared.clone(),
             ..Default::default()
         }),

@@ -5,6 +5,7 @@ pub mod config;
 pub(crate) mod embedded;
 pub mod model_aliases;
 pub mod model_resolution;
+pub mod model_table;
 pub mod orchestration;
 pub mod pack_validation;
 pub mod parser;

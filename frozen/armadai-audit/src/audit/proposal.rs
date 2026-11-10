@@ -923,8 +923,9 @@ mod tests {
         assert_eq!(portable_model(Some("claude-sonnet-5")), "latest:pro");
         assert_eq!(portable_model(Some("latest:fast")), "latest:fast");
         assert_eq!(portable_model(None), "latest:pro");
-        // Deprecated alias resolved first, then classified.
-        assert_eq!(portable_model(Some("gemini-3.0-pro")), "latest:pro");
+        // Deprecated alias resolved first (the table no longer holds one that
+        // ends on a tier), then classified: `gpt-6-luna` is no Anthropic model.
+        assert_eq!(portable_model(Some("gpt-4o")), "gpt-6-luna");
     }
 
     #[test]

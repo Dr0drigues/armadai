@@ -190,19 +190,23 @@ pub enum Command {
         #[command(subcommand)]
         action: config::ConfigAction,
     },
-    /// Manage model deprecations and project registry
+    /// Check model deprecations, show the tier table, sync the models cache
     #[command(
         subcommand,
-        long_about = "Manage model deprecations and project registry.\n\n\
+        long_about = "Model deprecations, the built-in tier table and the models cache.\n\n\
             Check the model ids agents pin in `native.<target>.model` for deprecated ones, \
-            and replace them in place (agents otherwise carry a tier). \
+            and replace them in place (agents otherwise carry a tier); `tiers` shows the \
+            tier table built into armadai; `sync` downloads the models.dev catalog into the \
+            local models cache (network; `link` never reads it). \
             Projects are auto-registered when you run `armadai link`.",
         after_help = "Examples:\n  \
             armadai models check\n  \
             armadai models check --all --prune\n  \
             armadai models update\n  \
             armadai models update --all\n  \
-            armadai models list"
+            armadai models list\n  \
+            armadai models tiers\n  \
+            armadai models sync"
     )]
     Models(models::ModelsAction),
     /// Compile the project (.armadai/) into native config files for AI assistants

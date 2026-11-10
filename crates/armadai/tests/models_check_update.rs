@@ -47,7 +47,7 @@ fn check_reports_a_deprecated_native_model_and_update_replaces_only_it() {
     let (ok, out) = armadai(dir.path(), &root, &["models", "check"]);
     assert!(ok, "{out}");
     assert!(
-        out.contains("dev") && out.contains("gpt-4-turbo") && out.contains("gpt-4o"),
+        out.contains("dev") && out.contains("gpt-4-turbo") && out.contains("gpt-5.6-sol"),
         "{out}"
     );
     assert!(out.contains("1 deprecated model(s) found"), "{out}");
@@ -57,7 +57,7 @@ fn check_reports_a_deprecated_native_model_and_update_replaces_only_it() {
     let dev = std::fs::read_to_string(root.join(".armadai/agents/dev.md")).unwrap();
     assert_eq!(
         dev,
-        DEV.replace("gpt-4-turbo", "gpt-4o"),
+        DEV.replace("gpt-4-turbo", "gpt-5.6-sol"),
         "only the id changes"
     );
     assert_eq!(
@@ -123,7 +123,7 @@ fn update_rewrites_model_values_only() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("project");
     let a = "---\r\n# gpt-4-turbo was pinned here; model: gpt-4-turbo\r\ndescription: 'moves off gpt-4-turbo'\r\nnative:\r\n  codex:\r\n    model: \"gpt-4-turbo\"\r\n  opencode: { model: 'gpt-4-turbo' }\r\n  claude:\r\n    model: gpt-4-turbo-preview\r\n---\r\nKeep gpt-4-turbo in the body.\r\n";
-    let b = "---\ndescription: B\nnative:\n  codex:\n    model: gpt-4\n  opencode:\n    model: gpt-4o-mini\n---\nB\n";
+    let b = "---\ndescription: B\nnative:\n  codex:\n    model: gpt-4\n  opencode:\n    model: gpt-5.6-luna\n---\nB\n";
     for (p, c) in [
         (".armadai/project.yaml", "schema_version: 1\n"),
         (".armadai/agents/a.md", a),
@@ -136,19 +136,19 @@ fn update_rewrites_model_values_only() {
     std::fs::create_dir_all(dir.path().join("config")).unwrap();
     std::fs::write(
         dir.path().join("config/model-aliases.json"),
-        r#"{"gpt-4": "gpt-4o"}"#,
+        r#"{"gpt-4": "gpt-5.6-sol"}"#,
     )
     .unwrap();
     let (ok, out) = armadai(dir.path(), &root, &["models", "update"]);
     assert!(ok, "{out}");
     assert_eq!(
         std::fs::read_to_string(root.join(".armadai/agents/a.md")).unwrap(),
-        a.replace("model: \"gpt-4-turbo\"", "model: \"gpt-4o\"")
-            .replace("{ model: 'gpt-4-turbo' }", "{ model: 'gpt-4o' }")
+        a.replace("model: \"gpt-4-turbo\"", "model: \"gpt-5.6-sol\"")
+            .replace("{ model: 'gpt-4-turbo' }", "{ model: 'gpt-5.6-sol' }")
     );
     assert_eq!(
         std::fs::read_to_string(root.join(".armadai/agents/b.md")).unwrap(),
-        b.replace("model: gpt-4\n", "model: gpt-4o\n")
+        b.replace("model: gpt-4\n", "model: gpt-5.6-sol\n")
     );
 }
 
@@ -188,10 +188,9 @@ fn a_failing_update_writes_nothing_and_all_goes_on() {
         std::fs::read_to_string(broken.join(".armadai/agents/dev.md")).unwrap(),
         before
     );
-    assert!(
-        std::fs::read_to_string(fine.join(".armadai/agents/dev.md"))
-            .unwrap()
-            .contains("model: gpt-4o"),
+    assert_eq!(
+        std::fs::read_to_string(fine.join(".armadai/agents/dev.md")).unwrap(),
+        DEV.replace("gpt-4-turbo", "gpt-5.6-sol"),
         "{out}"
     );
 }

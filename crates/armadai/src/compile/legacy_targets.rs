@@ -300,7 +300,7 @@ mod tests {
         .unwrap();
         assert_ne!(
             armadai_core::model_resolution::resolve_model_for_tier("openai", ModelTier::Pro),
-            "gpt-4o",
+            "gpt-6.1-sol",
             "the seeded cache must change what a cache reader answers"
         );
         let (dir, p) = migrated();
@@ -438,7 +438,7 @@ mod tests {
         };
         let dev = p.agents.get_mut("dev").unwrap();
         dev.front.tier = None;
-        assert_eq!(model(&p, "codex").as_deref(), Some("gpt-4o"));
+        assert_eq!(model(&p, "codex").as_deref(), Some("gpt-6.1-sol"));
         p.agents.get_mut("dev").unwrap().front.native.insert(
             "codex".into(),
             armadai_model::yaml::from_str("model: gpt-5-codex").unwrap(),

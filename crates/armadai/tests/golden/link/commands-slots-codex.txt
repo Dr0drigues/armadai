@@ -8,7 +8,7 @@ LEAD_MARKER: you coordinate the team.
 | dev | [agents/dev.toml](agents/dev.toml) | Writes code |
 
 === .codex/agents/dev.toml ===
-model = "gpt-4o"
+model = "gpt-6.1-sol"
 developer_instructions = """
 DEV_MARKER: you write the code.
 """

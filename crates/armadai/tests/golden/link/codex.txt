@@ -12,7 +12,7 @@ LEAD_INSTRUCTIONS_MARKER — delegate, then synthesize.
 | dev | [agents/dev.toml](agents/dev.toml) | Writes code: "small" functions |
 
 === .codex/agents/dev.toml ===
-model = "gpt-4o"
+model = "gpt-6.1-sol"
 developer_instructions = """
 DEV_SYSTEM_MARKER — you write the code.
 

@@ -11,7 +11,7 @@ LEAD_INSTRUCTIONS_MARKER — delegate, then synthesize.
 | qa | [agents/qa.toml](agents/qa.toml) | QA_SYSTEM_MARKER — you test the code. |
 
 === agents/dev.toml ===
-model = "gpt-4o"
+model = "gpt-6.1-sol"
 developer_instructions = """
 DEV_SYSTEM_MARKER — you write the code.
 
@@ -25,7 +25,7 @@ DEV_INSTRUCTIONS_MARKER — tests first.
 """
 
 === agents/qa.toml ===
-model = "gpt-4o-mini"
+model = "gpt-6-luna"
 developer_instructions = """
 QA_SYSTEM_MARKER — you test the code.
 """
