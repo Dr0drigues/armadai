@@ -203,7 +203,12 @@ where
     } else {
         None
     };
-    let n = rules(grant.allow.len());
+    // only `Bash(...)` rules are ever answered (`grant-unsupported-rule` for the others)
+    let n = rules(
+        (grant.allow.iter())
+            .filter(|r| crate::claude_adapter::grant_hook::is_bash_rule(r))
+            .count(),
+    );
     let line = match (&expires_at, &until_step) {
         (Some(end), None) => format!(
             "granted {level} until {} ({n}); armadai revoke {level} ends it",
@@ -541,6 +546,23 @@ mod tests {
         );
         assert_eq!(a.until_step.as_deref(), Some("evolution/publish"));
         assert_eq!(a.expires_at, None);
+    }
+
+    /// Only the rules a hook answers are counted: `Bash(...)` ones, as `link` writes them.
+    #[test]
+    fn a_grant_counts_only_the_bash_rules_it_answers() {
+        let p = project(
+            "schema_version: 1\npolicy:\n  grants:\n    mixed:\n      allow: [\"Bash(git push *)\", \"Read(./.env)\", \"Bash(ls\", \"WebFetch\"]\n",
+        );
+        let b = Bounds {
+            span: Some(Duration::hours(1)),
+            ..Bounds::default()
+        };
+        let (_, line) = plan_grant(&p, "mixed", &b, &env(false, &[])).unwrap();
+        assert_eq!(
+            line,
+            "granted mixed until 11:00 (1 rule); armadai revoke mixed ends it"
+        );
     }
 
     /// The command's own bound replaces the `until` of the level.
