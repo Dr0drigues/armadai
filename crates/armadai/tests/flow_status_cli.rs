@@ -1602,6 +1602,28 @@ fn stats_without_a_log_is_the_existing_message_and_an_empty_document() {
 }
 
 #[test]
+fn stats_of_a_flow_with_no_call_in_the_session_says_which_flow() {
+    let env = Env::new();
+    env.log("s1", &stats_events(), T0 + 10);
+    // `ship` holds `rel` only, which never ran
+    let (code, out, err) = env.run(&env.root(), &["flow", "stats", "ship"]);
+    assert_eq!(
+        (code, out.as_str(), err.as_str()),
+        (Some(0), "no call of flow ship in this session\n", "")
+    );
+    let (_, out, _) = env.run(&env.root(), &["flow", "stats", "ship", "--json"]);
+    let got: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(
+        (&got["groups"], &got["unmarked_calls"]),
+        (&serde_json::json!([]), &serde_json::json!(0))
+    );
+    // no log at all: the general line, whatever the flow
+    let none = Env::new();
+    let (_, out, _) = none.run(&none.root(), &["flow", "stats", "ship"]);
+    assert!(out.starts_with("no flow activity recorded yet"), "{out}");
+}
+
+#[test]
 fn stats_refuses_an_unknown_flow_or_session_with_the_way_forward() {
     let env = Env::new();
     env.log("s1", &stats_events(), T0 + 10);
