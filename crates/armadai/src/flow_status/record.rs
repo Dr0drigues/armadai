@@ -186,6 +186,9 @@ pub fn event_from_hook(raw: &str, now: u64) -> Option<(String, PathBuf, FlowEven
     ))
 }
 
+/// Longest `agent_type` a `mark` keeps, in bytes.
+const MAX_AGENT_TYPE: usize = 128;
+
 /// A `mark` for an `Agent`/`Task` call whose description opens with a marker,
 /// and only when the delegation gate lets the call through: a refused call must
 /// not leave a mark that would stick to the next start. Its `agent_type` is the
@@ -206,6 +209,16 @@ fn mark_from_hook(v: &serde_json::Value, now: u64) -> Option<(String, PathBuf, F
         .and_then(serde_json::Value::as_str)
         .filter(|s| !s.is_empty())
         .unwrap_or(crate::claude_adapter::policy_gate::IMPLICIT_SUBAGENT);
+    // Without `strict` the gate has no opinion, so the target is unchecked input: it
+    // reaches the log only as a plain name (built-ins are capitalized, plugin agents
+    // read `plugin:agent`, so `is_valid_id` would be too narrow).
+    if target.len() > MAX_AGENT_TYPE
+        || !target
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._:-".contains(c))
+    {
+        return None;
+    }
     let event = FlowEvent {
         ts: now,
         event: EventKind::Mark,
@@ -505,6 +518,36 @@ mod tests {
             log_line(&ev),
             "{\"ts\":7,\"event\":\"mark\",\"agent_type\":\"general-purpose\",\"flow\":\"evolution\",\"step\":\"review\"}\n"
         );
+    }
+
+    #[test]
+    fn a_mark_keeps_only_a_plain_agent_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let at = |target: &str| {
+            event_from_hook(&agent_call(dir.path(), "Agent", Some(target), "[f/s] x"), 1)
+                .map(|(_, _, e)| e.agent_type)
+        };
+        let l128 = "a".repeat(128);
+        for ok in [
+            "Explore",
+            "general-purpose",
+            "engineering:reverse-functional-analyst",
+            "a.b_c",
+            l128.as_str(),
+        ] {
+            assert_eq!(at(ok).as_deref(), Some(ok), "{ok}");
+        }
+        for bad in [
+            "a b",
+            "a\"b",
+            "a\nb",
+            "{\"x\":1}",
+            "é",
+            "a/b",
+            &"a".repeat(129),
+        ] {
+            assert_eq!(at(bad), None, "{bad:?}");
+        }
     }
 
     #[test]
