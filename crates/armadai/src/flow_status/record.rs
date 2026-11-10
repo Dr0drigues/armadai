@@ -2,7 +2,7 @@
 //! `.armadai/state/claude/<session_id>.jsonl`.
 //!
 //! Wired by `link` as `async` Claude Code hooks on `SubagentStart`,
-//! `SubagentStop`, `PreToolUse` (matcher `SubagentHandback`) and
+//! `SubagentStop`, `PreToolUse` (matchers `SubagentHandback` and `Agent|Task`) and
 //! `UserPromptExpansion`; input shapes from https://code.claude.com/docs/en/hooks.
 //! Like the policy gate, it never fails the hook and never prints (the stdout
 //! of a `UserPromptExpansion` hook is added to the model's context): bad
@@ -20,6 +20,9 @@ pub enum EventKind {
     Start,
     Stop,
     Command,
+    /// A delegation the coordinator marked `[flow/step#lot]`, before the
+    /// sub-agent starts.
+    Mark,
 }
 
 /// One line of the session log.
@@ -34,10 +37,20 @@ pub struct FlowEvent {
     pub state: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
+    /// `mark` lines: the marker's parts. Never the description's text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flow: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lot: Option<String>,
+    /// `stop` lines: the word of the reply's `REF:` line.
+    #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
 }
 
 /// The log line of an event, final `\n` included. A `command` line carries
-/// the name and nothing else.
+/// the name and nothing else; a `mark` line the target and the marker's parts.
 pub fn log_line(e: &FlowEvent) -> String {
     #[derive(Serialize)]
     struct CommandLine<'a> {
@@ -45,7 +58,25 @@ pub fn log_line(e: &FlowEvent) -> String {
         event: &'a EventKind,
         command: &'a str,
     }
+    #[derive(Serialize)]
+    struct MarkLine<'a> {
+        ts: u64,
+        event: &'a EventKind,
+        agent_type: &'a str,
+        flow: &'a str,
+        step: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        lot: Option<&'a str>,
+    }
     let json = match (&e.event, &e.command) {
+        (EventKind::Mark, _) => serde_json::to_string(&MarkLine {
+            ts: e.ts,
+            event: &e.event,
+            agent_type: &e.agent_type,
+            flow: e.flow.as_deref().unwrap_or_default(),
+            step: e.step.as_deref().unwrap_or_default(),
+            lot: e.lot.as_deref(),
+        }),
         (EventKind::Command, Some(command)) => serde_json::to_string(&CommandLine {
             ts: e.ts,
             event: &e.event,
@@ -62,6 +93,20 @@ pub fn state_of(text: &str) -> Option<String> {
         .rev()
         .filter_map(|l| l.trim_end().strip_prefix("STATE: "))
         .find(|w| armadai_model::is_valid_id(w))
+        .map(str::to_string)
+}
+
+/// The word of the last line that reads exactly `REF: <word>`, 1 to 64 chars of
+/// `[A-Za-z0-9._/#-]`.
+pub fn ref_of(text: &str) -> Option<String> {
+    text.lines()
+        .rev()
+        .filter_map(|l| l.trim_end().strip_prefix("REF: "))
+        .find(|w| {
+            (1..=64).contains(&w.len())
+                && w.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "._/#-".contains(c))
+        })
         .map(str::to_string)
 }
 
@@ -84,6 +129,10 @@ pub fn event_from_hook(raw: &str, now: u64) -> Option<(String, PathBuf, FlowEven
             agent_type: String::new(),
             state: None,
             command: Some(name.to_string()),
+            flow: None,
+            step: None,
+            lot: None,
+            reference: None,
         };
         return Some((
             text("session_id")?.to_string(),
@@ -91,17 +140,30 @@ pub fn event_from_hook(raw: &str, now: u64) -> Option<(String, PathBuf, FlowEven
             event,
         ));
     }
-    let (event, state) = match text("hook_event_name")? {
-        "SubagentStart" => (EventKind::Start, None),
-        "SubagentStop" => (
-            EventKind::Stop,
-            text("last_assistant_message").and_then(state_of),
-        ),
+    if text("hook_event_name")? == "PreToolUse"
+        && matches!(text("tool_name"), Some("Agent" | "Task"))
+    {
+        return mark_from_hook(&v, now);
+    }
+    let (event, state, reference) = match text("hook_event_name")? {
+        "SubagentStart" => (EventKind::Start, None, None),
+        "SubagentStop" => {
+            let message = text("last_assistant_message");
+            (
+                EventKind::Stop,
+                message.and_then(state_of),
+                message.and_then(ref_of),
+            )
+        }
         // `agent_id` (required below) is what marks a sub-agent: `agent_type`
         // is also set on the main thread under `--agent`.
         "PreToolUse" if text("tool_name") == Some("SubagentHandback") => {
             let message = v.pointer("/tool_input/message").and_then(|m| m.as_str());
-            (EventKind::Stop, message.and_then(state_of))
+            (
+                EventKind::Stop,
+                message.and_then(state_of),
+                message.and_then(ref_of),
+            )
         }
         _ => return None,
     };
@@ -112,6 +174,49 @@ pub fn event_from_hook(raw: &str, now: u64) -> Option<(String, PathBuf, FlowEven
         agent_type: text("agent_type").unwrap_or_default().to_string(),
         state,
         command: None,
+        flow: None,
+        step: None,
+        lot: None,
+        reference,
+    };
+    Some((
+        text("session_id")?.to_string(),
+        PathBuf::from(text("cwd")?),
+        event,
+    ))
+}
+
+/// A `mark` for an `Agent`/`Task` call whose description opens with a marker,
+/// and only when the delegation gate lets the call through: a refused call must
+/// not leave a mark that would stick to the next start. Its `agent_type` is the
+/// target, resolved like the gate does.
+fn mark_from_hook(v: &serde_json::Value, now: u64) -> Option<(String, PathBuf, FlowEvent)> {
+    let text = |k: &str| v.get(k).and_then(serde_json::Value::as_str);
+    let input = v.get("tool_input");
+    let marker = super::marker::parse(
+        input
+            .and_then(|i| i.get("description"))
+            .and_then(serde_json::Value::as_str)?,
+    )?;
+    if crate::claude_adapter::policy_gate::decide(&v.to_string()).is_some() {
+        return None;
+    }
+    let target = input
+        .and_then(|i| i.get("subagent_type"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(crate::claude_adapter::policy_gate::IMPLICIT_SUBAGENT);
+    let event = FlowEvent {
+        ts: now,
+        event: EventKind::Mark,
+        agent_id: String::new(),
+        agent_type: target.to_string(),
+        state: None,
+        command: None,
+        flow: Some(marker.flow),
+        step: Some(marker.step),
+        lot: marker.lot,
+        reference: None,
     };
     Some((
         text("session_id")?.to_string(),
@@ -285,6 +390,10 @@ mod tests {
                 agent_type: "an".into(),
                 state: None,
                 command: None,
+                flow: None,
+                step: None,
+                lot: None,
+                reference: None,
             }
         );
         let command = r#"{"ts":2,"event":"command","command":"bugfix"}"#;
@@ -297,6 +406,10 @@ mod tests {
                 agent_type: String::new(),
                 state: None,
                 command: Some("bugfix".into()),
+                flow: None,
+                step: None,
+                lot: None,
+                reference: None,
             }
         );
     }
@@ -329,6 +442,151 @@ mod tests {
         ] {
             assert_eq!(event_from_hook(raw, 100), None, "{raw}");
         }
+    }
+
+    /// An `Agent` call as `policy_gate` tests shape it, with a description.
+    fn agent_call(cwd: &Path, tool: &str, subagent: Option<&str>, description: &str) -> String {
+        let mut input = serde_json::json!({"description": description, "prompt": "p"});
+        if let Some(s) = subagent {
+            input["subagent_type"] = s.into();
+        }
+        serde_json::json!({
+            "session_id": "abc123", "cwd": cwd.to_string_lossy(),
+            "hook_event_name": "PreToolUse", "tool_name": tool,
+            "tool_input": input, "tool_use_id": "toolu_01",
+        })
+        .to_string()
+    }
+
+    fn strict_project() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let r = dir.path().join(".armadai");
+        std::fs::create_dir_all(r.join("agents")).unwrap();
+        std::fs::create_dir_all(r.join("flows")).unwrap();
+        std::fs::write(
+            r.join("project.yaml"),
+            "schema_version: 1\ncoordinator: lead\npolicy:\n  delegation: strict\n",
+        )
+        .unwrap();
+        for a in ["lead", "dev", "doc"] {
+            std::fs::write(
+                r.join(format!("agents/{a}.md")),
+                "---\ndescription: d\n---\nB\n",
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            r.join("flows/ship.yaml"),
+            "steps:\n  build: { agent: dev }\nlinks: []\n",
+        )
+        .unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_marked_delegation_records_only_the_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = agent_call(
+            dir.path(),
+            "Agent",
+            Some("reviewer"),
+            "[evolution/review#menu] relire SECRET free text",
+        );
+        let (session, _, ev) = event_from_hook(&raw, 100).expect("a mark");
+        assert_eq!(session, "abc123");
+        assert_eq!(
+            log_line(&ev),
+            "{\"ts\":100,\"event\":\"mark\",\"agent_type\":\"reviewer\",\"flow\":\"evolution\",\"step\":\"review\",\"lot\":\"menu\"}\n"
+        );
+        // no lot, no `subagent_type`, the former tool name: the gate's own defaults
+        let raw = agent_call(dir.path(), "Task", None, "[evolution/review] x");
+        let (_, _, ev) = event_from_hook(&raw, 7).expect("a mark");
+        assert_eq!(
+            log_line(&ev),
+            "{\"ts\":7,\"event\":\"mark\",\"agent_type\":\"general-purpose\",\"flow\":\"evolution\",\"step\":\"review\"}\n"
+        );
+    }
+
+    #[test]
+    fn an_unmarked_delegation_records_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        for d in ["relire", "x [evolution/review]", "[Evolution/review] x"] {
+            let raw = agent_call(dir.path(), "Agent", Some("reviewer"), d);
+            assert_eq!(event_from_hook(&raw, 1), None, "{d}");
+        }
+    }
+
+    #[test]
+    fn a_refused_delegation_records_no_mark() {
+        let dir = strict_project();
+        // `doc` holds no step of a flow the main thread can reach: the gate refuses
+        let refused = agent_call(dir.path(), "Agent", Some("doc"), "[ship/build#l1] x");
+        assert!(crate::claude_adapter::policy_gate::decide(&refused).is_some());
+        assert_eq!(event_from_hook(&refused, 1), None);
+        // the same marker on an allowed target does leave one
+        let allowed = agent_call(dir.path(), "Agent", Some("dev"), "[ship/build#l1] x");
+        assert!(crate::claude_adapter::policy_gate::decide(&allowed).is_none());
+        let (_, _, ev) = event_from_hook(&allowed, 1).expect("a mark");
+        assert_eq!(ev.event, EventKind::Mark);
+        assert_eq!(ev.agent_type, "dev");
+    }
+
+    #[test]
+    fn the_last_ref_line_wins_and_is_bounded() {
+        let w64 = "a".repeat(64);
+        let w65 = "a".repeat(65);
+        assert_eq!(
+            ref_of("REF: one\nwork\nREF: feature/menu#2.x_y-z\ntrailing").as_deref(),
+            Some("feature/menu#2.x_y-z")
+        );
+        assert_eq!(
+            ref_of(&format!("REF: {w64}")).as_deref(),
+            Some(w64.as_str())
+        );
+        assert_eq!(ref_of(&format!("REF: {w65}")), None);
+        // an invalid last line leaves the last valid one
+        assert_eq!(ref_of("REF: ok\nREF: two words").as_deref(), Some("ok"));
+        assert_eq!(ref_of("REF: bad$char"), None);
+        assert_eq!(ref_of("REF:none"), None);
+        assert_eq!(ref_of("REF: "), None);
+        assert_eq!(ref_of("see REF: x"), None);
+    }
+
+    #[test]
+    fn a_stop_records_the_ref_of_its_message() {
+        let stop = STOP.replace("STATE: approved", "STATE: approved\\nREF: feature/menu");
+        let (_, _, l) = line(&stop);
+        assert_eq!(
+            l,
+            r#"{"ts":100,"event":"stop","agent_id":"def456","agent_type":"Explore","state":"approved","ref":"feature/menu"}"#
+        );
+        let hb = HANDBACK.replace("STATE: rejected", "STATE: rejected\\nREF: pr-12");
+        let (_, _, l) = line(&hb);
+        assert_eq!(
+            l,
+            r#"{"ts":100,"event":"stop","agent_id":"def456","agent_type":"Explore","state":"rejected","ref":"pr-12"}"#
+        );
+    }
+
+    #[test]
+    fn old_and_mark_lines_read_back() {
+        let mark =
+            r#"{"ts":3,"event":"mark","agent_type":"reviewer","flow":"f","step":"s","lot":"l"}"#;
+        let ev: FlowEvent = serde_json::from_str(mark).unwrap();
+        assert_eq!(
+            (ev.event, ev.agent_type.as_str(), ev.flow.as_deref()),
+            (EventKind::Mark, "reviewer", Some("f"))
+        );
+        assert_eq!(
+            (ev.step.as_deref(), ev.lot.as_deref()),
+            (Some("s"), Some("l"))
+        );
+        let old = r#"{"ts":1,"event":"stop","agent_id":"i1","agent_type":"an","state":"approved"}"#;
+        let ev: FlowEvent = serde_json::from_str(old).unwrap();
+        assert_eq!(
+            (ev.flow, ev.step, ev.lot, ev.reference),
+            (None, None, None, None)
+        );
     }
 
     #[test]

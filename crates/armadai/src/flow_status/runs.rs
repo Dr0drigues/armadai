@@ -126,6 +126,8 @@ pub fn runs(project: &Project, events: &[FlowEvent]) -> Vec<Run> {
                 }
                 continue;
             }
+            // read by the marker attribution only
+            EventKind::Mark => continue,
             EventKind::Start => b.start(&e),
             EventKind::Stop => match b.assigned.remove(&e.agent_id) {
                 Some(t) => t,
@@ -178,7 +180,7 @@ fn merge_stops(events: &[FlowEvent]) -> Vec<FlowEvent> {
     let mut last_stop: HashMap<&str, usize> = HashMap::new();
     for e in events {
         match e.event {
-            EventKind::Command => {}
+            EventKind::Command | EventKind::Mark => {}
             EventKind::Start => {
                 last_stop.remove(e.agent_id.as_str());
             }
@@ -866,6 +868,10 @@ mod tests {
             agent_type: agent.into(),
             state: None,
             command: None,
+            flow: None,
+            step: None,
+            lot: None,
+            reference: None,
         }
     }
 
@@ -877,6 +883,10 @@ mod tests {
             agent_type: agent.into(),
             state: state.map(str::to_string),
             command: None,
+            flow: None,
+            step: None,
+            lot: None,
+            reference: None,
         }
     }
 
@@ -2516,6 +2526,10 @@ mod tests {
             agent_type: String::new(),
             state: None,
             command: Some(name.into()),
+            flow: None,
+            step: None,
+            lot: None,
+            reference: None,
         }
     }
 

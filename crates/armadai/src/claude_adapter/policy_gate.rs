@@ -106,7 +106,7 @@ fn main_checkout_of(cwd: &Path) -> Option<PathBuf> {
 /// omission as this target is what stops omitting the field from being a way
 /// around the policy — and if a project declares this agent, such calls are
 /// allowed again, because the policy decides rather than the shape of the call.
-const IMPLICIT_SUBAGENT: &str = "general-purpose";
+pub const IMPLICIT_SUBAGENT: &str = "general-purpose";
 
 /// The whole gate, as a pure string→string function so it can be tested
 /// without a subprocess. `None` means "no opinion".

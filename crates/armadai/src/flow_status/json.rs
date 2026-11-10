@@ -94,6 +94,10 @@ mod tests {
             agent_type: String::new(),
             state: None,
             command: None,
+            flow: None,
+            step: None,
+            lot: None,
+            reference: None,
         }
     }
 

@@ -158,6 +158,8 @@ pub fn flow_status_entries() -> Vec<HookEntry> {
         ("SubagentStop", None),
         ("PreToolUse", Some("SubagentHandback")),
         ("UserPromptExpansion", None),
+        // the marker of a delegation, written only when the gate lets it through
+        ("PreToolUse", Some("Agent|Task")),
     ]
     .into_iter()
     .map(|(event, matcher)| HookEntry {
@@ -960,6 +962,24 @@ mod tests {
     }
 
     #[test]
+    fn a_project_linked_before_the_marker_hook_gets_it_on_relink() {
+        let old = flow_status_entries()[..4].to_vec();
+        let (first, owned1) = merge(Some(USER), &old, &none(), &Owned::default()).unwrap();
+        let (second, owned2) =
+            merge(Some(&first), &flow_status_entries(), &none(), &owned1).unwrap();
+        assert!(!first.contains("Agent|Task"));
+        assert_eq!(
+            value(&second)["hooks"]["PreToolUse"],
+            json!([
+                {"matcher": "Bash", "hooks": [{"type": "command", "command": "./mine.sh"}]},
+                {"matcher": "SubagentHandback", "hooks": [{"type": "command", "command": "armadai __record-flow-event", "async": true}]},
+                {"matcher": "Agent|Task", "hooks": [{"type": "command", "command": "armadai __record-flow-event", "async": true}]}
+            ])
+        );
+        assert_eq!(owned2.entries, flow_status_entries());
+    }
+
+    #[test]
     fn a_project_with_a_flow_records_subagents_after_the_gate() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".armadai/agents")).unwrap();
@@ -988,6 +1008,7 @@ mod tests {
                 recording("SubagentStop", None),
                 recording("PreToolUse", Some("SubagentHandback")),
                 recording("UserPromptExpansion", None),
+                recording("PreToolUse", Some("Agent|Task")),
             ]
         );
         assert_eq!(

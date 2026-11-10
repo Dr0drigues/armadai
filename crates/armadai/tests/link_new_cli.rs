@@ -210,6 +210,7 @@ fn link_then_unlink_gives_the_user_tree_back_and_relinking_is_idempotent() {
                 {"matcher": "Bash", "hooks": [{"type": "command", "command": "./mine.sh"}]},
                 {"matcher": "Agent|Task", "hooks": [{"type": "command", "command": "armadai __claude-policy-gate"}]},
                 {"matcher": "SubagentHandback", "hooks": rec},
+                {"matcher": "Agent|Task", "hooks": rec},
             ],
             "PostToolUse": [{"hooks": [{"type": "command", "command": "cargo fmt"}]}],
             "SubagentStart": [{"hooks": rec}],
@@ -536,10 +537,12 @@ fn a_link_and_unlink_keep_the_user_key_order() {
 
 const RECORDING: &str = "approximated (existing identical hook kept, not owned: unlink leaves it; adopt it with `armadai link --adopt-hooks`)";
 
-/// The five hooks of a project with a flow under `policy.delegation: strict`, in the
-/// order of the report (sorted).
-const FIVE_HOOKS: [&str; 5] = [
+/// The six hooks of a project with a flow under `policy.delegation: strict`, in the
+/// order of the report (sorted); the two `PreToolUse` recording hooks (`SubagentHandback`
+/// and `Agent|Task`) read alike, the report names no matcher.
+const SIX_HOOKS: [&str; 6] = [
     "hook PreToolUse armadai __claude-policy-gate",
+    "hook PreToolUse armadai __record-flow-event",
     "hook PreToolUse armadai __record-flow-event",
     "hook SubagentStart armadai __record-flow-event",
     "hook SubagentStop armadai __record-flow-event",
@@ -587,7 +590,7 @@ fn hooks_found_without_a_manifest_are_adopted_on_request() {
 
     // (a) without the option: nothing claimed, the way out is in the report
     let out = env.ok(&["link"]);
-    let expected: Vec<String> = FIVE_HOOKS
+    let expected: Vec<String> = SIX_HOOKS
         .iter()
         .map(|h| format!("claude: {h}: {RECORDING}"))
         .collect();
@@ -600,11 +603,11 @@ fn hooks_found_without_a_manifest_are_adopted_on_request() {
     env.ok(&["unlink"]);
     assert_eq!(std::fs::read_to_string(&settings).unwrap(), committed);
 
-    // (b) with it: the five are owned, unlink removes them, the user's hook stays
+    // (b) with it: the six are owned, unlink removes them, the user's hook stays
     env.ok(&["link"]);
     std::fs::remove_file(&manifest).unwrap();
     let out = env.ok(&["link", "--adopt-hooks"]);
-    let expected: Vec<String> = FIVE_HOOKS
+    let expected: Vec<String> = SIX_HOOKS
         .iter()
         .map(|h| {
             format!("claude: {h}: compiled (existing identical hook adopted: unlink removes it)")
@@ -616,7 +619,7 @@ fn hooks_found_without_a_manifest_are_adopted_on_request() {
         owned
             .matches("command: armadai __record-flow-event")
             .count(),
-        4,
+        5,
         "{owned}"
     );
     assert_eq!(
@@ -754,12 +757,17 @@ fn a_manifest_of_rc8_unlinks_and_relinks(manifest: &str) {
     env.ok(&["unlink"]);
     assert!(!env.root().join(".claude/settings.json").exists());
 
-    // a relink changes not a byte and records the same hooks and the rule
+    // a relink adds the marker hook (`Agent|Task`) and nothing else, and records the
+    // same hooks and the rule
+    let marker_settings = "      },\n      {\n        \"matcher\": \"Agent|Task\",\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"armadai __record-flow-event\",\n            \"async\": true\n          }\n        ]\n      }\n    ],\n    \"SubagentStart\"";
+    let end_of_pre_tool_use = "      }\n    ],\n    \"SubagentStart\"";
+    assert_eq!(linked.matches(end_of_pre_tool_use).count(), 1);
+    let relinked = linked.replacen(end_of_pre_tool_use, marker_settings, 1);
     let env = rc8_project(manifest);
     env.ok(&["link"]);
     assert_eq!(
         std::fs::read_to_string(env.root().join(".claude/settings.json")).unwrap(),
-        linked
+        relinked
     );
     let without_date = |t: String| {
         t.lines()
@@ -771,7 +779,15 @@ fn a_manifest_of_rc8_unlinks_and_relinks(manifest: &str) {
         without_date(
             std::fs::read_to_string(env.root().join(".armadai/link-manifest.yaml")).unwrap()
         ),
-        without_date(std::fs::read_to_string(fixture.join("link-manifest-plain.yaml")).unwrap()),
+        without_date(
+            std::fs::read_to_string(fixture.join("link-manifest-plain.yaml"))
+                .unwrap()
+                .replacen(
+                    "        containers:\n        - hooks\n",
+                    "        - event: PreToolUse\n          matcher: Agent|Task\n          command: armadai __record-flow-event\n          native:\n            async: true\n        containers:\n        - hooks\n",
+                    1
+                )
+        ),
     );
 
     // a relink that does change the file keeps `permissions` where the user had it
@@ -782,7 +798,7 @@ fn a_manifest_of_rc8_unlinks_and_relinks(manifest: &str) {
     assert!(linked.contains(check));
     assert_eq!(
         std::fs::read_to_string(env.root().join(".claude/settings.json")).unwrap(),
-        linked.replacen(check, "", 1)
+        relinked.replacen(check, "", 1)
     );
 }
 
