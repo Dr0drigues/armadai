@@ -49,12 +49,13 @@ impl StarterPack {
     }
 
     /// The `tests:` entries that are not a relative path inside the pack: empty,
-    /// absolute (either separator, or a drive), or holding a `..` component.
+    /// absolute (either separator, or a drive letter, on every platform), or holding a `..` component.
     pub fn bad_test_paths(&self) -> Vec<&str> {
         let bad = |t: &str| {
             t.trim().is_empty()
                 || Path::new(t).is_absolute()
                 || t.starts_with(['/', '\\'])
+                || matches!(t.as_bytes(), [d, b':', ..] if d.is_ascii_alphabetic())
                 || t.split(['/', '\\']).any(|c| c == "..")
         };
         self.tests
@@ -529,7 +530,10 @@ mod tests {
     fn bad_test_paths_flags_each_escaping_form() {
         let pack = |tests: &[&str]| {
             let dir = tempfile::tempdir().unwrap();
-            let list: String = tests.iter().map(|t| format!("  - \"{t}\"\n")).collect();
+            let list: String = tests
+                .iter()
+                .map(|t| format!("  - \"{}\"\n", t.replace('\\', "\\\\")))
+                .collect();
             let yaml = format!("name: p\ndescription: d\ntests:\n{list}");
             std::fs::write(dir.path().join("pack.yaml"), yaml).unwrap();
             StarterPack::load(dir.path()).unwrap()
@@ -540,23 +544,26 @@ mod tests {
                 .bad_test_paths()
                 .is_empty()
         );
-        for bad in ["/etc/x.sh", "../x.sh", "tests/../../x.sh", "", "  "] {
+        for bad in [
+            "/etc/x.sh",
+            "../x.sh",
+            "tests/../../x.sh",
+            "",
+            "  ",
+            "\\x.sh",
+            "tests\\..\\x.sh",
+            "C:\\x.sh",
+            "C:x.sh",
+        ] {
             assert_eq!(
                 pack(&["tests/ok.sh", bad]).bad_test_paths(),
                 vec![bad],
                 "{bad:?}"
             );
         }
-        assert!(
-            StarterPack::load(&{
-                let d = tempfile::tempdir().unwrap();
-                std::fs::write(d.path().join("pack.yaml"), "name: p\ndescription: d\n").unwrap();
-                d.keep()
-            })
-            .unwrap()
-            .tests
-            .is_empty()
-        );
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("pack.yaml"), "name: p\ndescription: d\n").unwrap();
+        assert!(StarterPack::load(d.path()).unwrap().tests.is_empty());
     }
 
     #[test]
