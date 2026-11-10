@@ -6,7 +6,7 @@
 {"ts":1792660525,"event":"stop","agent_id":"a2","agent_type":"dev","state":null,"ref":"feature/menu"}
 {"ts":1792660529,"event":"mark","agent_type":"qa","flow":"deliver","step":"guard","lot":"menu"}
 {"ts":1792660530,"event":"start","agent_id":"a3","agent_type":"qa","state":null}
-{"ts":1792660535,"event":"stop","agent_id":"a3","agent_type":"qa","state":"approved","ref":"feature/menu"}
+{"ts":1792660535,"event":"stop","agent_id":"a3","agent_type":"qa","state":"approved","ref":"feature/review"}
 {"ts":1792660536,"event":"stop","agent_id":"a3","agent_type":"qa","state":null,"ref":"feature/other"}
 {"ts":1792660539,"event":"mark","agent_type":"ops","flow":"deliver","step":"validate","lot":"menu"}
 {"ts":1792660540,"event":"start","agent_id":"a4","agent_type":"ops","state":null}
