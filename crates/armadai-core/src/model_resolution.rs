@@ -237,18 +237,12 @@ pub fn resolve_tier_placeholder(model: &str, provider: &str) -> Option<String> {
 /// `("google", Max)` has no row of its own because Google's Max *is* its Pro,
 /// stated once rather than twice.
 pub fn fallback_model_for_tier(provider: &str, tier: ModelTier) -> &'static str {
-    match (provider, effective_tier(provider, tier)) {
-        ("anthropic", ModelTier::Fast) => "claude-haiku-4-5-20251001",
-        ("anthropic", ModelTier::Pro) => "claude-sonnet-4-5-20250929",
-        ("anthropic", ModelTier::Max) => "claude-opus-4-6",
-        ("google", ModelTier::Fast) => "gemini-2.5-flash",
-        ("google", ModelTier::Pro) => "gemini-2.5-pro",
-        ("openai", ModelTier::Fast) => "gpt-4o-mini",
-        ("openai", ModelTier::Pro) => "gpt-4o",
-        ("openai", ModelTier::Max) => "o3-pro",
-        (_, ModelTier::Fast) => "claude-haiku-4-5-20251001",
-        (_, ModelTier::Pro) => "claude-sonnet-4-5-20250929",
-        (_, ModelTier::Max) => "claude-opus-4-6",
+    let table = &crate::model_table::model_table().tiers;
+    let row = table.get(provider).unwrap_or_else(|| &table["anthropic"]);
+    match effective_tier(provider, tier) {
+        ModelTier::Fast => &row.fast,
+        ModelTier::Pro => &row.pro,
+        ModelTier::Max => row.max.as_ref().unwrap_or(&row.pro),
     }
 }
 

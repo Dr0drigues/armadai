@@ -2,20 +2,11 @@ use std::collections::{HashMap, HashSet};
 
 /// Embedded alias defaults — updated each release.
 fn embedded_aliases() -> HashMap<&'static str, &'static str> {
-    HashMap::from([
-        // Google
-        // `gemini-3.0-pro` is not a real Google model — it was a name commonly
-        // used by users anticipating Gemini 3. Map it to the portable `latest:pro`
-        // tier rather than pinning to a concrete model, so the resolution picks
-        // the best stable Gemini at runtime via the model registry.
-        ("gemini-3.0-pro", "latest:pro"),
-        ("gemini-1.5-flash", "gemini-2.5-flash"),
-        ("gemini-1.5-pro", "gemini-2.0-pro"),
-        ("gemini-1.0-pro", "gemini-2.0-pro"),
-        // OpenAI
-        ("gpt-4-turbo", "gpt-4o"),
-        ("gpt-3.5-turbo", "gpt-4o-mini"),
-    ])
+    crate::model_table::model_table()
+        .aliases
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect()
 }
 
 /// Load local overrides from `~/.config/armadai/model-aliases.json`.
