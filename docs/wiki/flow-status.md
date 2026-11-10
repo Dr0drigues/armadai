@@ -10,7 +10,7 @@ for OpenCode, Codex and Copilot).
 
 ## What is recorded
 
-When the project has a flow, `armadai link` installs four **asynchronous** hooks in
+When the project has a flow, `armadai link` installs **asynchronous** hooks on four events in
 `.claude/settings.json`, each running `armadai __record-flow-event`:
 
 | Hook | When |
@@ -18,12 +18,17 @@ When the project has a flow, `armadai link` installs four **asynchronous** hooks
 | `SubagentStart` | a sub-agent starts |
 | `SubagentStop` | a sub-agent ends |
 | `PreToolUse`, matcher `SubagentHandback` | a sub-agent hands back, with its reply (this tool exists in auto mode only) |
+| `PreToolUse`, matcher `Agent\|Task` | a delegation whose description starts with a [marker](#the-delegation-marker): the marker alone |
 | `UserPromptExpansion` | a command typed in Claude Code (`/name`, skill or custom command): its name only |
 
 Each event is one JSON line appended to `.armadai/state/claude/<session>.jsonl`: a timestamp,
-start or stop, the sub-agent id, its agent name and the `STATE:` word it ended with; for a typed
-command, a timestamp and its name (`{"ts":...,"event":"command","command":"bugfix"}`). Nothing
-else: no prompt, no reply text, no command arguments. The hooks never fail and never print: bad
+start or stop, the sub-agent id, its agent name, the `STATE:` word it ended with and its `REF:`
+word (see below); for a typed command, a timestamp and its name
+(`{"ts":...,"event":"command","command":"bugfix"}`); for a marked delegation, a `mark` line
+(`{"ts":...,"event":"mark","agent_type":"reviewer","flow":"evolution","step":"review","lot":"menu"}`,
+without `lot` when the marker has none). Nothing else: no prompt, no reply text, no description, no
+command arguments. The `mark` and the `REF:` word are the only things recorded beyond what the
+first releases wrote. The hooks never fail and never print: bad
 input, no project or an unwritable log record nothing.
 
 `link` also adds `state/` to `.armadai/.gitignore` (and says `patched .../.gitignore` when it
@@ -85,6 +90,41 @@ in the middle of a flow never opens a run by itself. A loop that comes back to t
 through the coordinator does not hold the run open. A fan-out through the coordinator lists the
 hop into it once (`f → hub`), then one hop per step reached (`hub → x`, `hub → y`).
 
+## The delegation marker
+
+On Claude Code, the coordinator starts the `description` of an `Agent` call to an agent that holds a
+step with `[<flow>/<step>]` or `[<flow>/<step>#<lot>]` (for example `[lot/plan#12] write the plan`).
+`#<lot>` is optional: it names one batch of work, so two batches of one flow stay apart. Under
+`policy.delegation: strict` the [gate](policy-gate.md#the-delegation-marker) refuses a delegation
+without it; without `strict` it is optional, and recorded when present. When the project has a flow,
+`link` writes the form into the `### Marking delegations` section of the root `CLAUDE.md` block.
+
+The hook writes a `mark` line before the sub-agent starts. `SubagentStart` carries no call id, so a
+`mark` and the `start` it belongs to are matched by the order of the log, with these rules:
+
+- a `start` of a new sub-agent takes the oldest unused `mark` for its agent name and goes to the run
+  of that `(flow, lot)` pair, opened if there is none. The run is attributed as by a typed command:
+  no inference moves it, and only its natural end, not another lot or a restart of its entry step,
+  closes it. Two runs of one flow with different lots stay apart;
+- when several unused marks for one agent name differ, the match is **ambiguous**: each such `start`
+  is `?` (`ambiguous marker`) on the step of each of them, in a run of each `(flow, lot)`, and no
+  link is taken. Identical marks are not ambiguous: each `start` takes one;
+- a `start` of a sub-agent already seen (a resumption by `SendMessage`) takes no `mark` and
+  **inherits** the marker of its first start; when that marker was ambiguous it stays unplaced, and
+  when there was none it is inferred as before;
+- an **orphan** mark (its call never started: refused, failed) is dropped at the next `stop` of a
+  sub-agent already seen, so it cannot stick to a later start. A `stop` of the main thread does not
+  drop it;
+- a mark that names a flow or step the project lacks, or a step the agent does not hold, is
+  **ignored**: the `start` is inferred as if it had none;
+- an unmarked `start` follows the rules above and never extends a run a marker opened. Without any
+  `mark` line in a session, nothing in this section applies and the output is what it was before.
+
+A sub-agent may end its reply, after its `STATE:` line, with one line reading exactly
+`REF: <ref>`: up to 64 letters, digits or `._/#-` (a branch, a merge request). The hook records
+the last valid such line of the reply; the first one recorded for a sub-agent shows on its step. Any
+other line (`REF: two words`, `REF:x`, `see REF: x`) records nothing.
+
 ## Reading the output
 
 ```bash
@@ -119,6 +159,8 @@ deliver  in progress
 | `✗` | a state the step does not declare. It leads nowhere: started again, the step is retried in place and its new state replaces the `✗`. A state the step declares but no link follows ends the flow normally: it is not a `✗` |
 | `~` | held by the coordinator, which is not recorded (`coordinator, not recorded`) |
 | `-` | not run in this session (`not run in this session`): a step before the one a run opened at, when the session started the flow mid-way (inferred runs only: in a run a command opened, a step that never started stays `○ pending`). Neither done nor pending, it never holds the run open |
+
+A run whose steps were placed by a marker with a lot heads `deliver #menu  finished` (Markdown: `## deliver #menu: finished`); a run without a lot is headed as before. A step with a `REF:` shows it after its state, in square brackets: `  ✓ build     done [feature/menu]` (Markdown: the Status cell reads `done [feature/menu]`).
 
 A run heading reads `in progress`, `finished`, or `interrupted` (a later flow command closed the
 run before it finished).
@@ -213,8 +255,9 @@ bugfix interrupted 1/2
   "runs": [
     {
       "flow": "deliver",
+      "lot": "menu",
       "status": "in-progress",
-      "steps": [ { "step": "guard", "mark": "running", "sign": "●", "state": null, "note": null } ],
+      "steps": [ { "step": "guard", "mark": "running", "sign": "●", "state": null, "note": null, "ref": "feature/menu" } ],
       "loops": [ { "from": "build", "to": "guard", "times": 2 } ],
       "transitions": [ { "at": "2026-10-22T09:15:20Z", "from": "design", "to": "build", "state": "done" } ]
     }
@@ -223,6 +266,7 @@ bugfix interrupted 1/2
 ```
 
 - The schema only grows: a key is never renamed, retyped or removed, a new key is added. A change that breaks a reader gets a new `schema` value (`armadai.flow-status/2`). Read the keys you need and ignore the others.
+- `runs[].lot` and `steps[].ref` are always present: `null` when the run has no lot or the step no `REF:`. The text and Markdown outputs of a session with no marker and no `REF:` are unchanged byte for byte.
 - `runs` come in the order the runs started (the text shows finished and interrupted runs first).
 - `started_at` and `last_event_at` are the first and last event of the log, UTC, to the second; `null` when the log is empty.
 - No log at all: `"session": null, "runs": []`, exit code 0. `--session S` with no log for `S`: the session with its dates `null` and no run, exit code 0.
@@ -278,9 +322,56 @@ The panel opens when a session starts (Claude Code seats a pane nobody asked for
 
 The JavaScript is tested with `claude plugin test` (`crates/armadai/src/compile/ui/armadai-ui-panel.test.ts`, copied into a linked plugin folder); CI has no Claude Code, so it does not run there.
 
+## Statistics: `flow stats`
+
+`armadai flow stats` reads the same log and says how a session went: calls, durations, verdicts, loops.
+
+```bash
+armadai flow stats                      # the latest session, grouped by agent
+armadai flow stats deliver --by step    # only the calls and loops of the flow `deliver`, per step
+armadai flow stats --all --by lot       # every recorded session together, per lot
+armadai flow stats --session 3f2a9c     # another session
+armadai flow stats --json
+```
+
+| Option | Meaning |
+|---|---|
+| `[FLOW]` | Only the calls and loops of this flow |
+| `--session <ID>` | A session (see `flow status --list`); the latest one by default |
+| `--all` | Every recorded session together |
+| `--by agent\|step\|lot` | What to group by (default `agent`) |
+| `--json` | One JSON document on stdout, and nothing else |
+
+```
+flow stats  session s1  by agent
+AGENT      CALLS  RESUMED  MEDIAN  MAX  TOTAL  STATES                  REJECTED  LOOPS
+architect      2        0  5s      5s   10s    -                       -         0
+qa             2        0  5s      5s   10s    approved 1, rejected 1  50%       0
+durations run from a start to the first stop of the same agent: a resumed agent counts once, so they are lower bounds
+states count each verdict rendered, a resumed agent can render several
+```
+
+- A **call** is a sub-agent that started. Its duration runs from its start to its first `stop`; an agent resumed by `SendMessage` counts once (`RESUMED` counts the restarts) and its later segments are not timed, hence the note under the table. Durations read `45s`, `4m12s`, `1h03m`; the median of an even number of calls is the mean of the two in the middle, rounded down to the second.
+- `STATES` counts each verdict a call rendered; `REJECTED` is the share of `rejected` or `rejected-*` among the verdicts of calls whose step declares such a state (`-` when there is none); `LOOPS` counts the links taken more than once, as `flow status` does (the sum of `times - 1`, by the step they leave).
+- `--by step` groups by `<flow>/<step>` and `--by lot` by lot (`(none)` for a marker without one): both count the calls a [marker](#the-delegation-marker) places, and a line says how many were left out (`4 calls are not marked and are left out of --by step`, or `1 call is not marked and is left out …`). Without any marked call: `no call is marked: --by step and --by lot need [flow/step#lot] markers (see armadai flow status)`, exit code 0. With no log: `no flow activity recorded yet (link installs the hooks; start a flow in Claude Code)`, exit code 0.
+- **`--by agent` needs no marker, and cannot tell which step a call served**: an agent that holds a step that rejects and one that does not counts the verdicts of both in the denominator of `REJECTED`. Group by step to read a rejection rate per step.
+
+`--json` prints `armadai.flow-stats/1`; keys are always present, the schema only grows (a change that breaks a reader gets `armadai.flow-stats/2`):
+
+```json
+{"schema":"armadai.flow-stats/1","sessions":["3f2a9c"],"by":"agent","groups":[{"key":"qa","calls":2,"resumed":0,"duration_s":{"median":5,"max":5,"total":10},"states":{"approved":1,"rejected":1},"rejection_rate":0.5,"loops":0}],"unmarked_calls":0}
+```
+
+`rejection_rate` is `null` when no verdict can reject; `unmarked_calls` is `0` for `--by agent`; `groups` is `[]` when no call is marked under `--by step|lot`.
+
 ## Limits
 
 - Claude Code only.
+- The marker is written by the model. Without `strict` nothing makes it write one; under `strict` the gate refuses a delegation without it, but not a wrong one that still names a step the target holds.
+- A `mark` and its `start` are matched by the order of the log, not by a call id: two parallel calls to one agent name with different markers are shown `?` (`ambiguous marker`), never guessed.
+- A resumption (`SendMessage`) writes no `mark` and is not judged by the gate: it inherits the marker of the first start, and the durations of `flow stats` stop at the first `stop`.
+- A marked run is closed only by its natural end: a step that never comes (a skipped review) leaves it `in progress`.
+- `REF:` is read from the reply of a sub-agent only, and the first one recorded wins.
 - When the log does not say, the answer is `?`, never a guess.
 - Two links to a shared agent's step whose sources stopped in the same second cannot be told
   apart: the step is `?` (ambiguous step) in both runs, and neither moves. The most recent link

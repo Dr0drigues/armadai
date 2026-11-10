@@ -70,7 +70,8 @@ run (`armadai pack update` or `armadai pack sync`). See [Starter packs](starter-
 | coordinator | the root `CLAUDE.md`: the coordinator's prompt and a generated `## Delegation` section (agents, flows, steps, states, transitions), between `<!-- armadai:begin -->` and `<!-- armadai:end -->`. An existing `CLAUDE.md` keeps its content; the block is appended or replaced in place |
 | automation | `.claude/settings.json` hooks: `session-start` -> `SessionStart`, `session-end` -> `SessionEnd`, `before-tool` -> `PreToolUse`, `after-tool` -> `PostToolUse`, `on-prompt` -> `UserPromptSubmit`, `on-stop` -> `Stop`; `native.claude.matcher` is the group matcher, other `native.claude` keys go into the handler |
 | `policy.delegation: strict` | a `PreToolUse` hook on `Agent|Task` running `armadai __claude-policy-gate` (see [Policy gate](policy-gate.md)) |
-| a flow | with the flows, four async hooks running `armadai __record-flow-event` (`SubagentStart`, `SubagentStop`, `PreToolUse` on `SubagentHandback`, `UserPromptExpansion` (a typed command, its name only)) and, for an agent holding a step with `states:` or a failure path, a closing `STATE: <state>` instruction in its file (OpenCode agents get it too); report `flow recording: compiled`. `.armadai/.gitignore` gets `state/`. See [Flow status](flow-status.md) |
+| a flow | with the flows, async hooks running `armadai __record-flow-event` (`SubagentStart`, `SubagentStop`, `PreToolUse` on `SubagentHandback` and on `Agent|Task` (the delegation marker only), `UserPromptExpansion` (a typed command, its name only)), a `### Marking delegations` section in the root `CLAUDE.md` block (the form of the `[flow/step#lot]` marker and of the `REF:` line; under `strict`, a sentence saying the gate refuses a delegation without it) and, for an agent holding a step with `states:` or a failure path, a closing `STATE: <state>` instruction in its file (OpenCode agents get it too); report `flow recording: compiled (hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback, Agent|Task), UserPromptExpansion in .claude/settings.json)`. `.armadai/.gitignore` gets `state/`. See [Flow status](flow-status.md) |
+| `policy.grants` | per rule of each level, a `PermissionRequest` hook (matcher `Bash`, `if` the rule) running `armadai __claude-grant <level>`, and two `deny` rules owned by link, `Bash(armadai grant *)` and `Edit(/.armadai/state/grants.yaml)`. Reports `policy grants: compiled (PermissionRequest hooks (armadai __claude-grant), one per rule; inactive until armadai grant)` and `grant state guard: compiled (deny rules Bash(armadai grant *) and Edit(/.armadai/state/grants.yaml) in .claude/settings.json)`; other targets `not-compiled (Claude Code only)`. See [Permission levels](#permission-levels-grant) |
 | `native.claude` of project.yaml | top-level keys of `settings.json` |
 | `ui.status_line: true` | the `statusLine` of `.claude/settings.json`, running `armadai __claude-statusline` (it hides the `statusLine` of your user settings; a `statusLine` you already have is kept and reported `not-compiled`) |
 | `ui.subagent_status_line: true` | the plugin `armadai-ui` in `.armadai/plugins/armadai-ui/` (`.claude-plugin/marketplace.json`, `.claude-plugin/plugin.json`, and a `settings.json` whose `subagentStatusLine` runs `armadai __claude-subagent-statusline`), and two entries in `.claude/settings.json`: `extraKnownMarketplaces.armadai-ui` (a `directory` source, `./.armadai/plugins/armadai-ui`) and `enabledPlugins.armadai-ui@armadai-ui: true`. Claude Code loads the plugin once you trust the folder. The plugin is versioned with the project. If you already set one of those two entries to another value, `link` writes no plugin and reports `ui.subagent_status_line` as `not-compiled`, naming the key. `native.claude` may not hold `enabledPlugins` or `extraKnownMarketplaces` with this key (error). The other targets report `not-compiled (Claude Code only)` |
@@ -112,6 +113,72 @@ Claude Code applies deny)`). A rule whose pattern merely overlaps one of yours
 (`Bash(git *)` against `Bash(git push:*)`) is not seen. A binary older than this version
 (1.0.0-rc.8 and before) ignores the `permissions` record of the manifest: its `unlink` leaves the
 rules link added.
+
+## Permission levels (`grant`)
+
+`policy.grants` of `project.yaml` declares named levels, each a list of native permission rules
+(see [Project format](project-format.md)). A level is **inactive** until you switch it on:
+
+```bash
+armadai grant                             # the levels and their state
+armadai grant push --until publish        # until a delegation to the step `publish` is recorded
+armadai grant push --for 2h               # for 30m, 2h, 1h30m...
+armadai grant push --until-time 18:00     # until that local time (tomorrow when it has passed)
+armadai revoke push                       # switch one level off
+armadai revoke --all
+```
+
+```
+grant levels (policy.grants)
+  push  inactive  Push feature branches
+```
+
+A bound is required, from the command or from `until:` in the level; one typed on the command line
+replaces the level's. `--until <step>` is `<flow>/<step>`, or a step id held by one flow only; it
+needs the delegation markers that `link` makes Claude Code record (see
+[Flow status](flow-status.md#the-delegation-marker)), so run `armadai link --target claude` first.
+The state is `.armadai/state/grants.yaml`, git-ignored with the rest of `state/`; the hook of each
+rule reads it at every call, so an expiry holds without anything running in between. A grant never
+lifts a `deny`: a level whose rule is, character for character, a `deny` rule of
+`.claude/settings.json` or `.claude/settings.local.json` is refused, and one that equals a
+`native.claude.permissions.deny` rule is the validator error `grant-over-deny`.
+
+**What `link` writes.** For each rule, a `PermissionRequest` hook with matcher `Bash` and `if` set to
+the rule, running `armadai __claude-grant <level>` (hidden command: it reads the hook JSON on stdin,
+answers `allow` only while the level is active and the call is covered, and prints nothing
+otherwise, which leaves Claude Code's own prompt). Two `deny` rules guard the state:
+`Bash(armadai grant *)` and `Edit(/.armadai/state/grants.yaml)`. `unlink` removes the hooks and the
+two rules it added (yours are kept) and, for the `claude` target, deletes
+`.armadai/state/grants.yaml`, which switches every level off.
+
+**What a level covers, and what it does not.**
+
+- A level answers **`Bash` commands only**. A rule on another tool (`Edit(...)`, `Read`, an MCP
+  tool) gets no hook (validator warning `grant-unsupported-rule`): put it in
+  `native.claude.permissions.allow`.
+- It gives **no opinion**, so Claude Code asks as usual, for a command that is compound or uses
+  `$`, quotes, a redirection, a glob or a character outside ASCII, for one that names `armadai` or
+  `grants.yaml`, and for any command run from inside `.armadai/`. `cargo test -p armadai-model` is
+  therefore never granted: it names `armadai`.
+- `*` crosses spaces: `Bash(git push origin feature/*)` also covers `git push origin feature/x
+  HEAD:master`.
+
+**This is not a security boundary.** Claude Code says a rule covers the call it usually produces and
+is not a boundary around the program (permissions page). The checks above stop an accident or a
+naive attempt, nothing more. Under a broad level (`Bash(cp *)`, `Bash(python *)`, `Bash(*)`), an
+agent can still rewrite the state through a copied folder, a link prepared beforehand, or an
+interpreter that runs code the hook never reads; the `acceptEdits` mode makes the preparation
+silent. Write narrow levels: full commands with fixed arguments (`Bash(git push origin
+feature/menu)`), never an interpreter, a shell, `env`, `xargs` or a bare `*`.
+
+**Who runs it.** `grant` is for the person at a terminal. It refuses to run in a shell of a Claude
+Code session (`CLAUDECODE` is set), and the `deny` rule stops the plain form from an agent; but
+`env -u CLAUDECODE armadai grant ...` lifts the refusal, so this stops an accident, not a determined
+agent.
+
+**Local time.** `--until-time` and the times of the list are in your local time zone. A time the
+zone skips (the spring change) is refused (`02:30 does not exist in your time zone`); a time it
+has twice (the autumn change) is the first one.
 
 ## OpenCode
 

@@ -68,6 +68,16 @@ that sets it wins. Each file is a flat map of `name: value`. A name no layer set
 value and an `approximated` line `var <name>` in the report. The files of `.armadai/` are never
 rewritten. See [Starter packs](starter-packs.md#variables).
 
+`policy.grants` is a map of named permission levels, keyed by an id (`bad-id` otherwise). Each level has
+a `description` (shown by `armadai grant`), `allow`, a list of native permission rules (at least one,
+none empty: `grant-empty-allow`; only `Bash(...)` rules are ever granted: `grant-unsupported-rule`) and
+an optional `until`, the step whose delegation ends the level by default (a step id, or `<flow>/<step>`
+when several flows hold it: `unknown-step`, `grant-ambiguous-until`). A level is inactive until
+`armadai grant` switches it on, and a grant never lifts a `deny` (`grant-over-deny`). What `link`
+writes, and what a level does not guarantee, is in [Link](link.md#permission-levels-grant). With
+`pack:`, the levels of the pack and of the project merge by key, and a level of the project replaces
+the pack's level of the same key as a whole.
+
 `ui` holds opt-in interface keys: absent or `false`, `link` writes nothing for them. `ui.status_line`
 (a boolean; any other value, and any other key under `ui`, is `invalid-yaml`) asks `link --target claude`
 for a `statusLine` in `.claude/settings.json` that runs `armadai __claude-statusline`, which shows the

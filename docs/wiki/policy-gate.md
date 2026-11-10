@@ -49,6 +49,52 @@ Under `strict`, the generated `CLAUDE.md` marks the agents the gate will refuse 
 session ("not delegable"), and the conformance report says
 `policy delegation=strict: compiled (enforced: delegation topology, by the PreToolUse gate)`.
 
+## The delegation marker
+
+Under `strict`, the `description` of a delegation to an agent that holds a flow step must start with
+a marker naming that step:
+
+```
+[<flow>/<step>]           [lot/plan] write the plan
+[<flow>/<step>#<lot>]     [lot/plan#12] write the plan
+```
+
+`flow`, `step` and `lot` are ids (`[a-z0-9][a-z0-9-]{0,63}`), the lot at most 40 characters, and the
+marker is the very first thing of the description. `flow status` and `flow stats` read it to place
+the sub-agent that follows (see [Flow status](flow-status.md#the-delegation-marker)); the gate
+refuses a delegation without a good one, at once, with a reason that tells the model how to rewrite
+its call:
+
+```
+the description of a delegation to `reviewer` must start with [flow/step] or [flow/step#lot], with flow/step among: evolution/review, mr/revue-mr
+```
+
+```
+the marker [evolution/build#menu] does not name a step `reviewer` holds; use one of: evolution/review, mr/revue-mr
+```
+
+The first covers a missing or malformed marker, the second a well-formed marker that names a flow
+or step the target does not hold. The list is every `<flow>/<step>` the target holds, sorted.
+
+Spared, with no marker asked:
+
+- an agent of `policy.free_agents` (it wins over a step the same agent holds);
+- an agent that holds no step in any flow;
+- a **resumption** of a sub-agent by `SendMessage`: the gate's matcher is `Agent|Task`, so it never
+  sees it (the sub-agent keeps the marker of its first delegation in the log);
+- every delegation under `policy.delegation: off`, and a project the gate cannot judge (invalid,
+  legacy, no project).
+
+The topology check comes first: a target the flows do not permit is refused with the list of
+permitted targets, as before, and the marker is judged only for a permitted one. A refused
+delegation records no marker in the flow log.
+
+**Effect on an existing project.** The gate reads `.armadai/project.yaml` at runtime, so a project
+under `strict` is refused from the moment a binary with this check is installed, before any new
+`link`: its coordinator must mark its delegations at once. Run `armadai link --target claude`
+again to get the `### Marking delegations` section in the root `CLAUDE.md` block, which tells the
+coordinator how (and, under `strict`, that the gate refuses a delegation without it).
+
 ## Installing the hook
 
 `armadai link --target claude` installs it in `<output>/settings.json` (`.claude/settings.json` by

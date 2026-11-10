@@ -994,7 +994,7 @@ mod tests {
     /// Run inside a child process under `TZ=Europe/Paris` by the test below: the real
     /// `Local`, whose order for an ambiguous time is the platform's.
     #[test]
-    #[ignore = "run by the_local_zone_is_read_under_tz_europe_paris"]
+    #[ignore = "run by the_local_zone_is_read_under_tz_europe_paris with TZ=Europe/Paris; fails under `cargo test -- --include-ignored` on a machine outside the Paris time zone"]
     fn local_zone_probe() {
         let now = chrono::Local.from_utc_datetime(&utc("2027-10-30T22:30:00Z").naive_utc());
         assert_eq!(
