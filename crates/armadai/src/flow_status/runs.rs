@@ -129,6 +129,15 @@ pub struct Run {
 ///   any `mark` line nothing above applies. The `REF:` of the first stop
 ///   recorded for an `agent_id` shows on its step.
 pub fn runs(project: &Project, events: &[FlowEvent]) -> Vec<Run> {
+    runs_and_markers(project, events).0
+}
+
+/// `agent_id` -> the `(flow, step, lot)` of its marker.
+pub(super) type Markers = HashMap<String, (String, String, Option<String>)>;
+
+/// `runs`, with the marker `(flow, step, lot)` each `agent_id` consumed (none
+/// for an unmarked or ambiguously marked one): what `flow stats` groups by.
+pub(super) fn runs_and_markers(project: &Project, events: &[FlowEvent]) -> (Vec<Run>, Markers) {
     let mut b = Builder {
         project,
         open: Vec::new(),
@@ -185,7 +194,13 @@ pub fn runs(project: &Project, events: &[FlowEvent]) -> Vec<Run> {
     for r in b.open.into_iter().filter(shown) {
         groups.entry(r.group).or_default().push(r);
     }
-    groups.into_values().map(merge_candidates).collect()
+    let markers = (b.marker_of.into_iter())
+        .map(|(id, (_, flow, step, lot))| (id, (flow, step, lot)))
+        .collect();
+    (
+        groups.into_values().map(merge_candidates).collect(),
+        markers,
+    )
 }
 
 /// One run for the candidates still grouped: their flows joined by ` | `, the
@@ -210,7 +225,7 @@ fn merge_candidates(mut members: Vec<Building>) -> Run {
 /// One stop per sub-agent run: a `SubagentHandback` (with the state) and the
 /// `SubagentStop` after it (usually without) share an `agent_id`; the first
 /// state and the first `REF:` recorded win. A new start of the same id begins a new run.
-fn merge_stops(events: &[FlowEvent]) -> Vec<FlowEvent> {
+pub(super) fn merge_stops(events: &[FlowEvent]) -> Vec<FlowEvent> {
     let mut out: Vec<FlowEvent> = Vec::new();
     let mut last_stop: HashMap<&str, usize> = HashMap::new();
     for e in events {
