@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use super::record::{LOGS_DIR, log_path};
 use super::runs::{Mark, Run, StepView};
+use super::stats::{By, Stats};
 
 /// The runs of one session: a `session <id>` heading, then each run (finished
 /// and interrupted ones first, each group in start order) with one line per step, its loops
@@ -196,10 +197,139 @@ pub fn should_redraw(old: Option<u64>, new: Option<u64>) -> bool {
     old != new
 }
 
+/// `4m12s`, `45s`, `1h03m`.
+pub fn duration(s: u64) -> String {
+    match s {
+        0..60 => format!("{s}s"),
+        60..3600 => format!("{}m{:02}s", s / 60, s % 60),
+        _ => format!("{}h{:02}m", s / 3600, s % 3600 / 60),
+    }
+}
+
+/// `armadai flow stats`: a header, one row per group, then the notes (the
+/// calls left out of `--by step|lot`, and how durations are measured).
+pub fn render_stats(stats: &Stats, scope: &str) -> String {
+    let by = match stats.by {
+        By::Agent => "agent",
+        By::Step => "step",
+        By::Lot => "lot",
+    };
+    let mut rows = vec![[
+        by.to_uppercase(),
+        "CALLS".into(),
+        "RESUMED".into(),
+        "MEDIAN".into(),
+        "MAX".into(),
+        "TOTAL".into(),
+        "STATES".into(),
+        "REJECTED".into(),
+        "LOOPS".into(),
+    ]];
+    for g in &stats.groups {
+        let states = (g.states.iter())
+            .map(|(w, n)| format!("{w} {n}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        rows.push([
+            g.key.clone(),
+            g.calls.to_string(),
+            g.resumed.to_string(),
+            duration(g.median_s),
+            duration(g.max_s),
+            duration(g.total_s),
+            if states.is_empty() {
+                "-".into()
+            } else {
+                states
+            },
+            (g.rejection_rate).map_or("-".into(), |r| format!("{}%", (r * 100.0).round())),
+            g.loops.to_string(),
+        ]);
+    }
+    let width: Vec<usize> = (0..9)
+        .map(|c| rows.iter().map(|r| r[c].chars().count()).max().unwrap_or(0))
+        .collect();
+    // counts line up on their right edge, the rest on their left
+    let right = [1, 2];
+    let mut out = format!("flow stats  {scope}  by {by}\n");
+    for r in &rows {
+        let cells: Vec<String> = (0..9)
+            .map(|c| match right.contains(&c) {
+                true => format!("{:>w$}", r[c], w = width[c]),
+                false => format!("{:<w$}", r[c], w = width[c]),
+            })
+            .collect();
+        out += cells.join("  ").trim_end();
+        out.push('\n');
+    }
+    out += "durations run from a start to the first stop of the same agent: a resumed agent counts once, so they are lower bounds\n";
+    if stats.unmarked_calls > 0 && stats.by != By::Agent {
+        let n = stats.unmarked_calls;
+        let (calls, are) = if n == 1 {
+            ("call", "is")
+        } else {
+            ("calls", "are")
+        };
+        out += &format!(
+            "{n} {calls} {are} not marked and {} left out of --by {by}\n",
+            if n == 1 { "is" } else { "are" }
+        );
+    }
+    out
+}
+
+/// The one line of `--by step|lot` when no call of the session is marked.
+pub const NO_MARKER: &str = "no call is marked: --by step and --by lot need [flow/step#lot] markers (see armadai flow status)";
+
 #[cfg(test)]
 mod tests {
     use super::super::runs::StepView;
     use super::*;
+
+    #[test]
+    fn a_rejection_rate_rounds_to_the_nearest_percent_and_four_decimals_in_json() {
+        let g = |rate| super::super::stats::Group {
+            key: "qa".into(),
+            calls: 1,
+            resumed: 0,
+            median_s: 1,
+            max_s: 1,
+            total_s: 1,
+            states: Default::default(),
+            rejection_rate: Some(rate),
+            loops: 0,
+        };
+        let stats = Stats {
+            by: By::Agent,
+            groups: vec![g(2.0 / 3.0), g(0.2727)],
+            unmarked_calls: 0,
+            any_marked: false,
+        };
+        let text = render_stats(&stats, "session s");
+        let rows: Vec<&str> = text.lines().skip(2).take(2).collect();
+        assert_eq!(
+            rows,
+            [
+                "qa         1        0  1s      1s   1s     -       67%       0",
+                "qa         1        0  1s      1s   1s     -       27%       0"
+            ]
+        );
+        let doc = super::super::json::stats_document(&[], &stats);
+        assert_eq!(doc["groups"][0]["rejection_rate"], 0.6667);
+    }
+
+    #[test]
+    fn durations_read_as_seconds_minutes_or_hours() {
+        let got: Vec<String> = [0, 45, 59, 60, 252, 3599, 3600, 3725, 7200 + 59 * 60 + 59]
+            .map(duration)
+            .into();
+        assert_eq!(
+            got,
+            [
+                "0s", "45s", "59s", "1m00s", "4m12s", "59m59s", "1h00m", "1h02m", "2h59m"
+            ]
+        );
+    }
 
     fn view(step: &str, mark: Mark, state: Option<&str>, note: Option<&str>) -> StepView {
         StepView {

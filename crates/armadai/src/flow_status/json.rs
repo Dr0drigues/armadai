@@ -7,8 +7,10 @@ use serde_json::{Value, json};
 
 use super::record::FlowEvent;
 use super::runs::Run;
+use super::stats::{By, Stats};
 
 pub const SCHEMA: &str = "armadai.flow-status/1";
+pub const STATS_SCHEMA: &str = "armadai.flow-stats/1";
 
 /// `session`: (id, events of its log), `None` when no log exists at all. The
 /// runs keep the order they started in, not the display order of the text.
@@ -24,6 +26,31 @@ pub fn document(session: Option<(&str, &[FlowEvent])>, runs: &[Run]) -> Value {
         "schema": SCHEMA,
         "session": session,
         "runs": runs.iter().map(run).collect::<Vec<_>>(),
+    })
+}
+
+/// `armadai flow stats --json` (schema `armadai.flow-stats/1`); every key is
+/// always there, and the schema only grows like `flow-status`'s.
+pub fn stats_document(sessions: &[String], stats: &Stats) -> Value {
+    let by = match stats.by {
+        By::Agent => "agent",
+        By::Step => "step",
+        By::Lot => "lot",
+    };
+    json!({
+        "schema": STATS_SCHEMA,
+        "sessions": sessions,
+        "by": by,
+        "groups": stats.groups.iter().map(|g| json!({
+            "key": g.key,
+            "calls": g.calls,
+            "resumed": g.resumed,
+            "duration_s": { "median": g.median_s, "max": g.max_s, "total": g.total_s },
+            "states": g.states,
+            "rejection_rate": g.rejection_rate.map(|r| (r * 10_000.0).round() / 10_000.0),
+            "loops": g.loops,
+        })).collect::<Vec<_>>(),
+        "unmarked_calls": stats.unmarked_calls,
     })
 }
 

@@ -173,6 +173,7 @@ pub fn stats(project: &Project, events: &[FlowEvent], by: By, flow: Option<&str>
         }
     }
     for r in &runs {
+        // shortcut: a merged run `a | b` is read as its first flow, so a loop on a step only `b` has is lost; unmeasured, fix when a pack shows it
         let flow = r.flow.split(GROUP_SEP).next().unwrap_or_default();
         for (from, _, times) in &r.loops {
             let agent = (project.flows.get(flow))
