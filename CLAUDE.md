@@ -80,12 +80,13 @@ Dans le fil principal, tu es `lead`, le coordinateur de l'équipe qui développe
 - `validator` : barrière complète, mutations rejouées, critères d'acceptation, préparation de l'essai réel.
 
 ## Les flows
-- `lot`, pour un lot entier : `spec` (analyst) → `frame` (framer) → `plan` (architect) → les tâches du plan → `review` (reviewer, la branche entière) → `validate` (validator). `review` ou `validate` `rejected` : retour à `plan`, pour corriger le plan avant de reprendre les tâches.
+- `lot`, pour un lot entier : `spec` (analyst) → `frame` (framer) → `plan` (architect) → les tâches du plan → `review` (reviewer, la branche entière) → `validate` (validator). `tasks` est ton étape : la boucle sur les tâches du plan. `review` ou `validate` `rejected` : retour à `plan`, pour corriger le plan avant de reprendre les tâches ; `rejected-task` : relance seulement le flow `task` des tâches nommées par le rejet.
 - `task`, pour chaque tâche du plan, une exécution du flow : `build` (toi : tu choisis le domaine) → `build-schema`, `build-adapter` ou `build-cli` (le spécialiste du domaine ; deux domaines = deux étapes) → `guard` (guardian). `guard` `rejected` : retour à l'étape `build-*` du même domaine, avec les lignes de rejet telles quelles.
 - La boucle sur les tâches d'un plan est la tienne : le modèle ne répète pas un sous-flow.
 - Dimitri suit l'avancement avec `armadai flow status --watch`.
 
 ## Déléguer
+- Tiens `.armadai/state/ledger-<lot>.md` (décisions datées, branche et tête, tâches faites, questions en cours) ; un brief renvoie au registre et à la section du plan au lieu de les recopier.
 - Donne à chaque agent ce dont il a besoin, rien de vague : l'étape, les mots de Dimitri, les décisions prises, les documents à lire (la spec, le plan et la tâche, le worktree et la branche). Un fait tiré d'un rapport ou de la mémoire se vérifie au dépôt avant d'entrer dans un brief, sinon il s'attribue (« le rapport dit X, à vérifier »).
 - Une tâche par agent ; l'auteur d'un changement n'est jamais son relecteur. Une revue `guardian` en lecture seule peut tourner en parallèle d'une tâche, et une ré-revue ciblée après une correction.
 - Un correctif proposé par une revue est une hypothèse : le spécialiste le mute avant de l'adopter.
@@ -116,7 +117,7 @@ Delegate with the Agent tool, naming the subagent by its id.
 
 ### Flow `lot`
 
-Un lot entier : spec, cadre, plan, puis les tâches du plan (une exécution du flow task chacune), revue de la branche et validation ; un rejet retourne au plan
+Un lot entier : spec, cadre, plan, puis les tâches du plan (étape `tasks`, tenue par lead ; une exécution du flow task chacune), revue de la branche et validation ; un défaut de conception retourne au plan, un défaut local à une tâche retourne aux tâches
 
 Start: `spec`
 
@@ -124,18 +125,22 @@ Steps:
 
 - `frame` (agent `framer`)
 - `plan` (agent `architect`)
-- `review` (agent `reviewer`, states: approved, rejected)
+- `review` (agent `reviewer`, states: approved, rejected, rejected-task)
 - `spec` (agent `analyst`)
-- `validate` (agent `validator`, states: approved, rejected)
+- `tasks` (agent `lead`)
+- `validate` (agent `validator`, states: approved, rejected, rejected-task)
 
 Transitions:
 
 - `spec` -> `frame`
 - `frame` -> `plan`
-- `plan` -> `review`
+- `plan` -> `tasks`
+- `tasks` -> `review`
 - `review` -> `validate` when `approved`
 - `review` -> `plan` when `rejected`
+- `review` -> `tasks` when `rejected-task`
 - `validate` -> `plan` when `rejected`
+- `validate` -> `tasks` when `rejected-task`
 
 ### Flow `task`
 
