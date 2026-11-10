@@ -258,7 +258,11 @@ fn is_broad_bash_rule(rule: &str) -> bool {
     let Some(spec) = rule.strip_prefix("Bash(").and_then(|r| r.strip_suffix(')')) else {
         return false;
     };
-    let first = spec.split_whitespace().next().unwrap_or("");
+    // the legacy `prefix:*` form is as broad as `prefix *`
+    let first = (spec.strip_suffix(":*").unwrap_or(spec))
+        .split_whitespace()
+        .next()
+        .unwrap_or("");
     spec.starts_with('*')
         || BROAD_RUNNERS.contains(&first)
         || (BROAD_WHEN_GLOB.contains(&first) && spec.contains('*'))

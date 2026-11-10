@@ -1592,6 +1592,8 @@ fn a_broad_grant_rule_is_a_warning() {
         "Bash(python3 x.py)",
         "Bash(xargs rm)",
         "Bash(cp * /tmp)",
+        "Bash(python3:*)",
+        "Bash(cp:*)",
     ] {
         let ds = grants(
             &format!("policy:\n  grants:\n    g:\n      allow: [\"Bash(ls)\", \"{rule}\"]\n"),
@@ -1630,7 +1632,7 @@ fn a_broad_grant_rule_is_a_warning() {
         assert!(!broad(&format!("{word} a b")), "{word} without a glob");
     }
     let ds = grants(
-        "policy:\n  grants:\n    g:\n      allow: [\"Bash(git push origin feature/*)\", \"Bash(cp a b)\"]\n",
+        "policy:\n  grants:\n    g:\n      allow: [\"Bash(git push origin feature/*)\", \"Bash(cp a b)\", \"Bash(git:status)\"]\n",
         &[],
     );
     assert!(ds.iter().all(|d| d.code != "grant-broad-rule"), "{ds:?}");
