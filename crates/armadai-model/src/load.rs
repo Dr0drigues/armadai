@@ -163,6 +163,7 @@ pub fn expand_sequence(items: &[SeqItem]) -> (BTreeMap<String, Step>, Vec<Link>)
                     agent: agent.clone(),
                     states: Vec::new(),
                     on_failure: None,
+                    optional: false,
                 },
             )
         })

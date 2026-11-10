@@ -1539,3 +1539,45 @@ fn a_grant_rule_equal_to_a_native_deny_is_an_error() {
         "grant `g` allows `Bash(rm *)`, which `native.claude.permissions.deny` denies"
     );
 }
+
+const OPTIONAL_HINT: &str =
+    "a flow must begin with a step that runs; make another step the start, or drop optional";
+
+#[test]
+fn optional_start_step_declared_and_guessed() {
+    // declared start
+    let ds = diags(&[
+        M,
+        DEV,
+        REV,
+        (
+            ".armadai/flows/f.yaml",
+            "start: a\nsteps:\n  a: { agent: dev, optional: true }\n  b: { agent: rev }\nlinks:\n  - { from: a, to: b }\n",
+        ),
+    ]);
+    let d = err(&ds, "optional-start-step", (3, 3));
+    assert_eq!(d.message, "step `a` is optional but the flow starts there");
+    assert_eq!(d.hint.as_deref(), Some(OPTIONAL_HINT));
+    // no `start:`: the entry is the one the heuristic finds
+    let ds = diags(&[
+        M,
+        DEV,
+        REV,
+        (
+            ".armadai/flows/f.yaml",
+            "steps:\n  a: { agent: dev, optional: true }\n  b: { agent: rev }\nlinks:\n  - { from: a, to: b }\n",
+        ),
+    ]);
+    err(&ds, "optional-start-step", (2, 3));
+    // an optional step that is not an entry is fine
+    let ds = diags(&[
+        M,
+        DEV,
+        REV,
+        (
+            ".armadai/flows/f.yaml",
+            "start: a\nsteps:\n  a: { agent: dev }\n  b: { agent: rev, optional: true }\nlinks:\n  - { from: a, to: b }\n",
+        ),
+    ]);
+    assert!(ds.iter().all(|d| d.code != "optional-start-step"), "{ds:?}");
+}

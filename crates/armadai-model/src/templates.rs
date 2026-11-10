@@ -78,6 +78,7 @@ fn step(agent: &str) -> Step {
         agent: agent.into(),
         states: Vec::new(),
         on_failure: None,
+        optional: false,
     }
 }
 

@@ -127,6 +127,9 @@ pub struct Ui {
     /// Compile a Claude Code mod: a panel beside the chat with the flows and recent documents.
     #[serde(default, skip_serializing_if = "is_false")]
     pub panel: bool,
+    /// Compile a band above the prompt (in the same mod) that shows the open run.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub flow_band: bool,
     /// Project folders whose recent Markdown files the panel lists (default `docs`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub documents: Option<Vec<String>>,
@@ -324,6 +327,9 @@ pub struct Step {
     pub states: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_failure: Option<String>,
+    /// The step may never run: a flow can finish without it (never a start step).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub optional: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

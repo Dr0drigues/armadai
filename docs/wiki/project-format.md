@@ -52,6 +52,7 @@ ui:                          # optional, opt-in interface keys
   status_line: true          # Claude Code only: a status bar with the flow progress (default false)
   subagent_status_line: true # Claude Code only: a status row per subagent (default false)
   panel: true                # Claude Code only: a panel mod beside the chat (default false)
+  flow_band: true            # Claude Code only: a band above the prompt with the open run (default false)
   documents: [docs]          # folders whose recent .md files the panel lists (default [docs])
 ```
 
@@ -217,6 +218,7 @@ links:
   repeated plain agent gets `-2`, `-3`… It expands to steps and consecutive links.
 - Every step has the states `done` and `failed`; `states` adds more. A link's `when` must be a
   state of its `from` step (default `done`).
+- `optional: true` marks a step a run may never reach: it is skipped, not pending, once a later step starts. An optional step cannot be an entry step (`optional-start-step`).
 - `on_failure: <step>` is a `when: failed` link; a step has at most one failure path.
 - Loops are allowed; a link from a step to itself is an error.
 - Only `.yaml` is loaded: a `.yml` file is ignored with a warning.
@@ -522,6 +524,7 @@ warning on stderr.
 | `duplicate-failure-path` | error | A step has more than one failure path | Keep either `on_failure` or one `when: failed` link |
 | `no-entry-step` | warning | No step is an entry, so the flow can never start (without `start`). An entry step has no incoming *unconditional* link (`when` absent or `done`): a conditional link (`when: rejected`, `when: failed`) or an `on_failure` leading back to it does not count. Among such steps, one that another reaches without reaching it back (the `approved` end of a review loop) is not an entry | Declare `start: <step>`, or make one link into the first step conditional |
 | `ambiguous-entry` | warning | The flow declares no `start` and a step the guess above takes as an entry has an incoming link (of any kind): where the flow begins is only a guess (an entry with no incoming link at all is not warned) | Declare `start: <step>` to say where the flow begins |
+| `optional-start-step` | error | A step marked `optional: true` is an entry step of its flow (the declared `start`, or the one the heuristic finds) | A flow must begin with a step that runs: make another step the start, or drop `optional` |
 | `unreachable-step` | warning | A step cannot be reached from any entry step (every link and `on_failure` counts here) | Link it, or remove it |
 | `empty-command` | error | An automation's `run` is empty | Give the command to run |
 | `unknown-template` | error | An agent's `from` names no template of `templates/` | Use an existing template id (the hint suggests a close one) |

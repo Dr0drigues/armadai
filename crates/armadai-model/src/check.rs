@@ -1060,6 +1060,21 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
                 None,
             );
         } else {
+            for e in &entries {
+                if f.steps.get(*e).is_some_and(|s| s.optional) {
+                    o.err(
+                        at,
+                        "optional-start-step",
+                        Some((e, true)),
+                        format!("step `{e}` is optional but the flow starts there"),
+                        Some(
+                            "a flow must begin with a step that runs; make another step the \
+                             start, or drop optional"
+                                .into(),
+                        ),
+                    );
+                }
+            }
             // an entry the heuristic took although a link leads to it: only a guess
             if f.start.is_none() && entries.iter().any(|e| edges.iter().any(|(_, to)| to == e)) {
                 o.emit(

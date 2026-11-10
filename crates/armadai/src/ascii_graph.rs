@@ -341,6 +341,7 @@ links not drawn:
                     agent: "x".into(),
                     states: vec![],
                     on_failure: None,
+                    optional: false,
                 },
             )]
             .into(),
@@ -526,6 +527,7 @@ fr     flows: g
             agent: "x".into(),
             states: states.iter().map(|s| s.to_string()).collect(),
             on_failure: on_failure.map(String::from),
+            optional: false,
         };
         let link = |when: Option<&str>| armadai_model::Link {
             from: "a".into(),

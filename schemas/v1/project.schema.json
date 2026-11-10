@@ -94,6 +94,10 @@
             "null"
           ]
         },
+        "flow_band": {
+          "description": "Compile a band above the prompt (in the same mod) that shows the open run.",
+          "type": "boolean"
+        },
         "panel": {
           "description": "Compile a Claude Code mod: a panel beside the chat with the flows and recent documents.",
           "type": "boolean"
