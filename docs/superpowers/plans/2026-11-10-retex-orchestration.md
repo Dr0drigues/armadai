@@ -649,7 +649,7 @@ Dimitri est absent ; son mandat : « continue en autonomie » et « Prends les r
 
 ## 7. Résultats des mesures (rempli en tâche)
 
-- A.0 : —
+- A.0 : **A.0 (mesurée le 2026-11-10, tête `fbf1806`, binaire construit par `cargo build -p armadai`, copie jetable, HOME et ARMADAI_CONFIG_DIR isolés).** Positive. Après ajout de `.armadai/skills/armadai-rules/scripts/probe.sh` (mode 755), `armadai link --target claude --force` (rc=0) écrit `.claude/skills/armadai-rules/scripts/probe.sh` : `cmp` le dit identique à la source, mode `-rwxr-xr-x` conservé. Une seconde relance de `link` ne change aucun fichier compilé ; seul le champ `linked_at` du manifeste (gitignoré) est mis à jour. Le critère d'arrêt ne s'applique pas : A.1 livre `scratch.sh`. Le bit d'exécution étant conservé, l'appel `bash .claude/skills/armadai-rules/scripts/scratch.sh` reste celui du plan, `./` serait aussi possible.
 - P1.0 : —
 - P2.0 : —
 - P4.0 : —
