@@ -44,14 +44,17 @@ Table as of 2026-11-10.
 Sources, read on 2026-11-10 (the ids are copied from these pages, not from memory):
 
 - OpenAI: <https://developers.openai.com/api/docs/models> (`gpt-6-luna`, `gpt-6.1-sol`,
-  `gpt-6-astra`) and <https://developers.openai.com/api/docs/deprecations>;
+  `gpt-6-astra`), <https://developers.openai.com/api/docs/deprecations>, and
+  <https://developers.openai.com/api/docs/models/all>, the only models page that names the
+  `gpt-5.6-*` ids the aliases point to;
 - Anthropic: <https://platform.claude.com/docs/en/about-claude/models/overview>;
 - Google: <https://aistudio.google.com/docs/models> and
   <https://aistudio.google.com/docs/deprecations>. `gemini-3.1-pro-preview` is a preview, the only
   Pro the page lists.
 
 The same table carries the aliases `armadai models check` uses: the replacements those
-deprecation pages name. The table is refreshed from those pages at release time; to use a newer model before that, pin
+deprecation pages name. One of them moves a Pro to a Flash, `gemini-2.5-pro` to
+`gemini-3.8-flash`, as Google's deprecation page does, and `models check` proposes it. The table is refreshed from those pages at release time; to use a newer model before that, pin
 `native.<target>.model`.
 
 ## Syncing the models cache
