@@ -1,0 +1,5 @@
+steps:
+  patch: { agent: dev }
+  verify: { agent: qa, states: [approved, rejected] }
+links:
+  - { from: patch, to: verify }

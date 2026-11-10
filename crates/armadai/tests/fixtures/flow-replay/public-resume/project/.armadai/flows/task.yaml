@@ -1,0 +1,18 @@
+description: "Une tâche du plan : lead choisit le domaine, le spécialiste construit, guardian relit ; un rejet retourne au même domaine"
+start: build
+steps:
+  build: { agent: lead }
+  build-adapter: { agent: adapter-specialist }
+  build-cli: { agent: cli-specialist }
+  build-schema: { agent: schema-specialist }
+  guard: { agent: guardian, states: [approved, rejected] }
+links:
+  - { from: build, to: build-schema }
+  - { from: build, to: build-adapter }
+  - { from: build, to: build-cli }
+  - { from: build-schema, to: guard }
+  - { from: build-adapter, to: guard }
+  - { from: build-cli, to: guard }
+  - { from: guard, to: build-schema, when: rejected }
+  - { from: guard, to: build-adapter, when: rejected }
+  - { from: guard, to: build-cli, when: rejected }

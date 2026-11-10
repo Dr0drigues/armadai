@@ -1,0 +1,19 @@
+description: "Un lot entier : spec, cadre, plan, puis les tâches du plan (étape `tasks`, tenue par lead ; une exécution du flow task chacune), revue de la branche et validation ; un défaut de conception retourne au plan, un défaut local à une tâche retourne aux tâches"
+start: spec
+steps:
+  frame: { agent: framer }
+  plan: { agent: architect }
+  tasks: { agent: lead }
+  review: { agent: reviewer, states: [approved, rejected, rejected-task] }
+  spec: { agent: analyst }
+  validate: { agent: validator, states: [approved, rejected, rejected-task] }
+links:
+  - { from: spec, to: frame }
+  - { from: frame, to: plan }
+  - { from: plan, to: tasks }
+  - { from: tasks, to: review }
+  - { from: review, to: validate, when: approved }
+  - { from: review, to: plan, when: rejected }
+  - { from: review, to: tasks, when: rejected-task }
+  - { from: validate, to: plan, when: rejected }
+  - { from: validate, to: tasks, when: rejected-task }

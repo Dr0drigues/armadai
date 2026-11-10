@@ -1,0 +1,15 @@
+{"ts":1792660509,"event":"mark","agent_type":"analyst","flow":"lot","step":"spec","lot":"12"}
+{"ts":1792660510,"event":"start","agent_id":"a1","agent_type":"analyst","state":null}
+{"ts":1792660515,"event":"stop","agent_id":"a1","agent_type":"analyst","state":null}
+{"ts":1792660600,"event":"start","agent_id":"a1","agent_type":"analyst","state":null}
+{"ts":1792660605,"event":"stop","agent_id":"a1","agent_type":"analyst","state":null}
+{"ts":1792660606,"event":"stop","agent_id":"a1","agent_type":"analyst","state":null}
+{"ts":1792660700,"event":"start","agent_id":"a1","agent_type":"analyst","state":null}
+{"ts":1792660705,"event":"stop","agent_id":"a1","agent_type":"analyst","state":null}
+{"ts":1792660706,"event":"stop","agent_id":"a1","agent_type":"analyst","state":null}
+{"ts":1792660800,"event":"start","agent_id":"a1","agent_type":"analyst","state":null}
+{"ts":1792660805,"event":"stop","agent_id":"a1","agent_type":"analyst","state":null}
+{"ts":1792660806,"event":"stop","agent_id":"a1","agent_type":"analyst","state":null}
+{"ts":1792660899,"event":"mark","agent_type":"framer","flow":"lot","step":"frame","lot":"12"}
+{"ts":1792660900,"event":"start","agent_id":"a2","agent_type":"framer","state":null}
+{"ts":1792660905,"event":"stop","agent_id":"a2","agent_type":"framer","state":null}
