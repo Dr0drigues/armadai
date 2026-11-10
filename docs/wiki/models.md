@@ -51,8 +51,8 @@ Sources, read on 2026-11-10 (the ids are copied from these pages, not from memor
   Pro the page lists.
 
 The same table carries the aliases `armadai models check` uses: the replacements those
-deprecation pages name. The table is refreshed from those pages; until then, pin
-`native.<target>.model` when you need a newer model.
+deprecation pages name. The table is refreshed from those pages at release time; to use a newer model before that, pin
+`native.<target>.model`.
 
 ## Syncing the models cache
 
@@ -63,8 +63,9 @@ catalog) the previous cache is left as it was and the error says so. `--source <
 another HTTPS catalog of the same shape.
 
 `armadai link` never reads this cache and never touches the network: the table above is what it
-uses, whatever the cache holds. The cache feeds the `latest:<tier>` placeholders where they are
-resolved, and `armadai models sync` is the only command of this page that uses the network.
+uses, whatever the cache holds. No `armadai` command reads the cache today: only the core's
+resolution function (`resolve_model_for_tier`) and the frozen audit tool do. `armadai models sync`
+is the only command of this page that uses the network.
 
 ## How the table is refreshed
 
