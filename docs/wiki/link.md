@@ -142,6 +142,7 @@ rule reads it at every call, so an expiry holds without anything running in betw
 lifts a `deny`: a level whose rule is, character for character, a `deny` rule of
 `.claude/settings.json` or `.claude/settings.local.json` is refused, and one that equals a
 `native.claude.permissions.deny` rule is the validator error `grant-over-deny`.
+A level with no `Bash(...)` rule has no hook to answer anything: `armadai grant` refuses it (`grant <level> has no Bash rule to answer; list its rules as Bash(...) in policy.grants, other rules are never granted`, exit code 1) and writes no state.
 
 **What `link` writes.** For each rule, a `PermissionRequest` hook with matcher `Bash` and `if` set to
 the rule, running `armadai __claude-grant <level>` (hidden command: it reads the hook JSON on stdin,

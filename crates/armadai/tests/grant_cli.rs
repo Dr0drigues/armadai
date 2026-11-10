@@ -184,6 +184,21 @@ fn every_refusal_says_what_to_do_and_writes_nothing() {
 }
 
 #[test]
+fn a_level_without_a_bash_rule_is_refused_and_writes_nothing() {
+    let env = Env::new();
+    let manifest = MANIFEST.replace(
+        "    read-logs:",
+        "    docs-only:\n      allow: [\"Read(./docs/**)\", \"WebFetch\"]\n    read-logs:",
+    );
+    std::fs::write(env.root().join(".armadai/project.yaml"), manifest).unwrap();
+    assert_eq!(
+        refused(env.run(&["grant", "docs-only", "--for", "1h"])),
+        "Error: grant docs-only has no Bash rule to answer; list its rules as Bash(...) in policy.grants, other rules are never granted\n"
+    );
+    assert_eq!(env.state(), None);
+}
+
+#[test]
 fn clap_refuses_the_impossible_forms() {
     let env = Env::new();
     for args in [

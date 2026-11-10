@@ -168,6 +168,16 @@ where
             format!("unknown grant level {level}; levels: {}", names.join(", "))
         });
     };
+    // a level with no `Bash` rule has no hook: granting it would answer nothing
+    if !grant
+        .allow
+        .iter()
+        .any(|r| crate::claude_adapter::grant_hook::is_bash_rule(r))
+    {
+        return Err(format!(
+            "grant {level} has no Bash rule to answer; list its rules as Bash(...) in policy.grants, other rules are never granted"
+        ));
+    }
     // the bound of the command, else the `until` of the level
     let typed = bounds.until.is_some() || bounds.span.is_some() || bounds.at.is_some();
     let until = if typed {
