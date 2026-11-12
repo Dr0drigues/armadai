@@ -276,6 +276,7 @@ fn compile_with(
         );
     }
     super::journal_not_compiled(&mut plan.report, T, project);
+    super::session_link_not_compiled(&mut plan.report, T, project);
     if project.manifest.ui.status_line {
         plan.report.push(
             T,
@@ -1715,5 +1716,32 @@ mod tests {
         )
         .unwrap();
         assert!(!dev.contains("Journal"), "{dev}");
+    }
+
+    #[test]
+    fn the_session_link_is_not_compiled_for_opencode() {
+        let plan = compile(&[
+            M,
+            (".armadai/agents/dev.md", b"---\ndescription: d\n---\nB\n"),
+            (
+                ".armadai/flows/evolution.yaml",
+                b"steps:\n  s: { agent: dev }\nsession_link:\n  to: chantier\n  when: w\n",
+            ),
+            (
+                ".armadai/flows/other.yaml",
+                b"steps:\n  s: { agent: dev }\n",
+            ),
+        ])
+        .unwrap();
+        assert_eq!(
+            line(&plan, "flow evolution session link"),
+            (Status::NotCompiled, Some("Claude Code only".into()))
+        );
+        assert!(
+            plan.report
+                .lines
+                .iter()
+                .all(|l| l.element != "flow other session link")
+        );
     }
 }
