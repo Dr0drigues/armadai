@@ -1718,3 +1718,46 @@ fn journal_comes_through_a_template_and_an_instance() {
         "{ds:?}"
     );
 }
+
+#[test]
+fn invalid_session_link_names_the_faulty_key() {
+    let link = |to: &str, when: &str| {
+        flow(&format!(
+            "steps:\n  a: {{ agent: dev }}\nsession_link:\n  to: {to}\n  when: \"{when}\"\n"
+        ))
+    };
+    let code = |ds: &[Diagnostic]| {
+        ds.iter()
+            .filter(|d| d.code == "invalid-session-link")
+            .count()
+    };
+    assert_eq!(code(&link("chantier", "scope question")), 0);
+    for bad in ["Chantier", "a_b"] {
+        let ds = link(bad, "scope question");
+        let d = err(&ds, "invalid-session-link", (4, 3));
+        assert_eq!(
+            d.message,
+            format!(
+                "session_link.to `{bad}` is not a session name: lowercase letters, digits and -"
+            )
+        );
+        assert_eq!(
+            d.hint.as_deref(),
+            Some("name the session as you start it: claude --name <name>")
+        );
+    }
+    let ds = link("chantier", "  ");
+    let d = err(&ds, "invalid-session-link", (5, 3));
+    assert_eq!(
+        d.message,
+        "session_link.when is empty: say when to write to session `chantier`"
+    );
+    // both wrong: two diagnostics
+    assert_eq!(code(&link("A", "")), 2);
+}
+
+#[test]
+fn an_unknown_key_under_session_link_is_invalid_yaml() {
+    let ds = flow("steps:\n  a: { agent: dev }\nsession_link: { to: x, when: y, bogus: 1 }\n");
+    assert!(ds.iter().any(|d| d.code == "invalid-yaml"), "{ds:?}");
+}

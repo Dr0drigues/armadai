@@ -413,6 +413,19 @@ pub struct FlowFile {
     pub links: Vec<Link>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sequence: Vec<SeqItem>,
+    /// Another session (`claude --name <to>`) this flow's coordinator writes to, and when.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_link: Option<SessionLink>,
+}
+
+/// Where a flow's coordinator sends a question that is outside its scope.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SessionLink {
+    /// Name of the other session, as started with `claude --name`.
+    pub to: String,
+    /// When to write to it.
+    pub when: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

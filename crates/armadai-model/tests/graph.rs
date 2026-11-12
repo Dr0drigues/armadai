@@ -28,6 +28,7 @@ fn link(from: &str, to: &str, when: Option<&str>) -> Link {
 
 fn flow(steps: &[(&str, Step)], start: Option<&str>, links: Vec<Link>) -> Flow {
     Flow {
+        session_link: None,
         description: None,
         start: start.map(Into::into),
         steps: steps
