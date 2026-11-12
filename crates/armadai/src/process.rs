@@ -55,7 +55,10 @@ fn kill_group(child: &mut std::process::Child) {
     // SAFETY: `kill` takes two integers and touches no memory. The leader was seen alive or
     // as a zombie and has not been waited for, so its pid is still the id of the group we
     // created and no process of anyone else can carry it; a group already empty makes
-    // `kill` return -1 (ESRCH), which we ignore.
+    // `kill` return -1 (ESRCH), which we ignore. One window stays, on Linux with SIGCHLD
+    // ignored (the kernel reaps at once): a leader seen `Running` may exit and be reaped
+    // between `leader` and this call, a few microseconds, and its pid could in theory be
+    // reused by then; the odds are negligible, and nothing narrows them further.
     unsafe {
         libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
     }
@@ -117,6 +120,15 @@ mod tests {
             .success()
     }
 
+    /// `kill -9 <pid>` when dropped, so a failing assertion leaves no process behind.
+    struct KillOnDrop(String);
+
+    impl Drop for KillOnDrop {
+        fn drop(&mut self) {
+            let _ = Command::new("kill").args(["-9", &self.0]).status();
+        }
+    }
+
     /// `kill -0` also succeeds on a zombie until init reaps it: allow 2 s.
     fn pid_alive_for_2s(pid: &str) -> bool {
         (0..200).all(|_| {
@@ -164,11 +176,12 @@ mod tests {
             .spawn()
             .unwrap();
         child.wait().unwrap();
+        // the guard kills the `sleep` whatever an assertion below says
+        let _cleanup = KillOnDrop(std::fs::read_to_string(&file).unwrap().trim().to_string());
+        let pid = &_cleanup.0;
         assert_eq!(leader(&mut child), Leader::Gone);
         let outcome = finish(&mut child, Duration::from_secs(1), true);
-        let pid = std::fs::read_to_string(&file).unwrap().trim().to_string();
-        let still = pid_alive_for_2s(&pid);
-        let _ = Command::new("kill").args(["-9", &pid]).status();
+        let still = pid_alive_for_2s(pid);
         assert!(matches!(outcome, Finish::Lost), "{outcome:?}");
         assert!(still, "the group of a leader not seen was killed");
     }

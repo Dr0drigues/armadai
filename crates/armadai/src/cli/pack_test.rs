@@ -26,6 +26,8 @@ pub enum Verdict {
     /// The exit code (`None`: ended by a signal) and what the script printed.
     Failed(Option<i32>, String),
     TimedOut,
+    /// The test ran, but its exit status could not be seen (see `process::Finish::Lost`).
+    Lost,
 }
 
 #[derive(Debug)]
@@ -135,15 +137,15 @@ fn run_one(
     .collect();
     // the whole group, also after a normal end: no grandchild outlives its test
     let finished = crate::process::finish(&mut child, limit, true);
-    let output: Vec<u8> = readers
-        .into_iter()
-        .flat_map(|r| r.join().unwrap_or_default())
-        .collect();
+    // After `Lost` the group was not signalled, so a grandchild may hold the pipes open:
+    // wait for the readers no longer than the limit allows.
+    let deadline = matches!(finished, crate::process::Finish::Lost).then(|| start + limit);
+    let output = join_readers(readers, deadline);
     let took = start.elapsed();
     use crate::process::Finish;
     let verdict = match finished {
         Finish::TimedOut => Verdict::TimedOut,
-        Finish::Lost => Verdict::Failed(None, "the exit status of the test was lost".to_string()),
+        Finish::Lost => Verdict::Lost,
         Finish::Exited(s) if s.success() => Verdict::Ok,
         Finish::Exited(s) => {
             Verdict::Failed(s.code(), String::from_utf8_lossy(&output).into_owned())
@@ -154,6 +156,24 @@ fn run_one(
         verdict,
         took,
     })
+}
+
+/// The output of the reader threads, in order. With a `deadline`, a thread still running
+/// at that instant is left behind and its output dropped.
+fn join_readers(
+    readers: Vec<std::thread::JoinHandle<Vec<u8>>>,
+    deadline: Option<Instant>,
+) -> Vec<u8> {
+    if let Some(deadline) = deadline {
+        while readers.iter().any(|r| !r.is_finished()) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    readers
+        .into_iter()
+        .filter(|r| deadline.is_none() || r.is_finished())
+        .flat_map(|r| r.join().unwrap_or_default())
+        .collect()
 }
 
 fn seconds(d: Duration) -> String {
@@ -193,6 +213,10 @@ pub fn render(header: &str, report: &Report, limit: Duration) -> String {
                 for line in text.lines() {
                     out += &format!("  | {line}\n");
                 }
+            }
+            Verdict::Lost => {
+                failed += 1;
+                out += &format!("FAIL  {}  exit status lost  {}\n", r.path, seconds(r.took));
             }
             Verdict::TimedOut => {
                 failed += 1;
@@ -353,6 +377,47 @@ mod tests {
             render("h", &report, LIMIT),
             "h\nFAIL  tests/k.sh  signal  1.5s\n  | partial\n0 passed, 1 failed\n"
         );
+    }
+
+    #[test]
+    fn a_lost_exit_status_has_its_own_line_without_signal() {
+        let report = Report {
+            name: "p".into(),
+            runs: vec![TestRun {
+                path: "tests/l.sh".into(),
+                verdict: Verdict::Lost,
+                took: Duration::from_millis(1500),
+            }],
+        };
+        assert_eq!(
+            render("h", &report, LIMIT),
+            "h\nFAIL  tests/l.sh  exit status lost  1.5s\n0 passed, 1 failed\n"
+        );
+    }
+
+    /// A reader held by a grandchild for 5 s (the defect waits for it) is left behind at
+    /// the deadline, 3 s being between the two; one that finished keeps its output.
+    #[test]
+    fn a_reader_held_open_is_not_waited_for_past_the_deadline() {
+        let quick = std::thread::spawn(|| b"ok".to_vec());
+        let held = std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_secs(5));
+            b"late".to_vec()
+        });
+        let start = Instant::now();
+        let out = join_readers(vec![quick, held], Some(start + Duration::from_millis(500)));
+        assert!(
+            start.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            start.elapsed()
+        );
+        assert_eq!(out, b"ok");
+        // without a deadline every reader is waited for
+        let held = std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_millis(300));
+            b"late".to_vec()
+        });
+        assert_eq!(join_readers(vec![held], None), b"late");
     }
 
     #[test]

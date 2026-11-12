@@ -1,6 +1,6 @@
 //! The terminal side of `flow status --watch`: its size, the hidden cursor and
-//! the signal that restores it. The only module of the binary with `unsafe`, tests aside:
-//! each block says the invariant it relies on.
+//! the signal that restores it. The terminal `unsafe` of the binary (ioctl, sigaction) is
+//! here, tests aside: each block says the invariant it relies on.
 
 use crate::flow_status::watch::Size;
 
