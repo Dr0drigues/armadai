@@ -1722,6 +1722,7 @@ fn journal_comes_through_a_template_and_an_instance() {
 #[test]
 fn invalid_session_link_names_the_faulty_key() {
     let link = |to: &str, when: &str| {
+        let to = serde_json::to_string(to).unwrap();
         flow(&format!(
             "steps:\n  a: {{ agent: dev }}\nsession_link:\n  to: {to}\n  when: \"{when}\"\n"
         ))
@@ -1731,14 +1732,16 @@ fn invalid_session_link_names_the_faulty_key() {
             .filter(|d| d.code == "invalid-session-link")
             .count()
     };
-    assert_eq!(code(&link("chantier", "scope question")), 0);
-    for bad in ["Chantier", "a_b"] {
+    for ok in ["chantier", "Chantier", "a_b", "release notes", "Fronto-61"] {
+        assert_eq!(code(&link(ok, "scope question")), 0, "{ok}");
+    }
+    for bad in ["", " x", "x ", "a\nb", "\tx"] {
         let ds = link(bad, "scope question");
         let d = err(&ds, "invalid-session-link", (4, 3));
         assert_eq!(
             d.message,
             format!(
-                "session_link.to `{bad}` is not a session name: lowercase letters, digits and -"
+                "session_link.to `{bad}` is not a session name: one line, no blank at either end"
             )
         );
         assert_eq!(
@@ -1753,7 +1756,7 @@ fn invalid_session_link_names_the_faulty_key() {
         "session_link.when is empty: say when to write to session `chantier`"
     );
     // both wrong: two diagnostics
-    assert_eq!(code(&link("A", "")), 2);
+    assert_eq!(code(&link("", "")), 2);
 }
 
 #[test]
