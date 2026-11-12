@@ -219,7 +219,7 @@ impl Compiler for ClaudeCompiler {
                     Status::Compiled,
                     Some("coordinator, rendered into CLAUDE.md"),
                 );
-                if project.manifest.sessions.journal {
+                if project.manifest.sessions.journal || lead.front.journal.is_some() {
                     plan.report.push(
                         T,
                         "journal",
@@ -563,7 +563,8 @@ fn native_excludes_bash(f: &AgentFront) -> bool {
     };
     let allowlist_lacks_bash =
         items("tools").is_some_and(|t| !t.iter().any(|i| i == "Bash" || i.starts_with("Bash(")));
-    let names_bash = items("disallowedTools").is_some_and(|t| t.iter().any(|i| i == "Bash"));
+    let names_bash = items("disallowedTools")
+        .is_some_and(|t| t.iter().any(|i| i == "Bash" || i.starts_with("Bash(")));
     allowlist_lacks_bash || names_bash
 }
 
@@ -579,7 +580,7 @@ fn agent_journal_section(id: &str, access: JournalAccess) -> String {
     let mut out = "\n\n## Journal\n\nBefore you judge, read `armadai journal show --lot <lot> --last 20`, where <lot> is the lot your brief names; check a premise about another lot with `--lot <other>`, not from memory.".to_string();
     if access == JournalAccess::Write {
         out.push_str(&format!(
-            " Record a decision you take: armadai journal add --lot <lot> --kind decision --by {id} \"<one line>\"."
+            " Record a decision you take: `armadai journal add --lot <lot> --kind decision --by {id} \"<one line>\"`."
         ));
     }
     out.push('\n');
@@ -1712,7 +1713,7 @@ mod tests {
         let (_, body, _) = armadai_model::split_frontmatter(&t).unwrap();
         assert!(
             body.starts_with(&format!(
-                "You review.{T16} Record a decision you take: armadai journal add --lot <lot> --kind decision --by rev \"<one line>\".\n\n## Verdict"
+                "You review.{T16} Record a decision you take: `armadai journal add --lot <lot> --kind decision --by rev \"<one line>\"`.\n\n## Verdict"
             )),
             "{body}"
         );
@@ -1734,6 +1735,7 @@ mod tests {
             "    tools: Read, Grep\n",
             "    tools: [Read, Grep]\n",
             "    disallowedTools: Bash, Edit\n",
+            "    disallowedTools: Bash(git push *)\n",
         ] {
             let plan = rev_with_native(native);
             let l = line(&plan, "agent rev journal");
@@ -1762,9 +1764,18 @@ mod tests {
         let plan = compile_owned(&files);
         let block = &plan.blocks[0].1;
         assert!(block.ends_with(&format!("{T15}{MARKING}\n")), "{block}");
+        let l = line(&plan, "journal");
+        assert_eq!(
+            (l.status, l.reason.as_deref()),
+            (
+                Status::Compiled,
+                Some("instructions in CLAUDE.md (armadai journal)")
+            )
+        );
         // a coordinator without the key, in a project without it: nothing
         let plan = compile_owned(&journal_team("read"));
         assert!(!plan.blocks[0].1.contains("### Journal"));
+        assert!(plan.report.lines.iter().all(|l| l.element != "journal"));
     }
 
     #[test]

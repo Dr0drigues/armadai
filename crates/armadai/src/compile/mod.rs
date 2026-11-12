@@ -106,10 +106,6 @@ pub(crate) fn slot_lines(
     }
 }
 
-/// The `## Verdict` section appended to the prompt of an agent holding at least one
-/// flow step with `states` or a failure path (`on_failure`, a `when: failed` link):
-/// the union of those states, plus `failed` for a failure path (and `done` when the
-/// step declares no state), sorted. `None` otherwise.
 /// The journal lines of a target that does not compile the journal instructions
 /// (`sessions.journal`, and each agent that declares `journal`): Claude Code only.
 pub(super) fn journal_not_compiled(r: &mut Report, t: &str, project: &Project) {
@@ -127,6 +123,10 @@ pub(super) fn journal_not_compiled(r: &mut Report, t: &str, project: &Project) {
     }
 }
 
+/// The `## Verdict` section appended to the prompt of an agent holding at least one
+/// flow step with `states` or a failure path (`on_failure`, a `when: failed` link):
+/// the union of those states, plus `failed` for a failure path (and `done` when the
+/// step declares no state), sorted. `None` otherwise.
 pub fn verdict_instruction(project: &Project, agent: &str) -> Option<String> {
     let states: std::collections::BTreeSet<&str> = (project.flows.values())
         .flat_map(|f| f.steps.iter().map(move |(id, s)| (f, id, s)))
