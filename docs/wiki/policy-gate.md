@@ -59,14 +59,14 @@ a marker naming that step:
 [<flow>/<step>#<lot>]     [lot/plan#12] write the plan
 ```
 
-`flow`, `step` and `lot` are ids (`[a-z0-9][a-z0-9-]{0,63}`), the lot at most 40 characters, and the
+`flow` and `step` are ids (`[a-z0-9][a-z0-9-]{0,63}`); the lot is a free name of 1 to 40 ASCII letters (either case), digits, `.` or `-` (`Y2`, `GA1`, `v1.8.0`; `Y2` and `y2` are two lots, `_` and `+` are not allowed); and the
 marker is the very first thing of the description. `flow status` and `flow stats` read it to place
 the sub-agent that follows (see [Flow status](flow-status.md#the-delegation-marker)); the gate
 refuses a delegation without a good one, at once, with a reason that tells the model how to rewrite
 its call:
 
 ```
-the description of a delegation to `reviewer` must start with [flow/step] or [flow/step#lot], with flow/step among: evolution/review, mr/revue-mr
+the description of a delegation to `reviewer` must start with [flow/step] or [flow/step#lot] (a lot is up to 40 letters, digits, `.` or `-`), with flow/step among: evolution/review, mr/revue-mr
 ```
 
 ```
