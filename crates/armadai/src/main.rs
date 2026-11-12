@@ -6,6 +6,7 @@ mod flow_status;
 mod linker;
 mod migrate;
 mod pack;
+mod process;
 mod skills_registry;
 mod starters_registry;
 

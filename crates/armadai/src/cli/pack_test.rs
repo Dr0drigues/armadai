@@ -134,13 +134,13 @@ fn run_one(
     })
     .collect();
     // the whole group, also after a normal end: no grandchild outlives its test
-    let finished = crate::claude_adapter::statusline_chain::finish(&mut child, limit, true);
+    let finished = crate::process::finish(&mut child, limit, true);
     let output: Vec<u8> = readers
         .into_iter()
         .flat_map(|r| r.join().unwrap_or_default())
         .collect();
     let took = start.elapsed();
-    use crate::claude_adapter::statusline_chain::Finish;
+    use crate::process::Finish;
     let verdict = match finished {
         Finish::TimedOut => Verdict::TimedOut,
         Finish::Lost => Verdict::Failed(None, "the exit status of the test was lost".to_string()),
