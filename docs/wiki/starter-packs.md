@@ -195,7 +195,7 @@ Only `pack test` runs a pack's scripts: `link`, `init` and `pack sync` never do.
 variable of the caller passes through as it is (`PATH`, `XDG_CONFIG_HOME`, tokens in the
 environment), so a script sees them. A script can reach whatever your account can reach, so run
 the tests of a pack you have read. A path in `tests:` is used as written (no `~` or `$HOME`
-expansion, no trimming); an absolute path, a `..` component, an empty one or one holding a NUL byte
+expansion, no trimming); an absolute path (a leading `/` or `\`, or a drive letter such as `C:x.sh`, on every platform), a `..` component, an empty one or one holding a NUL byte
 is the validation error `pack-test-path-escapes`, and a symbolic link anywhere in the pack is
 refused. A file listed under `tests:` is not reported as `ignored-pack-file`.
 

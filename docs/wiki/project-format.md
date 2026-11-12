@@ -509,7 +509,7 @@ warning on stderr.
 | `skill-missing-description` | error | A skill has no or an empty `description` | Add one |
 | `skill-description-too-long` | error | A skill's `description` exceeds 1024 characters | Shorten it |
 | `skill-missing-path` | warning | A `SKILL.md` names a path under `scripts/` or `references/` (prose or code, not a pattern such as `scripts/<name>.sh`) that its folder does not contain | Add the file to the skill folder, or correct the path |
-| `pack-test-path-escapes` | error | A `tests:` entry of `pack.yaml` that is not a relative path inside the pack (absolute, with a `..` component, empty, or holding a NUL byte); reported by `validate <pack>` and `init --pack` | Write it as `tests/<name>.sh` |
+| `pack-test-path-escapes` | error | A `tests:` entry of `pack.yaml` that is not a relative path inside the pack (absolute on any platform: a leading `/` or `\`, a drive letter such as `C:` or `C:x.sh`; with a `..` component, empty, or holding a NUL byte); reported by `validate <pack>` and `init --pack` | Write it as `tests/<name>.sh` |
 | `ignored-pack-file` | warning | A file of a pack folder that `init --pack` does not install (outside the white list: `project.yaml`, `agents/*.md`, `templates/*.md`, `commands/*.md`, `skills/**`, `flows/*.yaml`, `automations/*.yaml`); reported by `validate <pack>` and `init --pack` | Move it into one of the listed folders, or remove it from the pack |
 | `unknown-skill-key` | warning | A skill's frontmatter has a key outside the standard | None needed if another tool uses it |
 | `empty-flow` | error | A flow has no step | Add steps or delete the file |
