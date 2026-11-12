@@ -53,12 +53,20 @@ impl Compiler for ClaudeCompiler {
             plan.report
                 .push(T, format!("agent {id}"), Status::Compiled, None);
             if agent.front.journal.is_some() {
-                plan.report.push(
-                    T,
-                    format!("agent {id} journal"),
-                    Status::Compiled,
-                    Some(&format!("instructions in .claude/agents/{id}.md")),
-                );
+                let (status, why) = if native_excludes_bash(&agent.front) {
+                    (
+                        Status::Approximated,
+                        "native tools exclude Bash: the agent cannot run armadai journal"
+                            .to_string(),
+                    )
+                } else {
+                    (
+                        Status::Compiled,
+                        format!("instructions in .claude/agents/{id}.md"),
+                    )
+                };
+                plan.report
+                    .push(T, format!("agent {id} journal"), status, Some(&why));
             }
         }
 
@@ -262,6 +270,14 @@ impl Compiler for ClaudeCompiler {
                 }
             }
             None => {
+                if project.manifest.sessions.journal {
+                    plan.report.push(
+                        T,
+                        "journal",
+                        Status::NotCompiled,
+                        Some("no coordinator: nothing to carry the instructions"),
+                    );
+                }
                 for fid in project.flows.keys() {
                     let (status, reason) = if strict {
                         (
@@ -514,7 +530,7 @@ fn claude_md(coordinator: &str, lead: &Agent, project: &Project) -> String {
         out.push_str(OPTIONAL_SENTENCE);
         out.push('\n');
     }
-    if project.manifest.sessions.journal {
+    if project.manifest.sessions.journal || lead.front.journal.is_some() {
         out.push_str(&coordinator_journal_section(coordinator));
     }
     if !project.flows.is_empty() {
@@ -525,6 +541,30 @@ fn claude_md(coordinator: &str, lead: &Agent, project: &Project) -> String {
         out.push('\n');
     }
     out
+}
+
+/// Whether `native.claude` keeps the agent from running Bash: a `tools` allowlist with no
+/// `Bash` entry (`Bash(...)` counts as one), or a `disallowedTools` that names `Bash`.
+fn native_excludes_bash(f: &AgentFront) -> bool {
+    let Some(native) = f.native.get(T) else {
+        return false;
+    };
+    let items = |key: &str| -> Option<Vec<String>> {
+        match native.get(key)? {
+            Value::String(s) => Some(s.split(',').map(|i| i.trim().to_string()).collect()),
+            Value::Array(a) => Some(
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(|i| i.trim().to_string())
+                    .collect(),
+            ),
+            _ => None,
+        }
+    };
+    let allowlist_lacks_bash =
+        items("tools").is_some_and(|t| !t.iter().any(|i| i == "Bash" || i.starts_with("Bash(")));
+    let names_bash = items("disallowedTools").is_some_and(|t| t.iter().any(|i| i == "Bash"));
+    allowlist_lacks_bash || names_bash
 }
 
 /// T15: the coordinator's journal section (`sessions.journal`), `--by` is its id.
@@ -1675,6 +1715,75 @@ mod tests {
                 "You review.{T16} Record a decision you take: armadai journal add --lot <lot> --kind decision --by rev \"<one line>\".\n\n## Verdict"
             )),
             "{body}"
+        );
+    }
+
+    fn rev_with_native(native: &str) -> Plan {
+        let mut files = journal_team("read");
+        files[2].1 = format!(
+            "---\ndescription: Reviews\njournal: read\nnative:\n  claude:\n{native}---\nYou review.\n"
+        )
+        .into_bytes();
+        compile_owned(&files)
+    }
+
+    #[test]
+    fn a_native_tools_list_without_bash_or_a_native_disallow_of_it_makes_the_line_approximated() {
+        let why = Some("native tools exclude Bash: the agent cannot run armadai journal");
+        for native in [
+            "    tools: Read, Grep\n",
+            "    tools: [Read, Grep]\n",
+            "    disallowedTools: Bash, Edit\n",
+        ] {
+            let plan = rev_with_native(native);
+            let l = line(&plan, "agent rev journal");
+            assert_eq!(
+                (l.status, l.reason.as_deref()),
+                (Status::Approximated, why),
+                "{native}"
+            );
+        }
+        for native in [
+            "    tools: Read, Bash\n",
+            "    tools: [Read, \"Bash(git *)\"]\n",
+            "    disallowedTools: Edit\n",
+            "    model: haiku\n",
+        ] {
+            let plan = rev_with_native(native);
+            let l = line(&plan, "agent rev journal");
+            assert_eq!(l.status, Status::Compiled, "{native}");
+        }
+    }
+
+    #[test]
+    fn a_coordinator_that_declares_journal_gets_the_section_without_the_project_key() {
+        let mut files = journal_team("read");
+        files[1].1 = b"---\ndescription: Leads\njournal: write\n---\nYou lead.\n".to_vec();
+        let plan = compile_owned(&files);
+        let block = &plan.blocks[0].1;
+        assert!(block.ends_with(&format!("{T15}{MARKING}\n")), "{block}");
+        // a coordinator without the key, in a project without it: nothing
+        let plan = compile_owned(&journal_team("read"));
+        assert!(!plan.blocks[0].1.contains("### Journal"));
+    }
+
+    #[test]
+    fn sessions_journal_without_a_coordinator_is_reported_not_compiled() {
+        let plan = compile(&[
+            (
+                ".armadai/project.yaml",
+                b"schema_version: 1\nsessions:\n  journal: true\n",
+            ),
+            (".armadai/agents/dev.md", b"---\ndescription: d\n---\nB\n"),
+        ])
+        .unwrap();
+        let l = line(&plan, "journal");
+        assert_eq!(
+            (l.status, l.reason.as_deref()),
+            (
+                Status::NotCompiled,
+                Some("no coordinator: nothing to carry the instructions")
+            )
         );
     }
 }
