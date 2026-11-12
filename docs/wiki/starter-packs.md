@@ -187,6 +187,9 @@ run armadai pack sync` when it is not there), with one it takes that folder. Eac
 seconds, then it is killed with its child processes. The output is one line per test (`ok`, or `FAIL`
 with the exit code and what the script printed) and the counts; the exit code is 1 when a test
 fails, and a pack that lists none says so (`pack <name> declares no test (tests: in pack.yaml)`).
+When the exit status of a test cannot be read (the line says `exit status lost`), no process of its group is
+killed, and `pack test` waits for the output of a grandchild that keeps it open no longer than the time
+limit of that test, counted from the start of the test; the output of such a reader is then dropped.
 Only `pack test` runs a pack's scripts: `link`, `init` and `pack sync` never do.
 
 `pack test` runs the pack's scripts with your permissions, in an isolated copy and with a temporary

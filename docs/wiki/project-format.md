@@ -91,7 +91,9 @@ subagent showing the step it holds. It is Claude Code only.
 project folders whose recent Markdown files it shows (default `[docs]`; an empty list lists none).
 Each entry is a folder inside the project: an entry that is empty, absolute, climbs with `..`, is the
 project root, or points into `.armadai/` or `.git/` (any case) is `bad-document-folder`. `documents`
-without `panel` is accepted and has no effect.
+without `panel` is accepted and has no effect. `ui.flow_band` (boolean, default `false`) asks for a one-line
+band above the prompt with the run in progress; it writes the same mod as `ui.panel` (without opening the
+panel when `panel` is not set) and is Claude Code only.
 
 ## `agents/<id>.md`
 
