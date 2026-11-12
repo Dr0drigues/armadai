@@ -185,9 +185,32 @@ mod tests {
         );
     }
 
+    /// The same project with `sessions.journal: true` and the agent `dev` declaring
+    /// `journal: write`: the `### Journal` section of `CLAUDE.md`, the `## Journal` end of
+    /// `dev`'s file (T16 and T16w) and the report lines.
+    #[test]
+    fn the_journal_matches_its_golden() {
+        ui_golden_with(
+            "sessions:\n  journal: true\n",
+            Some(("dev", "journal: write\n")),
+            "claude-journal",
+            &["### Journal", "## Journal", "agent dev journal: compiled"],
+        );
+    }
+
     fn ui_golden(ui: &str, golden: &str, present: &[&str]) {
+        ui_golden_with(ui, None, golden, present);
+    }
+
+    /// `agent_key`: a frontmatter line added to that agent's file.
+    fn ui_golden_with(ui: &str, agent_key: Option<(&str, &str)>, golden: &str, present: &[&str]) {
         let dir = project();
         let root = dir.path().join("project");
+        if let Some((id, line)) = agent_key {
+            let path = root.join(format!(".armadai/agents/{id}.md"));
+            let text = std::fs::read_to_string(&path).unwrap();
+            std::fs::write(&path, text.replacen("---\n", &format!("---\n{line}"), 1)).unwrap();
+        }
         std::fs::write(
             root.join(".armadai/project.yaml"),
             format!("schema_version: 1\ncoordinator: lead\npolicy:\n  delegation: strict\n  free_agents: [Explore]\n{ui}"),
@@ -211,10 +234,12 @@ mod tests {
             "=== CLAUDE.md ===\n{claude_md}\n{}",
             render_tree(&root, &root.join(".claude"))
         );
-        rendered.push_str(&render_tree(
-            &root,
-            &root.join(".armadai/plugins/armadai-ui"),
-        ));
+        if root.join(".armadai/plugins/armadai-ui").is_dir() {
+            rendered.push_str(&render_tree(
+                &root,
+                &root.join(".armadai/plugins/armadai-ui"),
+            ));
+        }
         let stdout = String::from_utf8_lossy(&output.stdout);
         let report = stdout.split_once("Conformance report:\n").unwrap().1;
         rendered.push_str(&format!("=== report ===\n{report}"));
