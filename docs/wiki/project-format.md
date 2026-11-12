@@ -52,6 +52,7 @@ ui:                          # optional, opt-in interface keys
   status_line: true          # Claude Code only: a status bar with the flow progress (default false)
   subagent_status_line: true # Claude Code only: a status row per subagent (default false)
   panel: true                # Claude Code only: a panel mod beside the chat (default false)
+  flow_band: true            # Claude Code only: a band above the prompt with the open run (default false)
   documents: [docs]          # folders whose recent .md files the panel lists (default [docs])
 ```
 
@@ -83,14 +84,16 @@ the pack's level of the same key as a whole.
 for a `statusLine` in `.claude/settings.json` that runs `armadai __claude-statusline`, which shows the
 progress of the flow in progress. It is Claude Code only. If `.claude/settings.json` already holds a
 `statusLine` that link does not own, link keeps yours and reports `not-compiled`; setting it also in
-`native.claude.statusLine` is an error. Once compiled, it replaces the status bar you had.
+`native.claude.statusLine` is an error. Once compiled, it runs your user status bar (`$CLAUDE_CONFIG_DIR/settings.json`, else `~/.claude/settings.json`) first, with the same stdin and at most 1 s, and prints its output above the flow line; if that bar fails, is too slow or is absent, only the flow line shows (see [Link](link.md#the-chained-status-line)).
 `ui.subagent_status_line` is a boolean too (any other value is `invalid-yaml`): a status line per
 subagent showing the step it holds. It is Claude Code only.
 `ui.panel` (boolean, default `false`) asks for a panel beside the chat, and `ui.documents` is the list of
 project folders whose recent Markdown files it shows (default `[docs]`; an empty list lists none).
 Each entry is a folder inside the project: an entry that is empty, absolute, climbs with `..`, is the
 project root, or points into `.armadai/` or `.git/` (any case) is `bad-document-folder`. `documents`
-without `panel` is accepted and has no effect.
+without `panel` is accepted and has no effect. `ui.flow_band` (boolean, default `false`) asks for a one-line
+band above the prompt with the run in progress; it writes the same mod as `ui.panel` (without opening the
+panel when `panel` is not set) and is Claude Code only.
 
 ## `agents/<id>.md`
 
@@ -217,6 +220,7 @@ links:
   repeated plain agent gets `-2`, `-3`… It expands to steps and consecutive links.
 - Every step has the states `done` and `failed`; `states` adds more. A link's `when` must be a
   state of its `from` step (default `done`).
+- `optional: true` marks a step a run may never reach: it is skipped, not pending, once a later step starts. An optional step cannot be an entry step (`optional-start-step`).
 - `on_failure: <step>` is a `when: failed` link; a step has at most one failure path.
 - Loops are allowed; a link from a step to itself is an error.
 - Only `.yaml` is loaded: a `.yml` file is ignored with a warning.
@@ -507,6 +511,7 @@ warning on stderr.
 | `skill-missing-description` | error | A skill has no or an empty `description` | Add one |
 | `skill-description-too-long` | error | A skill's `description` exceeds 1024 characters | Shorten it |
 | `skill-missing-path` | warning | A `SKILL.md` names a path under `scripts/` or `references/` (prose or code, not a pattern such as `scripts/<name>.sh`) that its folder does not contain | Add the file to the skill folder, or correct the path |
+| `pack-test-path-escapes` | error | A `tests:` entry of `pack.yaml` that is not a relative path inside the pack (absolute on any platform: a leading `/` or `\`, a drive letter such as `C:` or `C:x.sh`; with a `..` component, empty, or holding a NUL byte); reported by `validate <pack>` and `init --pack` | Write it as `tests/<name>.sh` |
 | `ignored-pack-file` | warning | A file of a pack folder that `init --pack` does not install (outside the white list: `project.yaml`, `agents/*.md`, `templates/*.md`, `commands/*.md`, `skills/**`, `flows/*.yaml`, `automations/*.yaml`); reported by `validate <pack>` and `init --pack` | Move it into one of the listed folders, or remove it from the pack |
 | `unknown-skill-key` | warning | A skill's frontmatter has a key outside the standard | None needed if another tool uses it |
 | `empty-flow` | error | A flow has no step | Add steps or delete the file |
@@ -515,6 +520,7 @@ warning on stderr.
 | `grant-empty-allow` | error | A `policy.grants` level has no `allow` rule (missing or `[]`), or one of its rules is empty or blank (one error per such rule) | List native rules, and remove the empty entries |
 | `grant-ambiguous-until` | error | A grant's bare `until` step is held by several flows | Write `<flow>/<step>` |
 | `grant-unsupported-rule` | warning | A grant's `allow` rule is not a `Bash(...)` rule (`Edit(...)`, `Read`, an MCP tool): the hook of a level answers `Bash` commands only, so the rule is never granted | Write it as a `Bash(...)` rule, or put it in `native.claude.permissions.allow` |
+| `grant-broad-rule` | warning | A grant's `Bash` rule lets through far more than one command (one warning per rule, judged on its text): `Bash(*)` or a specifier starting with `*`; a first word that runs anything (`python`, `node`, `ruby`, `perl`, `sh`, `bash`, `zsh`, `env`, `xargs`, `eval`, `exec`, `sudo`, `npx`, `timeout`, `nice`, `nohup`), compared after dropping a trailing `:*` and leading `VAR=val` words, keeping the base name of a path, lowercasing and dropping a version suffix, with a trailing `t` after a digit (`/usr/bin/python3.12`, `FOO=1 Python3`, the free-threaded `python3.13t`); a copy or move tool (`cp`, `mv`, `rsync`, `ln`, `tar`) with a `*`. The list is incomplete by construction (`make`, `npm run`, `cargo run` and `git` run arbitrary code too and are not listed): a warning, not a boundary | Name the exact command, such as `Bash(python3 scripts/release.py)` |
 | `grant-over-deny` | error | A grant's rule is, character for character, a `native.claude.permissions.deny` rule | Drop it from one of them: a grant never lifts a `deny`. Only an exact match is detected: a rule that overlaps a `deny` by pattern (`Bash(rm *)` vs `Bash(rm -rf *)`) is not, and Claude Code still applies `deny` first |
 | `unknown-state` | error | A link's `when` is not a state of its `from` step | Add it to `states`, or use `done`/`failed` |
 | `self-link` | error | A link, or `on_failure`, goes from a step to itself | Point it at another step |
@@ -522,6 +528,7 @@ warning on stderr.
 | `duplicate-failure-path` | error | A step has more than one failure path | Keep either `on_failure` or one `when: failed` link |
 | `no-entry-step` | warning | No step is an entry, so the flow can never start (without `start`). An entry step has no incoming *unconditional* link (`when` absent or `done`): a conditional link (`when: rejected`, `when: failed`) or an `on_failure` leading back to it does not count. Among such steps, one that another reaches without reaching it back (the `approved` end of a review loop) is not an entry | Declare `start: <step>`, or make one link into the first step conditional |
 | `ambiguous-entry` | warning | The flow declares no `start` and a step the guess above takes as an entry has an incoming link (of any kind): where the flow begins is only a guess (an entry with no incoming link at all is not warned) | Declare `start: <step>` to say where the flow begins |
+| `optional-start-step` | error | A step marked `optional: true` is an entry step of its flow (the declared `start`, or the one the heuristic finds) | A flow must begin with a step that runs: make another step the start, or drop `optional` |
 | `unreachable-step` | warning | A step cannot be reached from any entry step (every link and `on_failure` counts here) | Link it, or remove it |
 | `empty-command` | error | An automation's `run` is empty | Give the command to run |
 | `unknown-template` | error | An agent's `from` names no template of `templates/` | Use an existing template id (the hint suggests a close one) |

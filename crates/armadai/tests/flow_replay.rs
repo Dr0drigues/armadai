@@ -89,7 +89,7 @@ fn every_marked_case_replays_to_its_expected_document() {
 }
 
 /// Without a marker the output is the one before the lot, plus `lot` and `ref`
-/// at `null` (nothing else moved).
+/// at `null`, and the `agent` of each step (nothing else moved).
 #[test]
 fn an_unmarked_log_replays_as_before_the_lot() {
     let mut got = replay("unmarked-unchanged");
@@ -103,6 +103,7 @@ fn an_unmarked_log_replays_as_before_the_lot() {
                 step.as_object_mut().unwrap().remove("ref"),
                 Some(Value::Null)
             );
+            assert!(step.as_object_mut().unwrap().remove("agent").is_some());
         }
     }
     assert_eq!(got, expected("unmarked-unchanged"));

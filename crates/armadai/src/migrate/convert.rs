@@ -420,6 +420,7 @@ fn convert_orchestration(
             agent: id.to_string(),
             states: Vec::new(),
             on_failure: None,
+            optional: false,
         });
     };
     let link = |from: &str, to: &str, links: &mut Vec<Link>| {

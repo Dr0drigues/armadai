@@ -14,6 +14,7 @@ fn step(agent: &str, on_failure: Option<&str>) -> Step {
         agent: agent.into(),
         states: Vec::new(),
         on_failure: on_failure.map(Into::into),
+        optional: false,
     }
 }
 

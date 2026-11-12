@@ -131,6 +131,7 @@ Other projects referencing pack demo (not changed; run `armadai pack update` in 
 | `armadai pack status` | Locked and newest cached versions, and the projects referencing the pack (no network). In copy mode: the installed version and what is in the cache |
 | `armadai pack update [<version>]` | Reference: sync the source, move the lock to the best version of the range (or the one given), link. Copy: apply the new version of the pack to the files (below), link |
 | `armadai pack new <name> [--empty \| --from-project] [--description …] [--dir …]` | Create a native pack folder |
+| `armadai pack test [<dir>]` | Run the scripts the pack lists under `tests:` (the project's locked snapshot, or a folder; no network access of its own) |
 
 `pack status` in reference mode:
 
@@ -170,6 +171,36 @@ pack readers ignore it). `--from-project` copies the same white list as an insta
 refused (its `.armadai/` is an overlay, not a pack). The pack is validated first: an invalid one
 writes nothing. An existing folder of that name is refused (`<dir> already exists: choose another
 name, or --dir`), and a failed write removes what the command created.
+
+**Testing a pack.** A pack lists scripts in `pack.yaml`, relative paths inside the pack:
+
+```yaml
+tests:
+  - tests/permissions.sh
+  - tests/mr-rules.sh
+```
+
+`armadai pack test` runs them with `bash`, in a copy of the pack, with `HOME`, `CLAUDE_CONFIG_DIR`
+and `ARMADAI_CONFIG_DIR` pointing at temporary folders; without a folder it takes the snapshot the
+project locks from the local cache (`the locked snapshot of <name> <version> is not in the cache;
+run armadai pack sync` when it is not there), with one it takes that folder. Each test may run 60
+seconds, then it is killed with its child processes. The output is one line per test (`ok`, or `FAIL`
+with the exit code and what the script printed) and the counts; the exit code is 1 when a test
+fails, and a pack that lists none says so (`pack <name> declares no test (tests: in pack.yaml)`).
+When the exit status of a test cannot be read (the line says `exit status lost`), no process of its group is
+killed, and `pack test` waits for the output of a grandchild that keeps it open no longer than the time
+limit of that test, counted from the start of the test; the output of such a reader is then dropped.
+Only `pack test` runs a pack's scripts: `link`, `init` and `pack sync` never do.
+
+`pack test` runs the pack's scripts with your permissions, in an isolated copy and with a temporary
+`HOME`; it does not isolate the network. Only three variables are replaced (`HOME`,
+`CLAUDE_CONFIG_DIR` and `ARMADAI_CONFIG_DIR`): every other
+variable of the caller passes through as it is (`PATH`, `XDG_CONFIG_HOME`, tokens in the
+environment), so a script sees them. A script can reach whatever your account can reach, so run
+the tests of a pack you have read. A path in `tests:` is used as written (no `~` or `$HOME`
+expansion, no trimming); an absolute path (a leading `/` or `\`, or a drive letter such as `C:x.sh`, on every platform), a `..` component, an empty one or one holding a NUL byte
+is the validation error `pack-test-path-escapes`, and a symbolic link anywhere in the pack is
+refused. A file listed under `tests:` is not reported as `ignored-pack-file`.
 
 ## Variables
 
@@ -431,6 +462,8 @@ executes commands. The shell is denied to `framer`, `architect` and `guardian`, 
 format: 1
 name: rust-dev
 description: "Rust development agents: code review, test writing and debugging"
+tests:                  # optional: scripts for `armadai pack test`
+  - tests/review.sh
 ```
 
 `armadai validate <pack-dir>` validates a native pack as the project it installs (the default

@@ -27,6 +27,9 @@ pub struct StarterPack {
     pub prompts: Vec<String>,
     #[serde(default)]
     pub skills: Vec<String>,
+    /// Scripts `armadai pack test` runs, relative to the pack root.
+    #[serde(default)]
+    pub tests: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -43,6 +46,25 @@ impl StarterPack {
         let content = std::fs::read_to_string(&pack_file)?;
         let pack: StarterPack = armadai_model::yaml::from_str(&content)?;
         Ok(pack)
+    }
+
+    /// The `tests:` entries that are not a relative path inside the pack: empty,
+    /// absolute (either separator, or a drive letter, on every platform), holding a `..`
+    /// component or a NUL byte.
+    pub fn bad_test_paths(&self) -> Vec<&str> {
+        let bad = |t: &str| {
+            t.trim().is_empty()
+                || t.contains('\0')
+                || Path::new(t).is_absolute()
+                || t.starts_with(['/', '\\'])
+                || matches!(t.as_bytes(), [d, b':', ..] if d.is_ascii_alphabetic())
+                || t.split(['/', '\\']).any(|c| c == "..")
+        };
+        self.tests
+            .iter()
+            .map(String::as_str)
+            .filter(|t| bad(t))
+            .collect()
     }
 }
 
@@ -505,6 +527,52 @@ pub fn list_available_packs() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bad_test_paths_flags_each_escaping_form() {
+        let pack = |tests: &[&str]| {
+            let dir = tempfile::tempdir().unwrap();
+            let list: String = tests
+                .iter()
+                .map(|t| {
+                    format!(
+                        "  - \"{}\"\n",
+                        t.replace('\\', "\\\\").replace('\0', "\\u0000")
+                    )
+                })
+                .collect();
+            let yaml = format!("name: p\ndescription: d\ntests:\n{list}");
+            std::fs::write(dir.path().join("pack.yaml"), yaml).unwrap();
+            StarterPack::load(dir.path()).unwrap()
+        };
+        assert!(pack(&[]).bad_test_paths().is_empty());
+        assert!(
+            pack(&["tests/a.sh", "t..x/b.sh"])
+                .bad_test_paths()
+                .is_empty()
+        );
+        for bad in [
+            "/etc/x.sh",
+            "../x.sh",
+            "tests/../../x.sh",
+            "",
+            "  ",
+            "\\x.sh",
+            "tests\\..\\x.sh",
+            "C:\\x.sh",
+            "C:x.sh",
+            "tests/a\0b.sh",
+        ] {
+            assert_eq!(
+                pack(&["tests/ok.sh", bad]).bad_test_paths(),
+                vec![bad],
+                "{bad:?}"
+            );
+        }
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("pack.yaml"), "name: p\ndescription: d\n").unwrap();
+        assert!(StarterPack::load(d.path()).unwrap().tests.is_empty());
+    }
 
     #[test]
     fn test_load_pack() {

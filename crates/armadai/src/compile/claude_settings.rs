@@ -253,7 +253,8 @@ pub const PLUGIN_MARKETPLACE_KEY: &str = "extraKnownMarketplaces.armadai-ui";
 /// and statusline (`subagentStatusLine`: `type: command`, `command`).
 ///
 /// `settings.json` comes with `ui.subagent_status_line`, the mod (`hooks/hooks.json`,
-/// `hooks/register.js`, `panel.json`) with `ui.panel`; the two manifests are always there.
+/// `hooks/register.js`, `panel.json`) with `ui.panel` or `ui.flow_band`; the two manifests
+/// are always there.
 /// The mod's layout was read 2026-11-09 on code.claude.com/docs/en/plugins/mods/overview
 /// and mods/reference ("Files": `hooks/hooks.json` with `modules: ["./register.js"]`,
 /// an ES module, `.js` accepted).
@@ -289,9 +290,21 @@ pub fn plugin_files(ui: &armadai_model::types::Ui) -> Vec<(std::path::PathBuf, S
             (std::path::Path::new(super::PLUGIN_DIR).join(name), text)
         })
         .collect();
-    if ui.panel {
-        let documents = ui.documents.clone().unwrap_or_else(|| vec!["docs".into()]);
-        let panel = serde_json::json!({ "documents": documents });
+    if ui.panel || ui.flow_band {
+        // `ui.panel` alone: the file as it always was; `ui.flow_band` adds `band`, and
+        // without the panel says the pane is not to open (and has no documents to list)
+        let mut panel = serde_json::Map::new();
+        if ui.panel {
+            let documents = ui.documents.clone().unwrap_or_else(|| vec!["docs".into()]);
+            panel.insert("documents".into(), serde_json::json!(documents));
+        }
+        if ui.flow_band {
+            panel.insert("band".into(), true.into());
+        }
+        if !ui.panel {
+            panel.insert("pane".into(), false.into());
+        }
+        let panel = serde_json::Value::Object(panel);
         let modules = serde_json::json!({ "modules": ["./register.js"] });
         for (name, text) in [
             (
@@ -310,7 +323,8 @@ pub fn plugin_files(ui: &armadai_model::types::Ui) -> Vec<(std::path::PathBuf, S
     out
 }
 
-/// The paths (relative to the project root) of the files only `ui.panel` writes.
+/// The paths (relative to the project root) of the files only `ui.panel` and `ui.flow_band`
+/// write.
 pub fn is_mod_file(rel: &str) -> bool {
     ["hooks/hooks.json", "hooks/register.js", "panel.json"]
         .iter()
@@ -345,11 +359,13 @@ pub fn plugin_settings_keys() -> BTreeMap<String, Value> {
 pub fn native_settings(project: &Project) -> anyhow::Result<BTreeMap<String, Value>> {
     let mut keys = native_keys(project)?;
     let ui = &project.manifest.ui;
-    if ui.subagent_status_line || ui.panel {
+    if ui.subagent_status_line || ui.panel || ui.flow_band {
         let key = if ui.subagent_status_line {
             "ui.subagent_status_line"
-        } else {
+        } else if ui.panel {
             "ui.panel"
+        } else {
+            "ui.flow_band"
         };
         for k in ["enabledPlugins", "extraKnownMarketplaces"] {
             if keys.contains_key(k) {
@@ -1633,6 +1649,62 @@ mod tests {
             assert_eq!(got.as_deref(), want, "case {i}");
             assert_eq!(keys.is_empty(), want.is_some(), "case {i}");
         }
+    }
+
+    /// The files of the plugin for each combination of the keys that ask for the mod.
+    #[test]
+    fn the_mod_is_written_for_the_panel_or_the_band_with_its_own_panel_json() {
+        let names = |ui: &armadai_model::types::Ui| -> Vec<String> {
+            plugin_files(ui)
+                .iter()
+                .map(|(p, _)| {
+                    p.strip_prefix(super::super::PLUGIN_DIR)
+                        .unwrap()
+                        .display()
+                        .to_string()
+                })
+                .collect()
+        };
+        let panel_json = |ui: &armadai_model::types::Ui| {
+            plugin_files(ui)
+                .into_iter()
+                .find(|(p, _)| p.ends_with("panel.json"))
+                .map(|(_, t)| t)
+        };
+        let ui = |panel, flow_band| armadai_model::types::Ui {
+            panel,
+            flow_band,
+            ..Default::default()
+        };
+        let manifests = [
+            ".claude-plugin/marketplace.json",
+            ".claude-plugin/plugin.json",
+        ];
+        let with_mod = [
+            ".claude-plugin/marketplace.json",
+            ".claude-plugin/plugin.json",
+            "hooks/hooks.json",
+            "hooks/register.js",
+            "panel.json",
+        ];
+        assert_eq!(names(&ui(false, false)), manifests);
+        assert_eq!(names(&ui(true, false)), with_mod);
+        assert_eq!(names(&ui(false, true)), with_mod);
+        assert_eq!(names(&ui(true, true)), with_mod);
+        assert_eq!(panel_json(&ui(false, false)), None);
+        // the panel alone: the file as before this key existed (no `band` at all)
+        assert_eq!(
+            panel_json(&ui(true, false)).unwrap(),
+            "{\n  \"documents\": [\n    \"docs\"\n  ]\n}\n"
+        );
+        assert_eq!(
+            panel_json(&ui(true, true)).unwrap(),
+            "{\n  \"documents\": [\n    \"docs\"\n  ],\n  \"band\": true\n}\n"
+        );
+        assert_eq!(
+            panel_json(&ui(false, true)).unwrap(),
+            "{\n  \"band\": true,\n  \"pane\": false\n}\n"
+        );
     }
 
     #[test]

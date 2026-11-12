@@ -61,6 +61,10 @@
             "null"
           ]
         },
+        "optional": {
+          "description": "The step may never run: a flow can finish without it (never a start step).",
+          "type": "boolean"
+        },
         "states": {
           "items": {
             "type": "string"

@@ -81,6 +81,10 @@ Toutes ont été lues par l'architecte le **2026-11-10** par WebFetch ; les lien
 | D22 | idem | « **Multiple lines**: each `echo` or `print` statement displays as a separate row. » |
 | D23 | idem | « If a new update triggers while your script is still running, Claude Code cancels the in-flight script. » |
 | D24 | https://code.claude.com/docs/en/permission-modes | « In addition to file edits, `acceptEdits` mode auto-approves common filesystem Bash commands: `mkdir`, `touch`, `rm`, `rmdir`, `mv`, `cp`, and `sed`. […] Like file edits, auto-approval applies only to paths inside your working directory or `additionalDirectories`. » (lue par le guardian, relue par l'architecte le 2026-11-10 : extrait conforme ; le passage omis est « Except for `touch`, these commands are also auto-approved when prefixed with safe environment variables such as `LANG=C` or `NO_COLOR=1`, or process wrappers such as `timeout`, `nice`, or `nohup`. ») |
+| D25 | https://code.claude.com/docs/en/plugins/mods/interface (lue par l'adapter-specialist le 2026-11-10, WebFetch, tâche P4.0 ; relu mot pour mot par le guardian le 2026-11-12, pages .md officielles) | « Press Ctrl+X then Ctrl+A: this works whether the prompt, the band, or a pane has keyboard focus. » ; table des touches : « Ctrl+X then Ctrl+A \| Collapses the band to one row while a mod draws there, or expands it again. These keys also work while the prompt has the focus. » |
+| D26 | idem (relu mot pour mot par le guardian le 2026-11-12, pages .md officielles) | « Your mod can't expand it or tell that it's collapsed: the `ui.render` hook keeps running, and nothing in `e.props` says so. Don't make the band the only place your mod shows something the user has to answer. » |
+| D27 | idem (relu mot pour mot par le guardian le 2026-11-12, pages .md officielles) | « Click `[-]`: while the band is expanded, Claude Code draws this mark at the right end of its first row. » ; « A tree replaces what the mods after yours draw there. To keep theirs, put the result of `await next(e)` among the children of a `Box` in your tree. » |
+| D28 | https://code.claude.com/docs/en/plugins/mods/reference (idem ; relu mot pour mot par le guardian le 2026-11-12, pages .md officielles) | « Width of a `Pane` or the band: draw to `e.props.bodyColumns` » |
 
 **À lire en tâche** (non lu, rien n'est supposé) : un hook `PreToolUse` sur `SendMessage` et les champs de son `tool_input` (P1.0) ; le repli de la bande au-dessus du prompt et `claude plugin test` (`plugins/mods/interface`, `plugins/mods/test`, P4.0).
 
@@ -481,7 +485,9 @@ Chaque tâche finit barrière verte. Les mutations citées sont le minimum ; le 
 
 **P4.2 `skipped`, `--line` avec l'agent, `steps[].agent`** (`cli-specialist`)
 - Fichiers : `runs.rs`, `line.rs`, `json.rs`, `render.rs`, `watch.rs`, `cli/flow.rs` (`MARKS`, `painted`).
-- [ ] `Mark::Skipped`, signe `⤼`, nom `skipped`, note `skipped`. Une étape facultative jamais démarrée se traverse comme une étape du coordinateur (`reach`) tant qu'elle n'a pas démarré. Elle devient `Skipped` dès qu'une étape qu'elle atteint démarre, ou que le run est fini. `to_take` ignore une étape facultative en attente.
+- [ ] `Mark::Skipped`, signe `⤼`, nom `skipped`, note `skipped`. Une étape facultative se traverse comme une étape du coordinateur (`reach`) tant qu'elle n'est pas en cours, y compris quand elle est déjà `Done` d'un tour précédent : elle garde alors ✓, et la transition va directement de l'étape d'avant à celle d'après (§6, P4.2). Jamais démarrée, elle devient `Skipped` dès qu'une étape qu'elle atteint démarre, ou que le run est fini. `to_take` ignore une étape facultative en attente.
+- [ ] Une étape facultative démarrée après l'étape qui la suit ne laisse pas le run ouvert (§6, P4.2). Test et mutation dédiés.
+- [ ] `⤼ skipped` figure dans la liste des marques de `flow status --help` (`long_about` de `FlowCommand::Status`). Le test d'aide est mis à jour à égalité.
 - [ ] `StepView.agent: String`, l'agent de l'étape (le premier flow pour un groupe `a | b`) ; JSON `steps[].agent`.
 - [ ] `--line` : T15 ; `Piece::Agent` (couleur `muted`) ; `n` ne compte pas les `Skipped` ; `line_at` (la ligne du sous-agent) n'ajoute pas l'agent.
 - Tests :
@@ -492,7 +498,7 @@ Chaque tâche finit barrière verte. Les mutations citées sont le minimum ; le 
 - Commit : `feat(flow-status): skipped optional steps and the step agent in --line`
 
 **P4.3 Barre enchaînée** (`adapter-specialist`)
-- Fichiers : `claude_adapter/statusline_chain.rs` (nouveau), `cli/flow.rs` (`statusline_main`), `compile/claude.rs` (ligne de rapport).
+- Fichiers : `claude_adapter/statusline_chain.rs` (nouveau), `cli/flow.rs` (`statusline_main`), `cli/link.rs` (ligne de rapport T16).
 - Interface :
   ```rust
   /// The user's statusLine command from `$CLAUDE_CONFIG_DIR/settings.json`, else
@@ -503,10 +509,13 @@ Chaque tâche finit barrière verte. Les mutations citées sont le minimum ; le 
   pub fn run_user(command: &str, stdin: &[u8], limit: Duration) -> Option<String>;
   ```
 - [ ] `statusline_main` lit le JSON brut une fois, imprime la sortie de l'utilisateur telle quelle (fin de ligne retirée), puis la ligne du flow sur la ligne suivante (D22). Échec, délai d'1 s ou barre absente : la ligne du flow seule, code 0. Une commande égale à la nôtre est ignorée, pour éviter une récursion.
+- [ ] Garde de récursion : la commande enfant reçoit `ARMADAI_STATUSLINE_CHAINED` ; un `__claude-statusline` qui la trouve posée n'enchaîne pas (§6).
+- [ ] Délai dépassé : la commande enfant est lancée dans son propre groupe de processus, et c'est tout le groupe qui est tué, pas seulement `sh`.
+- [ ] La sortie lue de l'enfant est bornée à 64 Kio.
 - [ ] Windows : pas d'enchaînement (`shortcut:` commenté dans le code), ligne du flow seule.
 - [ ] Rapport : T16 ; une `statusLine` du projet qui n'est pas la nôtre reste `not-compiled`, comme aujourd'hui.
 - Tests :
-  - Avec un faux `HOME` (sous `env_lock`, valeurs lues sous le verrou) et des commandes jetables `printf user-bar`, `exit 3`, `sleep 5` :
+  - Tests unitaires avec l'environnement injecté (une fermeture `env`, pas d'`env_lock`) ; les tests du binaire retirent `CLAUDE_CONFIG_DIR` et `ARMADAI_STATUSLINE_CHAINED` de leur environnement. Un faux `HOME` et des commandes jetables `printf user-bar`, `exit 3`, `sleep 5` :
     - sortie à deux lignes, à égalité ;
     - échec : ligne du flow seule ;
     - délai : ligne du flow seule ;
@@ -562,13 +571,47 @@ Chaque tâche finit barrière verte. Les mutations citées sont le minimum ; le 
   - Mutations : `HOME` non remplacé ; code de sortie 0 malgré un échec ; délai ignoré.
 - Commit : `feat(cli): add armadai pack test`
 
+#### Suites de P2 (décisions de Dimitri du 2026-11-10)
+
+Sources, mot pour mot :
+- sur la limite de sécurité de `grant` (D16) : « Accepter + avertir (Recommandé) » ;
+- sur l'affichage par `link` de `grant-unsupported-rule` : « Oui (Recommandé) ».
+
+**P2.4 Avertir d'une règle de niveau large** (`schema-specialist`)
+- Fichiers : `armadai-model/src/check.rs` (à côté des codes `grant-*` de P2.1), `docs/wiki/project-format.md` (table des codes).
+- [ ] Nouveau code `grant-broad-rule` (Warning), un par règle large d'un niveau. Le texte est T21, en choix par défaut.
+- [ ] Est large une règle `Bash` qui remplit l'une de ces conditions. Le premier mot est normalisé selon le choix « graphies » de §6 (P2.4).
+  - `Bash(*)` ou `Bash(* …)` (spécificateur qui commence par `*`). `Bash` seul n'en est pas : `grant-unsupported-rule` le couvre déjà (§6, P2.4).
+  - Un spécificateur dont le premier mot est un interpréteur ou un lanceur : `python` (`python3`, `python3.13t` et les graphies voisines s'y ramènent), `node`, `ruby`, `perl`, `sh`, `bash`, `zsh`, `env`, `xargs`, `eval`, `exec`, `sudo`, `npx`, `timeout`, `nice`, `nohup`.
+  - Un spécificateur dont le premier mot est un outil de copie ou de déplacement et qui contient un `*` : `cp`, `mv`, `rsync`, `ln`, `tar`.
+- [ ] Limite connue, à écrire dans le wiki (`project-format.md`) : `make`, `npm run`, `cargo run` et `git` ne sont pas dans la liste (§6, P2.4).
+- [ ] La liste est une constante commentée « incomplète par construction : un avertissement, pas une frontière (D16) ».
+- Tests :
+  - un cas par forme (`Bash(*)`, `Bash(* --x)`, `Bash(python3 x.py)`, `Bash(python3.13t x.py)`, `Bash(xargs rm)`, `Bash(cp * /tmp)`), message entier à égalité ;
+  - un cas par graphie normalisée (`Bash(FOO=1 python x)`, `Bash(/usr/bin/python3.12 x)`, `Bash(Python x)`, `Bash(sudo:*)`) ;
+  - aucun avertissement pour `Bash(git push origin feature/*)`, ni pour `Bash(cp a b)`, ni pour `Bash` seul (qui reste à `grant-unsupported-rule`).
+  - Mutations : retirer un mot de la liste (son cas rougit) ; supprimer la condition « contient `*` » pour les outils de copie (le cas `cp a b` rougit) ; retirer une étape de normalisation (le cas de cette graphie rougit).
+- Commit : `feat(model): warn on broad grant rules`
+
+**P2.5 `link` montre les avertissements des niveaux** (`adapter-specialist`)
+- Fichier : `cli/link.rs` (`load_project`).
+- Comportement actuel (V, `cli/link.rs:64-77`) : `link` n'affiche que les **erreurs**, une par ligne sur stderr par `Diagnostic::render()`, puis s'arrête. Un projet valide passe par `Ok((p, _))`, où le `_` est l'`Origins` : ses avertissements ne sont jamais montrés. `validate` les obtient par `view.validate()` (V, `cli/validate.rs:9-12`).
+- [ ] Après un `load_checked` réussi, `link` écrit sur stderr, avant le rapport, chaque avertissement dont le code commence par `grant-` (`grant-unsupported-rule`, `grant-broad-rule`), par `Diagnostic::render()`. Ce sont les avertissements de `view.validate()`, ou les diagnostics déjà calculés si `load_checked` les expose sans un second chargement : à voir en tâche.
+- [ ] Les autres avertissements restent non montrés par `link`, comme aujourd'hui : hors du périmètre de cette tâche.
+- [ ] Format : la ligne de `Diagnostic::render()`, déjà utilisée par `link` pour les erreurs et par `validate`. Pas de texte nouveau. `--json` n'est pas touché, puisque les avertissements vont sur stderr.
+- Tests :
+  - par le binaire, sur un projet qui déclare un niveau avec `Bash(*)` et `Edit(/src/*)` : stderr contient exactement les deux lignes rendues, et stdout de `link --json` reste un JSON valide sans elles ;
+  - sans niveau : stderr sans ligne `grant-`.
+  - Mutations : ne pas filtrer sur `grant-` (des avertissements d'une autre famille de la fixture apparaissent) ; écrire sur stdout (le JSON casse).
+- Commit : `feat(link): show the warnings of grant levels`
+
 **D2 Documentation de la PR 2** (`cli-specialist`)
-- Fichiers : `docs/wiki/flow-status.md` (`skipped`, `--line`, `steps[].agent`, la bande, le mod du panneau mis à jour, risque 5), `docs/wiki/link.md` (barre enchaînée, `ui.flow_band`), `docs/wiki/project-format.md` (`optional`, `ui.flow_band`, `optional-start-step`, `pack-test-path-escapes`), `docs/wiki/starter-packs.md` (`tests:` et `pack test`, avec la phrase : « `pack test` exécute les scripts du pack avec vos droits, dans une copie isolée et avec un `HOME` temporaire ; il n'isole pas le réseau »), `CLAUDE.md` (liste : `pack` … `test`).
+- Fichiers : `docs/wiki/flow-status.md` (`skipped`, `--line`, `steps[].agent`, la bande, le mod du panneau mis à jour, risque 5), `docs/wiki/link.md` (barre enchaînée, avec la phrase : le `refreshInterval` de l'utilisateur est remplacé par celui de notre barre, soit 5 s ; `ui.flow_band`), `docs/wiki/project-format.md` (`optional`, `ui.flow_band`, `optional-start-step`, `pack-test-path-escapes`), `docs/wiki/starter-packs.md` (`tests:` et `pack test`, avec la phrase : « `pack test` exécute les scripts du pack avec vos droits, dans une copie isolée et avec un `HOME` temporaire ; il n'isole pas le réseau »), `CLAUDE.md` (liste : `pack` … `test`).
 - Commit : `docs: document optional steps, the chained status line and pack test`
 
 ### Ordre et dépendances
 
-A.0 → A.1 ; A.2, A.3, A.4 → A.5 → A.6 (A.2 à A.5 sont indépendantes entre elles, une à la fois pour `link`) → P1.0 → P1.1 → P1.2 → P1.3 (attend P1.0 (iii)) → P1.4 → P1.5 → P2.0 → [P2.1 → P2.2 → P2.3 si la mesure est positive] → P3.1 → P3.2 → D1 → **PR 1**. Puis P4.0 → P4.1 → P4.2 → P4.3 → P4.4 → P5.1 → P5.2 → D2 → **PR 2**. P3 ne dépend que de P1 pour `--by step|lot`. Essais réels de Dimitri : fin de P1 (critère 1) et fin de P4 (critères 7 et 9).
+A.0 → A.1 ; A.2, A.3, A.4 → A.5 → A.6 (A.2 à A.5 sont indépendantes entre elles, une à la fois pour `link`) → P1.0 → P1.1 → P1.2 → P1.3 (attend P1.0 (iii)) → P1.4 → P1.5 → P2.0 → [P2.1 → P2.2 → P2.3 si la mesure est positive] → P3.1 → P3.2 → D1 → **PR 1**. Puis P4.0 → P4.1 → P4.2 → P4.3 → P4.4 → P5.1 → P5.2 → P2.4 → P2.5 → D2 → **PR 2**. P3 ne dépend que de P1 pour `--by step|lot`. Essais réels de Dimitri : fin de P1 (critère 1) et fin de P4 (critères 7 et 9).
 
 ## 5. Textes de sortie proposés (à valider par Dimitri)
 
@@ -663,10 +706,29 @@ Code, messages et sorties en anglais. `‹…›` marque une valeur.
 - État illisible : `.armadai/state/grants.yaml does not read (damaged, or written by a later version); delete it and run the command again`.
 - `cli/grant.rs:178` : `grant <niveau> has no Bash rule to answer; list its rules as Bash(...) in policy.grants, other rules are never granted`, code 1. Validé par Dimitri : « Refuser (Recommandé) ».
 
+**P2.4 et P2.5**
+- T21, `grant-broad-rule` (Warning). Message : ``grant `‹level›` rule `‹rule›` is broad: it lets through any command it matches`` (validé par Dimitri, §6, P2.4). Hint : ``a grant is a convenience, not a boundary; name the exact command, such as `Bash(python3 scripts/release.py)` ``. Hint : choix par défaut à valider.
+- Affichage par `link` (P2.5) : la ligne de `Diagnostic::render()` existante, sur stderr ; pas de texte nouveau. Choix par défaut.
+
 **P3.2**
 - `cli/flow.rs:220`, en-tête avec `--all` : `flow stats  all sessions (N)  by agent`. Choix par défaut.
 - `cli/flow.rs:212` : `no call of flow <flow> in this session`, et avec `--all` `no call of flow <flow> in these sessions`, code 0. Validé par Dimitri : « ça me va », puis « Oui, ce texte (Recommandé) ».
 - `flow_status/render.rs:266`, note sous la table : `states count each verdict rendered, a resumed agent can render several`. Choix par défaut.
+
+**P5.2** (`pack test`, `cli/pack_test.rs`, textes pris sous mandat, à challenger par Dimitri)
+- Projet sans référence de pack et sans argument : `this project references no pack: give a pack folder, armadai pack test <dir>`.
+- En-tête avec un dossier : `pack test  <dir tel que tapé>`, sans `./` ajouté (T20 donnait `./‹dir›` sans trancher).
+- Délai : `FAIL  <path>  timed out after <limite>`, la limite en secondes entières (`60s`), sinon avec une décimale.
+- Test tué par un signal : `FAIL  <path>  signal  <durée>`, à la place de `exit N`.
+- Lock absent : le message existant de `pack add` (`.armadai/project.yaml references pack <name> but .armadai/pack.lock is missing: run `armadai pack update``).
+- Lien symbolique dans le pack : le message existant de `native_pack::files`, repris par `copy_tree` : `the pack holds a symbolic link, refused: <path>`.
+- Statut de sortie perdu (`waitid` échoue, `Finish::Lost`) : `FAIL  <path>  exit status lost  <durée>`, sans le mot `signal` et sans ligne de sortie ; le groupe n'est pas tué et les lecteurs ne sont attendus que jusqu'au délai. Choix par défaut.
+- Aide : `about` = `Run the scripts a pack lists under tests: in an isolated copy (no network isolation)` ; `long_about` = « Run the scripts a pack lists under tests: in pack.yaml, with bash, in a copy of the pack and with HOME, CLAUDE_CONFIG_DIR and ARMADAI_CONFIG_DIR pointing at temporary folders. Without a folder, the snapshot the project locks (from the local cache, never the network); with one, that folder. Each test may run 60 seconds; the exit code is 1 when one fails. », puis « The scripts run with your permissions and see your network: the copy and the three variables are the only isolation. » ; exemples de `pack --help` : `armadai pack test` et `armadai pack test ./my-pack`.
+
+**Étape facultative, bloc coordinateur de `CLAUDE.md`** (décision de Dimitri, 2026-11-12, après l'essai réel où le lead hésitait à sauter une étape `optional` : « Oui, dans cette PR (Recommandé) »)
+- Phrase, mot pour mot : `An optional step may be skipped: delegate the step after it directly.` Elle est ajoutée au bloc compilé par `link`, dans son propre paragraphe après les sections de flow et avant « Marking delegations », seulement si un flow a au moins une étape `optional` (aucun autre projet ne change).
+- OpenCode : un équivalent existe (correction d'une ligne inexacte de cette entrée) : les consignes de délégation du coordinateur vont dans son propre fichier d'agent, section `## Delegation` (`opencode.rs`). Décision de Dimitri, 2026-11-12, à « Faut-il aussi dire au coordinateur OpenCode qu'une étape `optional` peut être sautée ? » : « Oui, dans cette PR (Recommandé) ». La même phrase, mot pour mot, termine donc cette section dans le fichier du seul coordinateur, avec la même condition. `.opencode/armadai-team.md` reste neutre (lu par tous les agents) : il ne porte que le `, optional` de la ligne de l'étape.
+- Mesure faite avant d'écrire la phrase (2026-11-12, `link --target opencode`, `policy.delegation: strict`, flow design → build → check `optional` → review, agent coordinateur `lead` hors flow) : le fichier `agents/lead.md` porte `permission.task` `{"*": "deny", chk: allow, des: allow, dev: allow, rev: allow}` ; le coordinateur peut donc déléguer à l'agent de `review` sans passer par `check`. Même règle pour `agent.build` et `agent.plan` dans `opencode.json`. Aucun essai `opencode` réel.
 
 ## 6. Choix par défaut (mandat du 2026-11-10, à confirmer par Dimitri)
 
@@ -696,8 +758,19 @@ Dimitri est absent ; son mandat : « continue en autonomie » et « Prends les r
 - Le filtre de shell est plus large que Q2 : il refuse aussi `$VAR`, les guillemets, les redirections et les globs.
 - Note : sous un niveau large, `grant` est une commodité, pas une frontière (D16). Quatre contournements ont été trouvés en revue. Le point est à revoir avec Dimitri avant la fusion.
 
+**P2.4**
+- La normalisation du premier mot retire aussi un `t` final qui suit un chiffre, avant le suffixe `[0-9.]+` : `python3.13t` devient `python`.
+
 **P2.3**
 - Heure en double : la première occurrence.
+
+**P4.3**
+- Garde de récursion par la variable `ARMADAI_STATUSLINE_CHAINED`, posée sur la commande enfant : un ajout de l'auteur, adopté par défaut.
+
+**P4.3 et P5.2 (processus enfants, `crates/armadai/src/process.rs`)**
+- Choix du 2026-11-12, par lead sous mandat : la barre enchaînée ne tue le groupe de processus de la commande de l'utilisateur qu'au dépassement du délai d'1 s ; une barre qui finit à temps, même en échec, est laissée, avec ce qu'elle a détaché.
+- `pack test` tue le groupe aussi après une fin normale du test, quand le chef du groupe est vu terminé (`waitid` avec `WNOWAIT`, qui ne le récolte pas : son pid, identifiant du groupe, ne peut pas avoir été réattribué).
+- Ni l'une ni l'autre ne tue le groupe quand `waitid` échoue : un groupe qu'on ne sait pas être le nôtre n'est pas signalé.
 
 **P1**
 - Une `mark` qui désigne une étape que l'agent ne tient pas est ignorée.
@@ -705,9 +778,28 @@ Dimitri est absent ; son mandat : « continue en autonomie » et « Prends les r
 - Un `start` ambigu sans run ouvre un run par `(flow, lot)`.
 - Le rejeu passe par le binaire, avec des fixtures synthétiques acceptées.
 
+### Décisions de Dimitri du 2026-11-10 (mot pour mot)
+
+**P2.4 (`grant-broad-rule`)**
+- Graphies : « Oui (Recommandé) ». On reconnaît les autres graphies d'un mot de la liste. Pour juger le premier mot :
+  - ignorer les préfixes `VAR=val` ;
+  - garder le nom de base du chemin ;
+  - retirer un suffixe de version `[0-9.]+` ;
+  - passer en minuscules ;
+  - retirer le suffixe `:*` de la forme héritée.
+- Liste : « Les 5 lanceurs (Recommandé) ». Ajouter `sudo`, `npx`, `timeout`, `nice` et `nohup`. Les programmes `make`, `npm run`, `cargo run` et `git` ne sont pas ajoutés : le wiki les cite comme limite connue.
+- Texte T21 : « « any command it matches » (Recommandé) ». Le message devient ``grant `‹level›` rule `‹rule›` is broad: it lets through any command it matches``. Le hint ne change pas.
+- `Bash` seul n'est pas large : `grant-unsupported-rule` le couvre déjà.
+
+**P4.2**
+- Étape facultative dans une boucle : « Oui, à chaque tour (Recommandé) ». Une étape facultative est franchissable tant qu'elle n'est pas en cours, même si elle est déjà `Done` d'un tour précédent. Elle garde ✓, et la transition va directement de `guard` à `build`, sans passer par elle.
+- Une étape facultative démarrée après l'étape qui la suit ne laisse pas le run ouvert.
+- `⤼ skipped` figure dans l'aide `flow status --help`.
+
 ## 7. Résultats des mesures (rempli en tâche)
 
 - A.0 : **A.0 (mesurée le 2026-11-10, tête `fbf1806`, binaire construit par `cargo build -p armadai`, copie jetable, HOME et ARMADAI_CONFIG_DIR isolés).** Positive. Après ajout de `.armadai/skills/armadai-rules/scripts/probe.sh` (mode 755), `armadai link --target claude --force` (rc=0) écrit `.claude/skills/armadai-rules/scripts/probe.sh` : `cmp` le dit identique à la source, mode `-rwxr-xr-x` conservé. Une seconde relance de `link` ne change aucun fichier compilé ; seul le champ `linked_at` du manifeste (gitignoré) est mis à jour. Le critère d'arrêt ne s'applique pas : A.1 livre `scratch.sh`. Le bit d'exécution étant conservé, l'appel `bash .claude/skills/armadai-rules/scripts/scratch.sh` reste celui du plan, `./` serait aussi possible.
 - P1.0 : **P1.0 (mesurée le 2026-11-10, Claude Code 2.1.319, `claude -p --model haiku`, projet jetable, 10 lancements).** (i) Positif : le `PreToolUse` d'un appel `Agent` porte `tool_input.description` intact et `tool_use_id`. (ii) Confirmé : le `SubagentStart` ne porte ni `tool_use_id` ni `description`, seulement `agent_id`, `agent_type` et le `prompt_id` du tour. (iii) 8 répétitions de deux `Agent` parallèles vers un même agent : les `PreToolUse` arrivent toujours dans l'ordre des appels (8 sur 8, 100 à 240 ms d'écart), tous avant le premier `SubagentStart`, et les deux `SubagentStart` à 2 à 8 ms l'un de l'autre. L'appariement `start` ↔ `mark` ne se lit pas dans la charge et reste à vérifier avec deux agents distincts : la règle « `?` marqueur ambigu » de P1.3 s'applique. `SubagentStop` est parfois émis deux fois pour un même `agent_id` (3 répétitions sur 8) : à dédoublonner. (iv) Un `SendMessage` vers un agent terminé produit un nouveau `SubagentStart` du même `agent_id`, ~0,3 s après le `PreToolUse` de `SendMessage` ; ce `tool_input` est `{to, summary, message, type, recipient, recipient_kind, content}`, où `to` et `recipient` sont l'`agent_id`, sans description. Aucun critère d'arrêt. Pièges de banc : écrire une ligne de journal en une seule écriture (les hooks parallèles mêlent les lignes sinon) ; générer le `settings.json` de sonde par `jq`.
 - P2.0 : **P2.0 (mesurée le 2026-11-10, Claude Code 2.1.319, `claude -p --model haiku --permission-mode default`, projet jetable, 5 lancements utiles).** (a) `PreToolUse` + `if` rendant `allow` face à une règle `ask` : appel refusé (D5 confirmé). (b) `PermissionRequest` + même `if` rendant `allow` : l'appel s'exécute. (c) Face à une règle `deny`, les deux hooks rendant `allow` : l'appel reste refusé et `PermissionRequest` n'est pas appelé. (d) `if` filtre : le hook ne tourne pas pour `echo other` ; il tourne pour `echo grant-probe x && echo y` et pour une commande illisible (`eval …`), qui s'exécute car la règle `ask` ne la reconnaît pas (D4 et D16 : pas une frontière). (b) et (c) positifs : P2 par `PermissionRequest` avec `if`. Limites : mesuré en `claude -p` ; la répétition interactive de (b) reste à l'essai réel de Dimitri.
-- P4.0 : —
+- P4.0 : **essai réel de Dimitri le 2026-11-12, Claude Code 2.1.322, session interactive, mod jetable chargé par `--plugin-dir`.** Positif. Sans `Pane` : la bande est dessinée au-dessus du prompt, `maxRows` 17, `working` passe à true pendant une réponse. À 82 et 91 colonnes, la ligne (avec un suffixe de mesure) revient à la ligne au lieu d'être coupée, le `[-]` en fin de première ligne : la bande doit donc tenir elle-même dans `bodyColumns` (fait en P4.4). Avec un `Pane` ouvert (`cols` 77), la bande reste visible sous le corps (`cols` 91). Le critère d'arrêt ne s'applique pas : P4.4 garde la bande `AbovePrompt`.
+- P4.3, durée ajoutée à la barre : **mesurée le 2026-11-12, binaire de dev, `__claude-statusline` avec `{}` sur stdin, faux `HOME`, 20 lancements.** Sans barre utilisateur : médiane 11 ms (max 699 ms, premier lancement à froid). Avec `printf bar` : médiane 25 ms, max 35 ms, soit environ 14 ms de plus. Avec `sleep 5` : 1016 ms en médiane (3 lancements, max 1026 ms), soit le délai d'1 s plus environ 16 ms ; la barre n'attend jamais les 5 s. Une vraie barre (ccstatusline) n'est pas mesurée : à l'essai de Dimitri.

@@ -97,7 +97,7 @@ impl Compiler for ClaudeCompiler {
         // the plugin sits under `.armadai/plugins/`, outside the output folder; whether
         // it is written (the user may hold its keys) is decided by `link`
         let ui = &project.manifest.ui;
-        if ui.subagent_status_line || ui.panel {
+        if ui.subagent_status_line || ui.panel || ui.flow_band {
             for (path, text) in claude_settings::plugin_files(ui) {
                 plan.artifacts.push(Artifact {
                     produced_by: ProducedBy::plugin(path.display().to_string()),
@@ -488,6 +488,12 @@ fn claude_md(coordinator: &str, lead: &Agent, project: &Project) -> String {
     for (fid, flow) in &project.flows {
         out.push_str(&flow_section(fid, flow));
     }
+    // only a project with an optional step says so: no other project's block changes
+    if has_optional_step(project) {
+        out.push('\n');
+        out.push_str(OPTIONAL_SENTENCE);
+        out.push('\n');
+    }
     if !project.flows.is_empty() {
         out.push_str(MARKING_SECTION);
         if strict {
@@ -496,6 +502,15 @@ fn claude_md(coordinator: &str, lead: &Agent, project: &Project) -> String {
         out.push('\n');
     }
     out
+}
+
+/// Said to the coordinator when a flow has an optional step (decided by Dimitri, 2026-11-12).
+pub(super) const OPTIONAL_SENTENCE: &str =
+    "An optional step may be skipped: delegate the step after it directly.";
+
+/// Whether a flow of the project has an optional step (in any flow, whatever its key).
+pub(super) fn has_optional_step(project: &Project) -> bool {
+    (project.flows.values()).any(|f| f.steps.values().any(|s| s.optional))
 }
 
 /// How the coordinator marks a delegation, so `armadai flow status` can place it.
@@ -515,6 +530,9 @@ pub(super) fn flow_section(fid: &str, flow: &Flow) -> String {
     out.push_str("Steps:\n\n");
     for (sid, s) in &flow.steps {
         let mut detail = format!("agent `{}`", s.agent);
+        if s.optional {
+            detail.push_str(", optional");
+        }
         if !s.states.is_empty() {
             detail.push_str(&format!(", states: {}", s.states.join(", ")));
         }
@@ -1009,6 +1027,75 @@ mod tests {
             "{}",
             plan.blocks[0].1
         );
+    }
+
+    #[test]
+    fn an_optional_step_says_so_in_its_detail_line() {
+        let mut files = team();
+        files[4] = (
+            ".armadai/flows/ship.yaml",
+            b"steps:\n  plan: { agent: lead }\n  build: { agent: dev }\n  review: { agent: rev, optional: true, states: [changes] }\nlinks:\n  - { from: plan, to: build }\n  - { from: build, to: review }\n",
+        );
+        let block = compile(&files).unwrap().blocks[0].1.clone();
+        let steps: Vec<&str> = block
+            .lines()
+            .filter(|l| l.starts_with("- `") && l.contains("` (agent `"))
+            .collect();
+        assert_eq!(
+            steps,
+            [
+                "- `build` (agent `dev`)",
+                "- `plan` (agent `lead`)",
+                "- `review` (agent `rev`, optional, states: changes)",
+            ]
+        );
+    }
+
+    const OPTIONAL: &str = "An optional step may be skipped: delegate the step after it directly.";
+
+    #[test]
+    fn a_flow_with_an_optional_step_tells_the_coordinator_it_may_be_skipped() {
+        let mut files = team();
+        files[4] = (
+            ".armadai/flows/ship.yaml",
+            b"steps:\n  plan: { agent: lead }\n  build: { agent: dev }\n  review: { agent: rev, optional: true }\nlinks:\n  - { from: plan, to: build }\n  - { from: build, to: review }\n",
+        );
+        let block = compile(&files).unwrap().blocks[0].1.clone();
+        assert_eq!(block.matches(OPTIONAL).count(), 1, "{block}");
+        // its own paragraph, after the flow and before the marking section
+        let (before, after) = block.split_once(&format!("\n{OPTIONAL}\n")).unwrap();
+        assert!(before.ends_with("- `build` -> `review`\n"), "{before}");
+        assert!(after.starts_with("\n### Marking delegations"), "{after}");
+    }
+
+    /// The optional step is in the flow that comes second by key: the condition looks at
+    /// every flow, not the first one.
+    #[test]
+    fn an_optional_step_in_a_later_flow_is_still_told() {
+        let mut files = team();
+        files.push((
+            ".armadai/flows/a.yaml",
+            b"steps:\n  one: { agent: lead }\n  two: { agent: dev }\nlinks:\n  - { from: one, to: two }\n",
+        ));
+        files[4] = (
+            ".armadai/flows/ship.yaml",
+            b"steps:\n  plan: { agent: lead }\n  review: { agent: rev, optional: true }\nlinks:\n  - { from: plan, to: review }\n",
+        );
+        let block = compile(&files).unwrap().blocks[0].1.clone();
+        // `a` comes before `ship`, and has none
+        assert!(block.find("### Flow `a`").unwrap() < block.find("### Flow `ship`").unwrap());
+        assert_eq!(block.matches(OPTIONAL).count(), 1, "{block}");
+    }
+
+    #[test]
+    fn a_project_without_an_optional_step_gets_no_such_sentence() {
+        let block = compile(&team()).unwrap().blocks[0].1.clone();
+        assert!(!block.contains("optional step"), "{block}");
+        // and not a project with no flow either
+        let mut files = team();
+        files.pop();
+        let block = compile(&files).unwrap().blocks[0].1.clone();
+        assert!(!block.contains("may be skipped"), "{block}");
     }
 
     #[test]

@@ -198,5 +198,5 @@ claude: flow ship: approximated (rendered as guidance in CLAUDE.md; delegation t
 claude: flow ship step build: approximated (states and on_failure rendered as guidance)
 claude: policy delegation=strict: compiled (enforced: delegation topology, by the PreToolUse gate)
 claude: skill review: compiled
-claude: ui.status_line: compiled (statusLine in .claude/settings.json, running armadai __claude-statusline; it hides the statusLine of your user settings)
+claude: ui.status_line: compiled (chained after your user status line when there is one)
 claude: ui.subagent_status_line: compiled (plugin armadai-ui in .armadai/plugins/armadai-ui, enabled in .claude/settings.json; Claude Code loads it once you trust the folder)

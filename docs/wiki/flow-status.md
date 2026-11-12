@@ -158,6 +158,7 @@ deliver  in progress
 | `?` | unsure, with the reason in parentheses (for example no `STATE:` line). It leads nowhere: started again, the step is retried in place and its new state replaces the `?` |
 | `✗` | a state the step does not declare. It leads nowhere: started again, the step is retried in place and its new state replaces the `✗`. A state the step declares but no link follows ends the flow normally: it is not a `✗` |
 | `~` | held by the coordinator, which is not recorded (`coordinator, not recorded`) |
+| `⤼` | an optional step that never started and is skipped (`skipped`): see [Optional steps](#optional-steps) |
 | `-` | not run in this session (`not run in this session`): a step before the one a run opened at, when the session started the flow mid-way (inferred runs only: in a run a command opened, a step that never started stays `○ pending`). Neither done nor pending, it never holds the run open |
 
 A run whose steps were placed by a marker with a lot heads `deliver #menu  finished` (Markdown: `## deliver #menu: finished`); a run without a lot is headed as before. A step with a `REF:` shows it after its state, in square brackets: `  ✓ build     done [feature/menu]` (Markdown: the Status cell reads `done [feature/menu]`).
@@ -235,18 +236,18 @@ hotfix finished 2/2
 bugfix interrupted 1/2
 ```
 
-- The run shown is the last one still open, else the last one. `●` guard is the current step (the running one, else the first `?` or `✗`, else the first pending one) with its mark; `2/4` counts done steps over the steps recorded in this session (`~` and `-` steps are left out); `(loops 1)` counts the extra times links were taken, and shows only when there is one.
+- The run shown is the last one still open, else the last one. `●` guard is the current step (the running one, else the first `?` or `✗`, else the first pending one) with its mark, then the agent that holds it in parentheses, and after a colon the reason of a `?` or `✗` (`deliver ? guard (qa: no STATE line) 2/4`, `deliver ○ validate (ops) 3/4`); a finished or interrupted run names no step and no agent, and the row of a sub-agent names its step but not the agent. `2/4` counts done steps over the steps recorded in this session (`~`, `-` and `⤼` steps are left out); `(loops 1)` counts the extra times links were taken, and shows only when there is one.
 - The session is `--session`, else the `session_id` of a JSON read on stdin (the one Claude Code pipes to a status line), else the latest log of the project. The project is the `cwd` of that JSON, else the current directory. stdin is read only when it is piped, for 250 ms at most, so a terminal or a pipe that stays open never blocks the command.
 - Marks are always printed; colour comes on top. `--color auto|always|never` (default `auto`) applies to every `flow status` output: `auto` follows the terminal and honours `NO_COLOR` and `CLICOLOR_FORCE`. A status bar that runs the command through a pipe needs `--color always`: `armadai flow status --line --color always`.
 - In [ccstatusline](https://github.com/sirmalloc/ccstatusline), add a **Custom Command** widget, give it `armadai flow status --line --color always` and turn on its **preserve colors** option (without it the widget drops the colour). Read in the code of ccstatusline (the `render` method of the Custom Command widget; its page does not say so): the widget passes the whole JSON of Claude Code on stdin (`session_id`, `cwd`, ...) plus `terminal_width`, so the line follows the session and the project of Claude Code. Measured with ccstatusline run in an isolated `HOME`: the bar shows the same line as `flow status --line --session <id>`, an unknown session leaves the widget empty, and a JSON without `session_id` shows the latest log. The widget waits 1000 ms by default (`timeoutMs`, set per widget); its page also announces an optional cache of up to 60 s, so the line can lag behind a flow by that much.
-- The status line that `armadai link` writes for Claude Code calls the hidden command `armadai __claude-statusline`: it reads `session_id` and `cwd` from the JSON on stdin, always colours, takes no argument, and prints nothing (0 bytes, exit code 0) when the JSON has no `session_id`, the session is unknown, the JSON is invalid or the log holds no run. It never falls back to the latest log.
-- To get that bar without a script, set `ui: { status_line: true }` in `project.yaml` and run `armadai link --target claude`: it writes `statusLine` (`armadai __claude-statusline`, refreshed every 5 s) in `.claude/settings.json`, which hides the `statusLine` of your user settings. If `.claude/settings.json` already has a `statusLine`, `link` leaves it, writes the rest and reports `ui.status_line` as `not-compiled`: add `armadai flow status --line` to your own bar instead. If your own `statusLine` is identical to the one `link` would write, `link` reports `compiled` but does not own it: `unlink` leaves it in place. Other targets report `not-compiled` (Claude Code only). See [Project format](project-format.md).
+- The status line that `armadai link` writes for Claude Code calls the hidden command `armadai __claude-statusline`: it reads `session_id` and `cwd` from the JSON on stdin, always colours, takes no argument, and prints no flow line (exit code 0) when the JSON has no `session_id`, the session is unknown, the JSON is invalid or the log holds no run: it then prints only the output of your own status bar when one is chained (see [Link](link.md#the-chained-status-line)), and 0 bytes otherwise. It never falls back to the latest log.
+- To get that bar without a script, set `ui: { status_line: true }` in `project.yaml` and run `armadai link --target claude`: it writes `statusLine` (`armadai __claude-statusline`, refreshed every 5 s) in `.claude/settings.json`, which runs the `statusLine` of your user settings first (same stdin, at most 1 s, `sh -c`; Unix only) and prints its output, then the flow line on the next row (details in [Link](link.md#the-chained-status-line)). A failing (non-zero), slow or absent user bar leaves the flow line alone, and the exit code is always 0. If `.claude/settings.json` already has a `statusLine`, `link` leaves it, writes the rest and reports `ui.status_line` as `not-compiled`: add `armadai flow status --line` to your own bar instead. If your own `statusLine` is identical to the one `link` would write, `link` reports `compiled` but does not own it: `unlink` leaves it in place. Other targets report `not-compiled` (Claude Code only). See [Project format](project-format.md).
 - To get a row per subagent, set `ui: { subagent_status_line: true }` and run `armadai link --target claude`: it writes the plugin `armadai-ui` (see [Link](link.md#claude-code)), whose `subagentStatusLine` runs the hidden command `armadai __claude-subagent-statusline`. Claude Code pipes it one JSON object with the session `session_id`, its `cwd` and a `tasks` array; for each task whose `agentType` holds a running step of a run in progress, the command prints one JSON line `{"id": "<task id>", "content": "<the line of that run naming that step>"}` (coloured; the other tasks keep Claude Code's row). It prints nothing (0 bytes, exit code 0) on an empty or invalid input and never blocks. Format read on [code.claude.com/docs/en/statusline](https://code.claude.com/docs/en/statusline) (2026-11-05).
 - The latest log is a guess when two sessions run at once in the same project: pass the session explicitly when you can.
 
 ## Machine-readable output
 
-`armadai flow status --json` prints the session as one JSON document on stdout, and nothing else (it does not combine with `--watch` or `--list`). The `flow` argument and `--session` apply as for the text.
+`armadai flow status --json` prints the session as one JSON document on stdout, and nothing else (it does not combine with `--watch` or `--list`). The `flow` argument and `--session` apply as for the text. The schema only grows: read the keys you need. `steps[].agent` (the agent that holds the step, always present) and the value `skipped` of `mark` were added without a new schema version; a reader that matches `mark` strictly must accept it.
 
 ```json
 {
@@ -257,7 +258,7 @@ bugfix interrupted 1/2
       "flow": "deliver",
       "lot": "menu",
       "status": "in-progress",
-      "steps": [ { "step": "guard", "mark": "running", "sign": "●", "state": null, "note": null, "ref": "feature/menu" } ],
+      "steps": [ { "step": "guard", "agent": "qa", "mark": "running", "sign": "●", "state": null, "note": null, "ref": "feature/menu" } ],
       "loops": [ { "from": "build", "to": "guard", "times": 2 } ],
       "transitions": [ { "at": "2026-10-22T09:15:20Z", "from": "design", "to": "build", "state": "done" } ]
     }
@@ -286,6 +287,29 @@ bugfix interrupted 1/2
 | `unexpected` | `✗` | The step ended in a state it does not declare |
 | `coordinator` | `~` | The coordinator holds the step; it is not recorded |
 | `not-run` | `-` | Before the step the run opened at in this session |
+| `skipped` | `⤼` | An optional step that did not run; `note` is `skipped` |
+
+## Optional steps
+
+A step marked `optional: true` in its flow (see [Project format](project-format.md)) is one a run may
+never reach. While it has not started, `flow status` treats it as it treats a coordinator's step:
+what follows it can start without it. It shows `⤼ skipped` (JSON `mark: "skipped"`, `sign: "⤼"`,
+`note: "skipped"`) as soon as a step it reaches has started, or the run is over; before that it stays
+`○ pending`. A pending optional step does not hold the run open: a flow whose last step is optional
+finishes when the step before it does, with that step skipped. The link taken goes straight from the
+step before to the one after (`build → release` in the example below), with no line into the skipped step. An optional
+step that ran in a turn of a loop keeps its `✓` and is crossed again in the next turn. `--line` does
+not count skipped steps, and the animated `--watch` draws `⤼` in the box of the step.
+
+For Claude Code, the coordinator block of `CLAUDE.md` that `link` writes says it too when a flow has an optional step: `An optional step may be skipped: delegate the step after it directly.` The step's line in the flow section carries `optional`. For OpenCode the same sentence ends the `## Delegation` section of the coordinator's agent file (`.opencode/agents/<coordinator>.md`; under `strict` its `permission.task` already lets it reach every step's agent); `.opencode/armadai-team.md`, read by every agent, only marks the step.
+
+```
+opt  in progress
+  ✓ design   done
+  ✓ build    done
+  ⤼ check    (skipped)
+  ● release  running
+```
 
 ## Markdown snapshot
 
@@ -314,11 +338,20 @@ The Time column shows the time only, with the date added on the first row of a t
 
 ## Panel (mod)
 
-`ui: { panel: true }` in `project.yaml`, then `armadai link --target claude`, adds a Claude Code mod to the plugin `armadai-ui` (the same plugin as `ui.subagent_status_line`; either key writes it). The mod is three files in `.armadai/plugins/armadai-ui/`: `hooks/hooks.json` (`{"modules": ["./register.js"]}`), `hooks/register.js` (the same bytes for every project, embedded in the `armadai` binary) and `panel.json` (`{"documents": [...]}`, the data: `ui.documents`, or `["docs"]` when the key is absent). Format read 2026-11-09 on [code.claude.com/docs/en/plugins/mods/overview](https://code.claude.com/docs/en/plugins/mods/overview.md) and [mods/reference](https://code.claude.com/docs/en/plugins/mods/reference.md).
+`ui: { panel: true }` in `project.yaml`, then `armadai link --target claude`, adds a Claude Code mod to the plugin `armadai-ui` (the same plugin as `ui.subagent_status_line`; either key writes it; `ui.flow_band` writes the same mod, see [Band](#band-mod)). The mod is three files in `.armadai/plugins/armadai-ui/`: `hooks/hooks.json` (`{"modules": ["./register.js"]}`), `hooks/register.js` (the same bytes for every project, embedded in the `armadai` binary) and `panel.json` (`{"documents": [...]}`, the data: `ui.documents`, or `["docs"]` when the key is absent). Format read 2026-11-09 on [code.claude.com/docs/en/plugins/mods/overview](https://code.claude.com/docs/en/plugins/mods/overview.md) and [mods/reference](https://code.claude.com/docs/en/plugins/mods/reference.md).
 
 The panel opens when a session starts (Claude Code seats a pane nobody asked for from 144 terminal columns; the command `/armadai-panel` opens it at any width). Every 2 seconds it runs `armadai flow status --json` (the `armadai` of your `PATH`, in the project folder) and draws each run with its steps and their signs, then lists the `.md` files under the `ui.documents` folders (up to 4 levels deep) modified since the Claude Code session began, newest first, 20 at most. Nothing new is recorded: the list comes from the disk. If the JSON has a `schema` other than `armadai.flow-status/1`, the panel says `armadai flow status --json gave schema <value>; this panel reads armadai.flow-status/1. Run armadai link again.` and draws no run.
 
 `link` reports `ui.panel` as `approximated`, never `compiled`: it cannot know whether Claude Code loads the mod. The mod runs JavaScript and the `armadai` command with your permissions; it needs Claude Code 2.1.318 or later and does not run under `--safe-mode`, with `disableAllHooks`, or in `claude -p`. Other targets report `not-compiled (Claude Code only)`. Without the key, `link` writes no mod file.
+
+<a id="band-mod"></a>
+## Band (mod)
+
+`ui: { flow_band: true }` adds a one-line band above the prompt to the same mod (Claude Code CLI and Desktop; the band is one strip shared by every mod, and Claude Code draws a `[-]` at the end of its first row, which collapses it when clicked in fullscreen rendering; Ctrl+X then Ctrl+A collapses it too). It shows the latest run in progress, from the same `armadai flow status --json` every 2 seconds as the panel: `deliver #menu  ✓ design  ✓ build  ■ guard  □ validate  ⤼ test` (`✓` done, `■` running, `□` pending, `⤼` skipped, `?` and `✗` as in the text output; the steps the coordinator holds or this session did not see are left out; the `#lot` is left out for a run without a lot). With no run in progress the mod draws nothing, and what the other mods draw in the band stays.
+
+The band keeps itself inside the width Claude Code gives it (`bodyColumns`, less 4 for the `[-]` mark): Claude Code wraps a longer line onto a second row, it does not cut it (measured at 82 and 91 columns, Claude Code 2.1.322). When the line is too long the steps already done before the first one not done are folded into one `…`, and if it still does not fit the end is cut with `…`. A mod cannot tell that the band is collapsed (its drawing keeps running), so do not make the band the only place something you must answer shows.
+
+`ui.flow_band` without `ui.panel` writes `panel.json` as `{"band": true, "pane": false}`: the panel does not open and `/armadai-panel` is not registered. With both keys, `panel.json` holds `documents` and `"band": true`. The panel shows a step skipped (`⤼`) like any other step. Without `ui.flow_band`, `panel.json` is unchanged and the mod draws no band. `link` reports `ui.flow_band` as `approximated`. Measured in a real session on 2026-11-12 (Claude Code 2.1.322, a throwaway mod in a real terminal): the band is drawn above the prompt, `maxRows` is 17, and it stays visible when a pane is open.
 
 The JavaScript is tested with `claude plugin test` (`crates/armadai/src/compile/ui/armadai-ui-panel.test.ts`, copied into a linked plugin folder); CI has no Claude Code, so it does not run there.
 
@@ -370,6 +403,10 @@ states count each verdict rendered, a resumed agent can render several
 - The marker is written by the model. Without `strict` nothing makes it write one; under `strict` the gate refuses a delegation without it, but not a wrong one that still names a step the target holds.
 - A `mark` and its `start` are matched by the order of the log, not by a call id: two parallel calls to one agent name with different markers are shown `?` (`ambiguous marker`), never guessed.
 - A resumption (`SendMessage`) writes no `mark` and is not judged by the gate: it inherits the marker of the first start, and the durations of `flow stats` stop at the first `stop`.
+- An optional step that starts late (after the step that follows it started, from the same stop) is
+  shown done and does not reopen the run. If the step that follows it then starts again in that same
+  turn, that start has no incoming line in the list of transitions (the run itself stays right; not
+  measured beyond that sequence).
 - A marked run is closed only by its natural end: a step that never comes (a skipped review) leaves it `in progress`.
 - `REF:` is read from the reply of a sub-agent only, and the first one recorded wins.
 - When the log does not say, the answer is `?`, never a guess.

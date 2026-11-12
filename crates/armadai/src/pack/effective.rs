@@ -49,7 +49,7 @@ fn id12(id: &str) -> &str {
 
 /// The `pack:` key of the project's `project.yaml` as (name, source); `None` when
 /// there is none, or the file is not readable (the loader reports that, with a position).
-pub(super) fn pack_ref(root: &Path) -> Option<(String, String)> {
+pub(crate) fn pack_ref(root: &Path) -> Option<(String, String)> {
     let text = std::fs::read_to_string(root.join(".armadai/project.yaml")).ok()?;
     let v = armadai_model::yaml::from_str_manifest(&text).ok()?;
     let p = v.get("pack")?;
@@ -75,7 +75,7 @@ pub fn open_in(root: &Path, vars: Vars, registry: &Path) -> anyhow::Result<Effec
 }
 
 /// M5a.
-pub(super) fn lock_missing(name: &str) -> String {
+pub(crate) fn lock_missing(name: &str) -> String {
     format!(
         ".armadai/project.yaml references pack {name} but .armadai/pack.lock is missing: \
          run `armadai pack update`"
@@ -102,6 +102,25 @@ pub fn open_with_lock_in(
 }
 
 fn snapshot(root: &Path, lock: &PackLock, registry: &Path) -> anyhow::Result<PathBuf> {
+    let (dir, id) = snapshot_path(root, lock, registry)?;
+    if !dir.is_dir() {
+        bail!(
+            "pack {} {} ({}) is not in the local cache: run `armadai pack sync`",
+            lock.pack,
+            lock.resolved.version,
+            id12(&id)
+        );
+    }
+    Ok(dir)
+}
+
+/// Where the locked snapshot is (or would be) in the cache, and its id; the folder
+/// itself may be absent.
+pub(crate) fn snapshot_path(
+    root: &Path,
+    lock: &PackLock,
+    registry: &Path,
+) -> anyhow::Result<(PathBuf, String)> {
     if let Some((name, source)) = pack_ref(root)
         && (name != lock.pack || source != lock.source)
     {
@@ -131,16 +150,10 @@ fn snapshot(root: &Path, lock: &PackLock, registry: &Path) -> anyhow::Result<Pat
         }
     }
     let source = super::source::real_url(&lock.source)?;
-    let dir = super::cache::snapshot_dir_in(registry, &source, &lock.pack, &id);
-    if !dir.is_dir() {
-        bail!(
-            "pack {} {} ({}) is not in the local cache: run `armadai pack sync`",
-            lock.pack,
-            lock.resolved.version,
-            id12(&id)
-        );
-    }
-    Ok(dir)
+    Ok((
+        super::cache::snapshot_dir_in(registry, &source, &lock.pack, &id),
+        id,
+    ))
 }
 
 fn build(

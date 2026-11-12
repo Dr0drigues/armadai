@@ -106,6 +106,7 @@ mod tests {
     fn view(step: &str, mark: Mark) -> StepView {
         StepView {
             step: step.into(),
+            agent: format!("{step}-agent"),
             mark,
             state: None,
             note: None,

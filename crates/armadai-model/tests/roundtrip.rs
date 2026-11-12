@@ -345,3 +345,30 @@ fn a_policy_without_grants_is_written_back_byte_for_byte() {
     let m: Manifest = armadai_model::yaml::from_str(text).unwrap();
     assert_eq!(render_manifest(&m), text);
 }
+
+#[test]
+fn new_keys_are_written_only_when_set() {
+    let flow_of = |p: &Project| render_flow_text(p);
+    fn render_flow_text(p: &Project) -> String {
+        let dir = tempfile::tempdir().unwrap();
+        write_project(p, dir.path()).unwrap();
+        let mut all = String::new();
+        for (path, bytes) in snapshot(dir.path()) {
+            if path.extension().is_some_and(|e| e == "yaml") {
+                all.push_str(&String::from_utf8(bytes).unwrap());
+            }
+        }
+        all
+    }
+    let mut p = load_ok(&fixture("full"));
+    let before = flow_of(&p);
+    assert!(!before.contains("optional") && !before.contains("flow_band"));
+    let flow = p.flows.values_mut().next().unwrap();
+    flow.steps.values_mut().next().unwrap().optional = true;
+    p.manifest.ui.flow_band = true;
+    let after = flow_of(&p);
+    assert!(after.contains("optional: true") && after.contains("flow_band: true"));
+    let dir = tempfile::tempdir().unwrap();
+    write_project(&p, dir.path()).unwrap();
+    assert_eq!(load_ok(dir.path()), p);
+}

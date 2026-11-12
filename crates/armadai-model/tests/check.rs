@@ -1539,3 +1539,114 @@ fn a_grant_rule_equal_to_a_native_deny_is_an_error() {
         "grant `g` allows `Bash(rm *)`, which `native.claude.permissions.deny` denies"
     );
 }
+
+const OPTIONAL_HINT: &str =
+    "a flow must begin with a step that runs; make another step the start, or drop optional";
+
+#[test]
+fn optional_start_step_declared_and_guessed() {
+    // declared start
+    let ds = diags(&[
+        M,
+        DEV,
+        REV,
+        (
+            ".armadai/flows/f.yaml",
+            "start: a\nsteps:\n  a: { agent: dev, optional: true }\n  b: { agent: rev }\nlinks:\n  - { from: a, to: b }\n",
+        ),
+    ]);
+    let d = err(&ds, "optional-start-step", (3, 3));
+    assert_eq!(d.message, "step `a` is optional but the flow starts there");
+    assert_eq!(d.hint.as_deref(), Some(OPTIONAL_HINT));
+    // no `start:`: the entry is the one the heuristic finds
+    let ds = diags(&[
+        M,
+        DEV,
+        REV,
+        (
+            ".armadai/flows/f.yaml",
+            "steps:\n  a: { agent: dev, optional: true }\n  b: { agent: rev }\nlinks:\n  - { from: a, to: b }\n",
+        ),
+    ]);
+    err(&ds, "optional-start-step", (2, 3));
+    // an optional step that is not an entry is fine
+    let ds = diags(&[
+        M,
+        DEV,
+        REV,
+        (
+            ".armadai/flows/f.yaml",
+            "start: a\nsteps:\n  a: { agent: dev }\n  b: { agent: rev, optional: true }\nlinks:\n  - { from: a, to: b }\n",
+        ),
+    ]);
+    assert!(ds.iter().all(|d| d.code != "optional-start-step"), "{ds:?}");
+}
+
+#[test]
+fn a_broad_grant_rule_is_a_warning() {
+    let hint = "a grant is a convenience, not a boundary; name the exact command, such as `Bash(python3 scripts/release.py)`";
+    for rule in [
+        "Bash(*)",
+        "Bash(* --x)",
+        "Bash(python3 x.py)",
+        "Bash(xargs rm)",
+        "Bash(cp * /tmp)",
+        "Bash(python3:*)",
+        "Bash(cp:*)",
+        "Bash(/usr/bin/python3 *)",
+        "Bash(python3.12 *)",
+        "Bash(Python3 *)",
+        "Bash(python3.13t x.py)",
+        "Bash(/usr/bin/python3t *)",
+        "Bash(sudo:*)",
+        "Bash(FOO=1 python3 *)",
+        "Bash(A=1 B=2 /opt/bin/Node18 x)",
+    ] {
+        let ds = grants(
+            &format!("policy:\n  grants:\n    g:\n      allow: [\"Bash(ls)\", \"{rule}\"]\n"),
+            &[],
+        );
+        let hits: Vec<_> = ds.iter().filter(|d| d.code == "grant-broad-rule").collect();
+        assert_eq!(hits.len(), 1, "{rule}: {ds:?}");
+        assert_eq!(
+            hits[0].message,
+            format!("grant `g` rule `{rule}` is broad: it lets through any command it matches")
+        );
+        assert_eq!(hits[0].hint.as_deref(), Some(hint));
+        assert_eq!(hits[0].severity, Severity::Warning);
+    }
+    for word in [
+        "python", "node", "ruby", "perl", "sh", "bash", "zsh", "env", "xargs", "eval", "exec",
+        "sudo", "npx", "timeout", "nice", "nohup",
+    ] {
+        let ds = grants(
+            &format!("policy:\n  grants:\n    g:\n      allow: [\"Bash({word} x)\"]\n"),
+            &[],
+        );
+        assert!(ds.iter().any(|d| d.code == "grant-broad-rule"), "{word}");
+    }
+    for word in ["cp", "mv", "rsync", "ln", "tar"] {
+        let broad = |spec: &str| {
+            let ds = grants(
+                &format!("policy:\n  grants:\n    g:\n      allow: [\"Bash({spec})\"]\n"),
+                &[],
+            );
+            ds.iter().any(|d| d.code == "grant-broad-rule")
+        };
+        assert!(broad(&format!("{word} * /tmp")), "{word} with a glob");
+        assert!(!broad(&format!("{word} a b")), "{word} without a glob");
+    }
+    let ds = grants(
+        "policy:\n  grants:\n    g:\n      allow: [\"Bash(git push origin feature/*)\", \"Bash(cp a b)\", \"Bash(FOO=1 git status)\", \"Bash(/usr/bin/git push *)\", \"Bash(make test)\", \"Bash(test -f x)\", \"Bash(sht x)\", \"Bash(glab mr create *)\"]\n",
+        &[],
+    );
+    assert!(ds.iter().all(|d| d.code != "grant-broad-rule"), "{ds:?}");
+    // a bare `Bash` is never granted: unsupported, not broad
+    let ds = grants("policy:\n  grants:\n    g:\n      allow: [\"Bash\"]\n", &[]);
+    let codes: Vec<_> = ds
+        .iter()
+        .map(|d| d.code)
+        .filter(|c| c.starts_with("grant-"))
+        .collect();
+    assert_eq!(codes, ["grant-unsupported-rule"], "{ds:?}");
+}

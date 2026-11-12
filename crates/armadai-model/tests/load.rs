@@ -697,3 +697,11 @@ fn ui_documents_diagnostic_sits_on_the_faulty_entry() {
         "<root>/.armadai/project.yaml:2:25: error[bad-document-folder]: ui.documents entry `../up` must be a folder inside the project, outside .armadai/ and .git/"
     );
 }
+
+#[test]
+fn ui_flow_band_loads() {
+    let l = load_project(ui_project("{ flow_band: true }").path());
+    assert!(l.diagnostics.is_empty(), "{:?}", l.diagnostics);
+    let ui = l.project.unwrap().manifest.ui;
+    assert!(ui.flow_band && !ui.panel);
+}

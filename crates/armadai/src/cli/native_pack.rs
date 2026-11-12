@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, bail};
 
 const IGNORED: &str = "ignored-pack-file";
+const TEST_PATH: &str = "pack-test-path-escapes";
 
 /// `project.yaml` of a pack that ships none.
 pub const DEFAULT_PROJECT: &str = "schema_version: 1\ntargets: [claude]\n";
@@ -156,7 +157,17 @@ pub fn stage(
         std::fs::create_dir_all(&base)?;
         std::fs::write(base.join("project.yaml"), DEFAULT_PROJECT)?;
     }
-    let ignored = pack.ignored.iter().map(|rel| armadai_model::Diagnostic {
+    // a file `pack.yaml` lists under `tests:` is part of the pack
+    let starter = armadai_core::starter::StarterPack::load(pack_dir).ok();
+    let listed_test = |rel: &&PathBuf| {
+        (starter.iter().flat_map(|p| &p.tests))
+            .any(|t| Path::new(t).components().collect::<PathBuf>() == **rel)
+    };
+    let escaping = starter
+        .iter()
+        .flat_map(|p| test_path_diagnostics(pack_dir, p));
+    let ignored = pack.ignored.iter().filter(|r| !listed_test(r)).map(|rel| {
+        armadai_model::Diagnostic {
         severity: armadai_model::Severity::Warning,
         code: IGNORED,
         file: pack_dir.join(rel),
@@ -169,8 +180,10 @@ pub fn stage(
              flows/*.yaml and automations/*.yaml"
                 .into(),
         ),
+    }
     });
-    let ds = ignored
+    let ds = escaping
+        .chain(ignored)
         .chain(
             armadai_model::validate(tmp.path())
                 .into_iter()
@@ -183,6 +196,30 @@ pub fn stage(
         )
         .collect();
     Ok((tmp, ds))
+}
+
+/// One `pack-test-path-escapes` error per `tests:` entry that is not a relative path
+/// inside the pack.
+pub fn test_path_diagnostics(
+    pack_dir: &Path,
+    pack: &armadai_core::starter::StarterPack,
+) -> Vec<armadai_model::Diagnostic> {
+    (pack.bad_test_paths().into_iter())
+        .map(|t| armadai_model::Diagnostic {
+            severity: armadai_model::Severity::Error,
+            code: TEST_PATH,
+            file: pack_dir.join("pack.yaml"),
+            path: "tests".into(),
+            line: None,
+            column: None,
+            // a NUL byte would end the line on some terminals
+            message: format!(
+                "test `{}` must be a relative path inside the pack",
+                t.replace('\0', "\\0")
+            ),
+            hint: Some("write it as tests/<name>.sh, without .. or a leading /".into()),
+        })
+        .collect()
 }
 
 /// What an install created, to undo it.

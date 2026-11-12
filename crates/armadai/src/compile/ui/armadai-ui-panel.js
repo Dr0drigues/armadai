@@ -1,7 +1,9 @@
-// The ArmadAI panel mod, written as is by `armadai link` for `ui.panel: true`.
+// The ArmadAI mod, written as is by `armadai link` for `ui.panel: true` and `ui.flow_band: true`.
 // Do not edit it: change project.yaml and run `armadai link` again.
-// It runs `armadai flow status --json` every 2 seconds and lists the Markdown files
-// of the folders in panel.json (`ui.documents`) changed since the session began.
+// It runs `armadai flow status --json` every 2 seconds. The panel lists the runs and the
+// Markdown files of the folders in panel.json (`ui.documents`) changed since the session
+// began; the band above the prompt (`"band": true` in panel.json) shows the open run on
+// one line. `"pane": false` in panel.json: no panel, the band alone.
 const PANE = 'armadai-flows'
 const SCHEMA = 'armadai.flow-status/1'
 const EVERY_MS = 2000
@@ -10,6 +12,46 @@ const MAX_DEPTH = 4
 
 // What the pane draws: set by `refresh`, read by `ui.render`.
 let view = { message: 'Reading the flows...', runs: [], documents: [] }
+
+// What panel.json asks for, read once at session.start: the pane opens unless
+// `"pane": false`, the band draws only with `"band": true`.
+let config = { pane: true, band: false }
+
+async function readConfig($) {
+  try {
+    const panel = JSON.parse(await $.fs.read($.plugin.root + '/panel.json'))
+    return { pane: panel.pane !== false, band: panel.band === true }
+  } catch {
+    return { pane: true, band: false } // no panel.json: the panel as before
+  }
+}
+
+// The glyph of a step in the band: done, running, pending, skipped; `?` and `✗` as `flow
+// status` shows them. Steps the coordinator holds or this session did not see are left out.
+const BAND_SIGN = { done: '✓', running: '■', pending: '□', skipped: '⤼', unsure: '?', unexpected: '✗' }
+
+// `deliver #menu  ✓ design  ✓ build  ■ guard  □ validate  ⤼ test`, in at most `columns`.
+// Too long: the steps before the first one not done are folded into one `…`, then the
+// end is cut with `…`. Claude Code wraps a longer line (and draws its `[-]` after the
+// first row), so the band keeps itself narrower than `columns`.
+// shortcut: the width is counted in UTF-16 units, not terminal cells, so a wide or
+// ambiguous-width glyph (CJK in a step name, some emoji) can make a line wrap; improve
+// it with a cell-width table when a flow names steps outside the Latin alphabet.
+function bandText(run, columns) {
+  const head = run.flow + (run.lot ? ' #' + run.lot : '')
+  const steps = run.steps.filter(s => BAND_SIGN[s.mark]).map(s => BAND_SIGN[s.mark] + ' ' + s.step)
+  const joined = parts => parts.join('  ')
+  const room = Math.max(columns - 4, 10) // the `[-]` mark and a margin
+  let first = 0
+  const firstOpen = run.steps.filter(s => BAND_SIGN[s.mark]).findIndex(s => s.mark !== 'done')
+  const open = firstOpen < 0 ? steps.length : firstOpen
+  let text = joined([head, ...steps])
+  while (text.length > room && first < open) {
+    first += 1
+    text = joined([head, '…', ...steps.slice(first)])
+  }
+  return text.length > room ? text.slice(0, room - 1) + '…' : text
+}
 
 // The .md files under `dir` (relative to the project root) with their mtime.
 async function walk($, root, dir, depth) {
@@ -67,7 +109,11 @@ async function status($, root) {
       runs: [],
     }
   }
-  return { message: null, runs: json.runs }
+  // right schema, wrong shape (no `runs`, a run without `steps`): read as nothing to draw
+  const runs = (Array.isArray(json.runs) ? json.runs : [])
+    .filter(run => run && typeof run === 'object')
+    .map(run => ({ ...run, steps: Array.isArray(run.steps) ? run.steps : [] }))
+  return { message: null, runs }
 }
 
 // True while a refresh runs, so a slow `armadai` is not launched again every 2 seconds.
@@ -85,7 +131,7 @@ async function refresh($) {
       next = { message: 'armadai flow status --json failed: ' + error.message, runs: [] }
     }
     try {
-      next.documents = await documents($, root)
+      next.documents = config.pane ? await documents($, root) : []
     } catch {
       next.documents = []
     }
@@ -98,16 +144,19 @@ async function refresh($) {
 
 export function register(on) {
   on('session.start', async ($, e, next) => {
-    void $.ui.open({ id: PANE, title: 'ArmadAI' })
+    config = await readConfig($)
+    if (config.pane) void $.ui.open({ id: PANE, title: 'ArmadAI' })
     void refresh($)
     $.clock.every(EVERY_MS, () => refresh($))
-    try {
-      await $.command.register({
-        name: 'armadai-panel',
-        description: 'Open the ArmadAI panel: flows and recent documents',
-      })
-    } catch {
-      // a taken name throws, and a hook that throws is skipped: the panel works without it
+    if (config.pane) {
+      try {
+        await $.command.register({
+          name: 'armadai-panel',
+          description: 'Open the ArmadAI panel: flows and recent documents',
+        })
+      } catch {
+        // a taken name throws, and a hook that throws is skipped: the panel works without it
+      }
     }
     return next(e)
   })
@@ -115,6 +164,16 @@ export function register(on) {
   on('command.run', { command: 'armadai-panel' }, async $ => {
     await $.ui.open({ id: PANE, title: 'ArmadAI' })
     return { text: 'ArmadAI panel opened.' }
+  })
+
+  // the band: the open run (the latest one in progress), or nothing of ours
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const run = config.band ? view.runs.filter(r => r.status === 'in-progress').pop() : undefined
+    if (!run) return next(e)
+    const { Box, Text } = $.ui.resolve(e)
+    const rest = await next(e) // what the mods after this one draw stays
+    const line = h(Text, null, bandText(run, e.props.bodyColumns))
+    return h(Box, { flexDirection: 'column' }, ...(rest ? [line, rest] : [line]))
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {

@@ -8,6 +8,8 @@ use super::runs::{Mark, Run};
 pub enum Piece {
     Flow,
     Mark(Mark),
+    /// `(agent)` or `(agent: note)` after the step the line names.
+    Agent,
     Progress,
     Loops,
     Status,
@@ -19,7 +21,7 @@ pub fn line(runs: &[Run]) -> Vec<(Piece, String)> {
     let Some(run) = open_run(runs).or(runs.last()) else {
         return Vec::new();
     };
-    pieces(run, current(run))
+    pieces(run, current(run), true)
 }
 
 /// The run a live view follows: the last one still open (neither finished nor interrupted).
@@ -28,12 +30,16 @@ pub fn open_run(runs: &[Run]) -> Option<&Run> {
 }
 
 /// The line of an open run naming `step` instead of the run's current step
-/// (the subagent row of the agent that holds it).
+/// (the subagent row of the agent that holds it, so without the agent).
 pub fn line_at(run: &Run, step: &super::runs::StepView) -> Vec<(Piece, String)> {
-    pieces(run, Some(step))
+    pieces(run, Some(step), false)
 }
 
-fn pieces(run: &Run, cur: Option<&super::runs::StepView>) -> Vec<(Piece, String)> {
+fn pieces(
+    run: &Run,
+    cur: Option<&super::runs::StepView>,
+    with_agent: bool,
+) -> Vec<(Piece, String)> {
     let mut out = vec![(Piece::Flow, run.flow.clone())];
     if run.finished || run.interrupted {
         let word = if run.finished {
@@ -45,11 +51,15 @@ fn pieces(run: &Run, cur: Option<&super::runs::StepView>) -> Vec<(Piece, String)
     } else if let Some(v) = cur {
         out.push((Piece::Mark(v.mark.clone()), v.mark.sign().into()));
         out.push((Piece::Mark(v.mark.clone()), v.step.clone()));
+        if with_agent {
+            let note = (v.note.as_ref()).map_or(String::new(), |n| format!(": {n}"));
+            out.push((Piece::Agent, format!("({}{note})", v.agent)));
+        }
     }
     let n = run
         .steps
         .iter()
-        .filter(|v| !matches!(v.mark, Mark::Relay | Mark::NotRun))
+        .filter(|v| !matches!(v.mark, Mark::Relay | Mark::NotRun | Mark::Skipped))
         .count();
     let d = run.steps.iter().filter(|v| v.mark == Mark::Done).count();
     out.push((Piece::Progress, format!("{d}/{n}")));
@@ -91,6 +101,7 @@ mod tests {
     fn v(step: &str, mark: Mark) -> StepView {
         StepView {
             step: step.into(),
+            agent: format!("{step}-agent"),
             mark,
             state: None,
             note: None,
@@ -129,7 +140,7 @@ mod tests {
             ],
             vec![("build", "guard", 2)],
         );
-        assert_eq!(shown(&[r]), "deliver ● guard 2/4 (loops 1)");
+        assert_eq!(shown(&[r]), "deliver ● guard (guard-agent) 2/4 (loops 1)");
     }
 
     #[test]
@@ -139,7 +150,7 @@ mod tests {
             vec![v("a", Mark::Running)],
             vec![("a", "b", 3), ("b", "a", 2)],
         );
-        assert_eq!(shown(&[r]), "d ● a 0/1 (loops 3)");
+        assert_eq!(shown(&[r]), "d ● a (a-agent) 0/1 (loops 3)");
     }
 
     #[test]
@@ -148,12 +159,18 @@ mod tests {
             "review",
             vec![
                 v("frame", Mark::Relay),
-                v("check", Mark::Unsure),
+                StepView {
+                    note: Some("no STATE line".into()),
+                    ..v("check", Mark::Unsure)
+                },
                 v("ship", Mark::Pending),
             ],
             vec![],
         );
-        assert_eq!(shown(&[r]), "review ? check 0/2");
+        assert_eq!(
+            shown(&[r]),
+            "review ? check (check-agent: no STATE line) 0/2"
+        );
     }
 
     #[test]
@@ -163,7 +180,7 @@ mod tests {
             vec![v("a", Mark::Pending), v("b", Mark::Unexpected)],
             vec![],
         );
-        assert_eq!(shown(&[r]), "r ✗ b 0/2");
+        assert_eq!(shown(&[r]), "r ✗ b (b-agent) 0/2");
     }
 
     #[test]
@@ -181,7 +198,7 @@ mod tests {
             vec![],
         );
         // `f` is pending so it is named; without it the line has no step
-        assert_eq!(shown(std::slice::from_ref(&r)), "deliver ○ f 3/4");
+        assert_eq!(shown(std::slice::from_ref(&r)), "deliver ○ f (f-agent) 3/4");
         let mut r = r;
         r.steps.pop();
         assert_eq!(shown(&[r]), "deliver 3/3");
@@ -211,7 +228,7 @@ mod tests {
         let second = run("two", vec![v("b", Mark::Running)], vec![]);
         let mut done = run("three", vec![v("c", Mark::Done)], vec![]);
         done.finished = true;
-        assert_eq!(shown(&[first, second, done]), "two ● b 0/1");
+        assert_eq!(shown(&[first, second, done]), "two ● b (b-agent) 0/1");
     }
 
     #[test]
@@ -257,9 +274,92 @@ mod tests {
                 Piece::Flow,
                 Piece::Mark(Mark::Running),
                 Piece::Mark(Mark::Running),
+                Piece::Agent,
                 Piece::Progress,
                 Piece::Loops
             ]
         );
+    }
+
+    /// A step the way T15 shows it: an agent that is not `<step>-agent`.
+    fn held(step: &str, agent: &str, mark: Mark, note: Option<&str>) -> StepView {
+        StepView {
+            agent: agent.into(),
+            note: note.map(str::to_string),
+            ..v(step, mark)
+        }
+    }
+
+    fn deliver(guard: StepView, validate: Mark) -> Run {
+        run(
+            "deliver",
+            vec![
+                v("design", Mark::Done),
+                v("build", Mark::Done),
+                guard,
+                held("validate", "ops", validate, None),
+            ],
+            vec![],
+        )
+    }
+
+    /// T15, to the letter.
+    #[test]
+    fn the_line_names_the_agent_of_the_step() {
+        let running = deliver(held("guard", "qa", Mark::Running, None), Mark::Pending);
+        assert_eq!(shown(&[running]), "deliver ● guard (qa) 2/4");
+        let unsure = deliver(
+            held("guard", "qa", Mark::Unsure, Some("no STATE line")),
+            Mark::Pending,
+        );
+        assert_eq!(shown(&[unsure]), "deliver ? guard (qa: no STATE line) 2/4");
+        let wrong = deliver(
+            held("guard", "qa", Mark::Unexpected, Some("undeclared state")),
+            Mark::Pending,
+        );
+        assert_eq!(
+            shown(&[wrong]),
+            "deliver ✗ guard (qa: undeclared state) 2/4"
+        );
+        let pending = deliver(held("guard", "qa", Mark::Done, None), Mark::Pending);
+        assert_eq!(shown(&[pending]), "deliver ○ validate (ops) 3/4");
+    }
+
+    #[test]
+    fn the_agent_is_its_own_muted_piece() {
+        let r = deliver(held("guard", "qa", Mark::Running, None), Mark::Pending);
+        assert!(line(&[r]).contains(&(Piece::Agent, "(qa)".to_string())));
+    }
+
+    /// `finished` and `interrupted` name no step, so no agent either.
+    #[test]
+    fn a_finished_run_names_no_agent() {
+        let mut r = deliver(held("guard", "qa", Mark::Done, None), Mark::Done);
+        r.finished = true;
+        assert_eq!(shown(&[r]), "deliver finished 4/4");
+    }
+
+    /// The row of a sub-agent is the agent's: it names the step, not the agent.
+    #[test]
+    fn the_line_of_a_subagent_row_names_no_agent() {
+        let r = deliver(held("guard", "qa", Mark::Running, None), Mark::Pending);
+        let step = r.steps[2].clone();
+        let row = line_at(&r, &step);
+        assert_eq!(text(&row), "deliver ● guard 2/4");
+        assert!(row.iter().all(|(p, _)| *p != Piece::Agent));
+    }
+
+    #[test]
+    fn a_skipped_step_is_not_counted() {
+        let r = run(
+            "d",
+            vec![
+                v("a", Mark::Done),
+                v("opt", Mark::Skipped),
+                held("c", "ops", Mark::Pending, None),
+            ],
+            vec![],
+        );
+        assert_eq!(shown(&[r]), "d ○ c (ops) 1/2");
     }
 }

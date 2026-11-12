@@ -392,3 +392,96 @@ fn removing_the_other_key_keeps_the_mod_and_the_settings_entries() {
     );
     assert_eq!(env.settings(), settings);
 }
+
+const BAND_LINE: &str = "claude: ui.flow_band: approximated (a band above the prompt drawn by the \
+armadai-ui mod (terminal and Desktop), refreshed from flow status every 2 s)";
+
+const MOD_FILES: [&str; 5] = [
+    ".claude-plugin/marketplace.json",
+    ".claude-plugin/plugin.json",
+    "hooks/hooks.json",
+    "hooks/register.js",
+    "panel.json",
+];
+
+#[test]
+fn the_band_alone_writes_the_mod_and_a_panel_json_without_a_pane() {
+    let env = Env::new(&project("  flow_band: true\n"), &[FLOW]);
+    let report = env.ok(&["link", "--target", "claude"]);
+    assert_eq!(lines(&report, "ui."), [BAND_LINE]);
+    assert_eq!(env.plugin_files(), MOD_FILES);
+    assert_eq!(env.read(&format!("{PLUGIN}/hooks/register.js")), MOD_JS);
+    assert_eq!(
+        env.read(&format!("{PLUGIN}/panel.json")),
+        "{\n  \"band\": true,\n  \"pane\": false\n}\n"
+    );
+    // the plugin is enabled in the project settings, as for the panel
+    assert_eq!(
+        env.settings()["enabledPlugins"],
+        json!({"armadai-ui@armadai-ui": true})
+    );
+}
+
+#[test]
+fn the_band_with_the_panel_adds_band_to_panel_json_and_each_key_has_its_line() {
+    let env = Env::new(&project("  panel: true\n  flow_band: true\n"), &[FLOW]);
+    let report = env.ok(&["link", "--target", "claude"]);
+    assert_eq!(lines(&report, "ui."), [BAND_LINE, PANEL_LINE]);
+    assert_eq!(
+        env.read(&format!("{PLUGIN}/panel.json")),
+        "{\n  \"documents\": [\n    \"docs\"\n  ],\n  \"band\": true\n}\n"
+    );
+    // `ui.panel` alone: panel.json as it always was, with no band key at all
+    let env = Env::new(&project("  panel: true\n  flow_band: false\n"), &[FLOW]);
+    env.ok(&["link", "--target", "claude"]);
+    assert_eq!(
+        env.read(&format!("{PLUGIN}/panel.json")),
+        "{\n  \"documents\": [\n    \"docs\"\n  ]\n}\n"
+    );
+}
+
+#[test]
+fn a_mod_file_edited_after_the_link_is_reported_under_both_keys() {
+    let env = Env::new(&project("  panel: true\n  flow_band: true\n"), &[FLOW]);
+    env.ok(&["link", "--target", "claude"]);
+    std::fs::write(
+        env.root().join(PLUGIN).join("hooks/register.js"),
+        "// mine\n",
+    )
+    .unwrap();
+    let report = env.ok(&["link", "--target", "claude"]);
+    let why = format!("edited since the last link (use --force): {PLUGIN}/hooks/register.js");
+    assert_eq!(
+        lines(&report, "ui."),
+        [
+            format!("claude: ui.flow_band: not-compiled ({why})"),
+            format!("claude: ui.panel: not-compiled ({why})"),
+        ]
+    );
+}
+
+#[test]
+fn other_targets_say_claude_code_only_for_the_band() {
+    for target in ["opencode", "codex", "copilot"] {
+        let env = Env::new(&project("  flow_band: true\n"), &[]);
+        let line = format!("{target}: ui.flow_band: not-compiled (Claude Code only)");
+        assert_eq!(
+            lines(&env.ok(&["link", "--target", target]), "ui.flow_band"),
+            [line]
+        );
+        assert!(!env.root().join(".armadai/plugins").exists(), "{target}");
+    }
+}
+
+#[test]
+fn turning_the_band_off_removes_the_mod_it_alone_asked_for() {
+    let env = Env::new(&project("  flow_band: true\n"), &[FLOW]);
+    env.ok(&["link", "--target", "claude"]);
+    std::fs::write(
+        env.root().join(".armadai/project.yaml"),
+        project("  flow_band: false\n"),
+    )
+    .unwrap();
+    env.ok(&["link", "--target", "claude"]);
+    assert!(!env.root().join(".armadai/plugins").exists());
+}

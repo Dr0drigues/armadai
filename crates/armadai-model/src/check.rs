@@ -241,6 +241,55 @@ fn edit_distance(a: &str, b: &str) -> usize {
     d[a.len()][b.len()]
 }
 
+/// First words of a `Bash` rule that run whatever they are given: any command through them is let
+/// through. Compared after `first_word` (base name, lowercase, no version suffix). Incomplete by
+/// construction (`make`, `npm run`, `cargo run`, `git` are not listed): a warning, not a boundary
+/// (D16).
+const BROAD_RUNNERS: &[&str] = &[
+    "python", "node", "ruby", "perl", "sh", "bash", "zsh", "env", "xargs", "eval", "exec", "sudo",
+    "npx", "timeout", "nice", "nohup",
+];
+/// Copy and move tools: broad only with a `*` in the rule.
+const BROAD_WHEN_GLOB: &[&str] = &["cp", "mv", "rsync", "ln", "tar"];
+
+/// The program a specifier runs, as spelled in many ways: a trailing legacy `:*` removed, leading
+/// `VAR=val` words skipped, the base name of a path, lowercase, without a `[0-9.]+` version suffix
+/// (`FOO=1 /usr/bin/Python3.12 x` -> `python`).
+fn first_word(spec: &str) -> String {
+    let spec = spec.strip_suffix(":*").unwrap_or(spec);
+    let is_assignment = |w: &str| {
+        w.split_once('=').is_some_and(|(k, _)| {
+            k.chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+    };
+    let word = spec
+        .split_whitespace()
+        .find(|w| !is_assignment(w))
+        .unwrap_or("");
+    let base = word.rsplit('/').next().unwrap_or("").to_lowercase();
+    // `python3.13t` (free-threaded): a `t` right after a digit belongs to the version
+    let base = match base.strip_suffix('t') {
+        Some(b) if b.ends_with(|c: char| c.is_ascii_digit()) => b,
+        _ => &base,
+    };
+    base.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.')
+        .to_string()
+}
+
+/// A `Bash` rule that lets through far more than one command, judged on its text alone.
+fn is_broad_bash_rule(rule: &str) -> bool {
+    let Some(spec) = rule.strip_prefix("Bash(").and_then(|r| r.strip_suffix(')')) else {
+        return false;
+    };
+    let first = first_word(spec);
+    spec.starts_with('*')
+        || BROAD_RUNNERS.contains(&first.as_str())
+        || (BROAD_WHEN_GLOB.contains(&first.as_str()) && spec.contains('*'))
+}
+
 /// The steps a flow starts from: `start` when the flow declares it. Otherwise a
 /// heuristic: a candidate is a step no unconditional link
 /// (`when` absent or `done`) leads to: a conditional link (`when: rejected`,
@@ -578,6 +627,23 @@ fn check_grants(o: &mut Out, project: &Project) {
                 Some(
                     "the rule is never granted: write a `Bash(...)` rule, or put it in \
                      native.claude.permissions.allow"
+                        .into(),
+                ),
+            );
+        }
+        for rule in g.allow.iter().filter(|r| is_broad_bash_rule(r)) {
+            o.emit(
+                man,
+                Severity::Warning,
+                "grant-broad-rule",
+                Some((rule, false)),
+                format!(
+                    "grant `{name}` rule `{rule}` is broad: it lets through any command it \
+                     matches"
+                ),
+                Some(
+                    "a grant is a convenience, not a boundary; name the exact command, such as \
+                     `Bash(python3 scripts/release.py)`"
                         .into(),
                 ),
             );
@@ -1060,6 +1126,21 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
                 None,
             );
         } else {
+            for e in &entries {
+                if f.steps.get(*e).is_some_and(|s| s.optional) {
+                    o.err(
+                        at,
+                        "optional-start-step",
+                        Some((e, true)),
+                        format!("step `{e}` is optional but the flow starts there"),
+                        Some(
+                            "a flow must begin with a step that runs; make another step the \
+                             start, or drop optional"
+                                .into(),
+                        ),
+                    );
+                }
+            }
             // an entry the heuristic took although a link leads to it: only a guess
             if f.start.is_none() && entries.iter().any(|e| edges.iter().any(|(_, to)| to == e)) {
                 o.emit(

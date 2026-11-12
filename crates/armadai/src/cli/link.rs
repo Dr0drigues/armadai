@@ -39,6 +39,9 @@ struct Prepared {
     templates: std::collections::BTreeMap<String, String>,
     /// The directory holding the `.armadai/` that was compiled (skills are read there).
     sources: PathBuf,
+    /// The keys that ask for the files of the mod (`ui.panel`, `ui.flow_band`): the report
+    /// lines of those files, when one is left in place.
+    mod_elements: Vec<&'static str>,
 }
 
 impl Prepared {
@@ -66,7 +69,17 @@ pub fn load_project() -> anyhow::Result<(PathBuf, Effective, Project)> {
     let env = |n: &str| std::env::var(n).ok();
     let view = effective::open(&root, Vars::Resolve(&env))?;
     match view.load_checked() {
-        Ok((p, _)) => Ok((root, view, p)),
+        Ok((p, _)) => {
+            // `load_checked` drops the warnings of a valid project; those of the permission
+            // levels are the ones link is the last chance to show (they say a rule is
+            // never granted, or is broad)
+            for d in view.validate() {
+                if d.severity == armadai_model::Severity::Warning && d.code.starts_with("grant-") {
+                    eprintln!("{}", d.render());
+                }
+            }
+            Ok((root, view, p))
+        }
         Err(ds) => {
             for d in &ds {
                 eprintln!("{}", d.render());
@@ -165,6 +178,13 @@ fn prepare(
         templates: (project.agents.iter())
             .filter_map(|(id, a)| Some((id.clone(), a.instance.as_ref()?.from.clone())))
             .collect(),
+        mod_elements: [
+            (project.manifest.ui.panel, "ui.panel"),
+            (project.manifest.ui.flow_band, "ui.flow_band"),
+        ]
+        .into_iter()
+        .filter_map(|(on, key)| on.then_some(key))
+        .collect(),
     };
     p.all_produced = p.artifacts.iter().map(|a| p.rel(a)).collect();
 
@@ -221,7 +241,7 @@ fn prepare(
         let hooks = claude_settings::hook_entries(project)?;
         let mut keys = claude_settings::native_settings(project)?;
         let ui = &project.manifest.ui;
-        if ui.subagent_status_line || ui.panel {
+        if ui.subagent_status_line || ui.panel || ui.flow_band {
             let existing = std::fs::read_to_string(root.join(&rel)).ok();
             let previous = match p.previous_patch(&rel).map(|f| &f.kind) {
                 Some(PatchKind::SettingsHooks(o)) => o.clone(),
@@ -238,26 +258,27 @@ fn prepare(
                         && e.outcome == Outcome::Created
                 });
             // one line for each key that asks for the plugin: (status, reason) by key
-            let (sub, panel): ((Status, String), (Status, String)) = match clash {
-                Some(path) => {
-                    // a plugin the settings do not load would be a file nobody reads
-                    drop_plugin(&mut p, &mut keys);
-                    let line = (
-                        Status::NotCompiled,
-                        format!(
-                            "key {path} of .claude/settings.json already has another value; \
+            let (sub, panel, band): ((Status, String), (Status, String), (Status, String)) =
+                match clash {
+                    Some(path) => {
+                        // a plugin the settings do not load would be a file nobody reads
+                        drop_plugin(&mut p, &mut keys);
+                        let line = (
+                            Status::NotCompiled,
+                            format!(
+                                "key {path} of .claude/settings.json already has another value; \
                              link leaves it"
-                        ),
-                    );
-                    (line.clone(), line)
-                }
-                None => {
-                    let found = if recorded {
-                        claude_settings::FoundPlugin::Absent
-                    } else {
-                        claude_settings::found_plugin(root, existing.as_deref(), ui)?
-                    };
-                    match found {
+                            ),
+                        );
+                        (line.clone(), line.clone(), line)
+                    }
+                    None => {
+                        let found = if recorded {
+                            claude_settings::FoundPlugin::Absent
+                        } else {
+                            claude_settings::found_plugin(root, existing.as_deref(), ui)?
+                        };
+                        match found {
                         claude_settings::FoundPlugin::Absent => (
                             (
                                 Status::Compiled,
@@ -275,6 +296,12 @@ fn prepare(
                                  claude -p"
                                     .to_string(),
                             ),
+                            (
+                                Status::Approximated,
+                                "a band above the prompt drawn by the armadai-ui mod (terminal \
+                                 and Desktop), refreshed from flow status every 2 s"
+                                    .to_string(),
+                            ),
                         ),
                         claude_settings::FoundPlugin::Identical => {
                             drop_plugin(&mut p, &mut keys);
@@ -283,7 +310,7 @@ fn prepare(
                                 "existing identical plugin kept, not owned: unlink leaves it"
                                     .to_string(),
                             );
-                            (line.clone(), line)
+                            (line.clone(), line.clone(), line)
                         }
                         claude_settings::FoundPlugin::Differs(element) => {
                             drop_plugin(&mut p, &mut keys);
@@ -294,14 +321,15 @@ fn prepare(
                                      not owned: link leaves it; remove it to let link write it"
                                 ),
                             );
-                            (line.clone(), line)
+                            (line.clone(), line.clone(), line)
                         }
                     }
-                }
-            };
+                    }
+                };
             for (on, element, (status, why)) in [
                 (ui.subagent_status_line, "ui.subagent_status_line", sub),
                 (ui.panel, "ui.panel", panel),
+                (ui.flow_band, "ui.flow_band", band),
             ] {
                 if on {
                     p.report.push(target, element, status, Some(&why));
@@ -326,8 +354,7 @@ fn prepare(
             } else {
                 (
                     Status::Compiled,
-                    "statusLine in .claude/settings.json, running armadai __claude-statusline; \
-                     it hides the statusLine of your user settings",
+                    "chained after your user status line when there is one",
                 )
             };
             p.report.push(target, "ui.status_line", status, Some(why));
@@ -546,21 +573,20 @@ fn not_written(p: &mut Prepared, root: &Path, path: &Path) {
     let Some(a) = p.artifacts.iter().find(|a| root.join(p.rel(a)) == path) else {
         return;
     };
-    let element = match a.produced_by.kind {
-        manifest::ProducedByKind::Skill => format!("skill {}", a.produced_by.name),
-        manifest::ProducedByKind::Command => format!("command {}", a.produced_by.name),
-        manifest::ProducedByKind::Native => format!("native {}", a.produced_by.name),
+    let elements: Vec<String> = match a.produced_by.kind {
+        manifest::ProducedByKind::Skill => vec![format!("skill {}", a.produced_by.name)],
+        manifest::ProducedByKind::Command => vec![format!("command {}", a.produced_by.name)],
+        manifest::ProducedByKind::Native => vec![format!("native {}", a.produced_by.name)],
         manifest::ProducedByKind::Plugin => {
-            // the mod's files belong to `ui.panel`, the rest of the plugin to the other key
-            let is_mod = claude_settings::is_mod_file(a.produced_by.name.as_str());
-            if is_mod {
-                "ui.panel"
+            // the mod's files belong to the keys that ask for the mod, the rest of the
+            // plugin to the other key
+            if claude_settings::is_mod_file(a.produced_by.name.as_str()) {
+                p.mod_elements.iter().map(|k| k.to_string()).collect()
             } else {
-                "ui.subagent_status_line"
+                vec!["ui.subagent_status_line".to_string()]
             }
-            .to_string()
         }
-        _ => format!("agent {}", a.produced_by.name),
+        _ => vec![format!("agent {}", a.produced_by.name)],
     };
     let rel = p.rel(a);
     let ours_before = (p.previous.iter().flat_map(|t| &t.entries))
@@ -583,10 +609,12 @@ fn not_written(p: &mut Prepared, root: &Path, path: &Path) {
     {
         reason.push_str(&format!(" (from template {t})"));
     }
-    p.report.lines.retain(|l| l.element != element);
+    p.report.lines.retain(|l| !elements.contains(&l.element));
     let target = p.target.clone();
-    p.report
-        .push(&target, element, Status::NotCompiled, Some(&reason));
+    for element in elements {
+        p.report
+            .push(&target, element, Status::NotCompiled, Some(&reason));
+    }
 }
 
 /// Whether undoing the previous JSON patch (settings.json hooks, opencode.json keys)
@@ -1054,6 +1082,7 @@ mod tests {
             report: Report::default(),
             templates: BTreeMap::new(),
             sources: sources.path().to_path_buf(),
+            mod_elements: Vec::new(),
         };
         assert_eq!(mode(&dest), 0);
         copy_executable_bits(root.path(), &p);

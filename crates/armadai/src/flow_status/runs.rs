@@ -18,6 +18,9 @@ pub enum Mark {
     Relay,
     /// A step before the one a run opened at: not seen in this session.
     NotRun,
+    /// An `optional` step that never started: a step it reaches started, or
+    /// the run is over.
+    Skipped,
 }
 
 impl Mark {
@@ -31,6 +34,7 @@ impl Mark {
             Mark::Unexpected => "✗",
             Mark::Relay => "~",
             Mark::NotRun => "-",
+            Mark::Skipped => "⤼",
         }
     }
 
@@ -44,6 +48,7 @@ impl Mark {
             Mark::Unexpected => "unexpected",
             Mark::Relay => "coordinator",
             Mark::NotRun => "not-run",
+            Mark::Skipped => "skipped",
         }
     }
 }
@@ -51,6 +56,8 @@ impl Mark {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepView {
     pub step: String,
+    /// The agent that holds the step (the first flow's for a group `a | b`).
+    pub agent: String,
     pub mark: Mark,
     pub state: Option<String>,
     pub note: Option<String>,
@@ -128,6 +135,11 @@ pub struct Run {
 ///   not hold, is ignored. (6) Without
 ///   any `mark` line nothing above applies. The `REF:` of the first stop
 ///   recorded for an `agent_id` shows on its step.
+/// - An `optional` step is crossed (its hops are not recorded, the step shows `⤼`
+///   or keeps its mark) while it is not running. Known limit: after one stop of a
+///   step, a target started past the optional step, then the optional step late,
+///   then the target again, leaves that last start with no incoming transition
+///   (the run itself stays right); not measured beyond that sequence.
 pub fn runs(project: &Project, events: &[FlowEvent]) -> Vec<Run> {
     runs_and_markers(project, events)
         .0
@@ -296,6 +308,12 @@ struct Building<'p> {
     /// Hop -> tick it was last recorded at.
     crossed: HashMap<(String, String), usize>,
     taken: BTreeMap<(String, String), u32>,
+    /// `(optional step, target)` -> the `(source, its stop tick)` of the link that
+    /// went past the step to the target.
+    bypassed: HashMap<(String, String), (String, usize)>,
+    /// `(optional step, target)` whose link the step started too late to take: it
+    /// ran after the target did, from the same stop of the same source.
+    late_taken: BTreeSet<(String, String)>,
 }
 
 impl<'p> Building<'p> {
@@ -304,6 +322,7 @@ impl<'p> Building<'p> {
             let relay = coordinator == Some(flow.steps[s].agent.as_str());
             StepView {
                 step: s.to_string(),
+                agent: flow.steps[s].agent.clone(),
                 mark: if relay { Mark::Relay } else { Mark::Pending },
                 state: None,
                 note: relay.then(|| "coordinator, not recorded".to_string()),
@@ -335,6 +354,8 @@ impl<'p> Building<'p> {
             linked_at: HashMap::new(),
             crossed: HashMap::new(),
             taken: BTreeMap::new(),
+            bypassed: HashMap::new(),
+            late_taken: BTreeSet::new(),
         }
     }
 
@@ -392,8 +413,11 @@ impl<'p> Building<'p> {
         let (mut out, mut crossed) = (Vec::new(), BTreeSet::new());
         while let Some((t, path)) = todo.pop() {
             if !relay(t) {
-                out.push((t, path));
-            } else if crossed.insert(t) {
+                out.push((t, path.clone()));
+            }
+            // a step of the coordinator, and an optional one that has not started, are
+            // crossed: what follows them can start without them
+            if (relay(t) || self.skippable(t)) && crossed.insert(t) {
                 let path = [path, vec![t]].concat();
                 todo.extend(
                     next_steps(self.flow, t, None)
@@ -403,6 +427,27 @@ impl<'p> Building<'p> {
             }
         }
         out
+    }
+
+    /// An `optional` step that is not running: what follows it can start
+    /// without it, on every turn of a loop (it keeps the mark of an earlier one).
+    fn skippable(&self, step: &str) -> bool {
+        self.flow.steps.get(step).is_some_and(|s| s.optional)
+            && (self.run.steps.iter()).any(|v| {
+                v.step == step && matches!(v.mark, Mark::Pending | Mark::Skipped | Mark::Done)
+            })
+    }
+
+    /// Shows the optional steps not started as skipped (a step they reach
+    /// started, or the run is over); `only`: just those.
+    fn skip(&mut self, only: Option<&[&str]>) {
+        for v in &mut self.run.steps {
+            let named = only.is_none_or(|o| o.contains(&v.step.as_str()));
+            if named && v.mark == Mark::Pending && self.flow.steps[&v.step].optional {
+                v.mark = Mark::Skipped;
+                v.note = Some("skipped".to_string());
+            }
+        }
     }
 
     fn running(&self) -> bool {
@@ -424,9 +469,27 @@ impl<'p> Building<'p> {
     /// state `from` leads with. Read before `from`'s view changes: `from` may be
     /// the step that starts.
     fn take_link(&mut self, from: &str, crossed: &[&str], to: &str, ts: u64, tick: usize) {
+        let left = self.stopped[from];
+        // an optional step crossed is skipped (shown so unless it ran), and is no hop of the link
+        let (passed, crossed): (Vec<&str>, Vec<&str>) =
+            crossed.iter().copied().partition(|c| self.skippable(c));
+        for x in &passed {
+            self.bypassed
+                .insert((x.to_string(), to.to_string()), (from.to_string(), left));
+        }
+        self.skip(Some(&passed));
+        // an optional step that starts now, from the stop that already led past it
+        let late: Vec<(String, String)> = (self.bypassed.iter())
+            .filter(|((x, _), (f, at))| x == to && f == from && *at == left)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in late {
+            self.bypassed.remove(&k);
+            self.late_taken.insert(k);
+        }
+        let crossed = crossed.as_slice();
         let mut state = self.leads_with(from).map(str::to_string);
         let mut prev = from.to_string();
-        let left = self.stopped[from];
         self.linked_at.insert(to.to_string(), self.stopped_ts[from]);
         for (k, hop_to) in crossed.iter().copied().chain([to]).enumerate() {
             let hop = (prev.clone(), hop_to.to_string());
@@ -444,8 +507,10 @@ impl<'p> Building<'p> {
 
     /// The view of a step that starts.
     fn show_started(&mut self, step: &str, ambiguous: bool) {
+        let agent = self.view(step).agent.clone();
         *self.view(step) = StepView {
             step: step.to_string(),
+            agent,
             mark: if ambiguous {
                 Mark::Unsure
             } else {
@@ -913,8 +978,10 @@ impl<'p> Builder<'p> {
             }
             Some(s) => (Mark::Unexpected, Some(s), Some("undeclared state")),
         };
+        let agent = run.view(step).agent.clone();
         *run.view(step) = StepView {
             step: step.to_string(),
+            agent,
             mark,
             state: state.map(str::to_string),
             note: note.map(str::to_string),
@@ -922,6 +989,15 @@ impl<'p> Builder<'p> {
         };
         run.stopped.insert(step.to_string(), self.tick);
         run.stopped_ts.insert(step.to_string(), ts);
+        // an optional step that ran after what it leads to: that link is behind it
+        let behind: Vec<(String, String)> = (run.late_taken.iter())
+            .filter(|(x, _)| x == step)
+            .cloned()
+            .collect();
+        for k in behind {
+            run.late_taken.remove(&k);
+            run.entered.insert(k.1, self.tick);
+        }
         // the late links: a step that started before this one stopped follows it
         // a `?` or `✗` step leads nowhere, and a step does not follow itself
         let leads = !matches!(run.view(step).mark, Mark::Unsure | Mark::Unexpected);
@@ -936,12 +1012,16 @@ impl<'p> Builder<'p> {
             }
         }
         // a loop back to the same step through the coordinator holds nothing open
-        let to_take =
-            (run.flow.steps.keys()).any(|t| run.linked_from(t).is_some_and(|(s, _)| &s != t));
+        // an optional step not started holds nothing open (what follows it does)
+        let to_take = (run.flow.steps.keys())
+            .any(|t| !run.skippable(t) && run.linked_from(t).is_some_and(|(s, _)| &s != t));
         // a `?` or `✗` step never ends a run
         let unknown =
             (run.run.steps.iter()).any(|v| matches!(v.mark, Mark::Unsure | Mark::Unexpected));
         run.run.finished = !run.running() && !to_take && !unknown;
+        if run.run.finished {
+            run.skip(None);
+        }
         // the run a command opened ends the attribution; later sub-agents are inferred
         if self.attributed == Some(i) && self.open[i].run.finished {
             self.attributed = None;
@@ -1112,11 +1192,22 @@ mod tests {
     fn view(step: &str, mark: Mark, state: Option<&str>, note: Option<&str>) -> StepView {
         StepView {
             step: step.into(),
+            agent: String::new(),
             mark,
             state: state.map(str::to_string),
             note: note.map(str::to_string),
             reference: None,
         }
+    }
+
+    /// `runs`, the agent of each step blanked: the helpers below build views
+    /// without one, and `steps_say_their_agent` reads it.
+    fn runs(project: &Project, events: &[FlowEvent]) -> Vec<Run> {
+        let mut found = super::runs(project, events);
+        for v in found.iter_mut().flat_map(|r| r.steps.iter_mut()) {
+            v.agent.clear();
+        }
+        found
     }
 
     fn t(
@@ -3848,5 +3939,259 @@ mod tests {
         let mut out = vec![mark(ts - 1, agent, "deliver", step, Some("x"))];
         out.extend(self::step(ts, id, agent, state));
         out
+    }
+
+    // ---- optional steps (`skipped`) ----
+
+    /// `check` is optional: `release` can follow `guard` without it.
+    const OPTIONAL: &str = "steps:\n  design: { agent: architect }\n  build: { agent: dev }\n  guard: { agent: qa }\n  check: { agent: ops, optional: true }\n  release: { agent: lead }\nlinks:\n  - { from: design, to: build }\n  - { from: build, to: guard }\n  - { from: guard, to: check }\n  - { from: check, to: release }\n";
+    /// The optional step is the last one.
+    const OPTIONAL_LAST: &str = "steps:\n  design: { agent: architect }\n  build: { agent: dev }\n  check: { agent: ops, optional: true }\nlinks:\n  - { from: design, to: build }\n  - { from: build, to: check }\n";
+
+    fn marks(run: &Run) -> Vec<(&str, Mark)> {
+        run.steps
+            .iter()
+            .map(|v| (v.step.as_str(), v.mark.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn an_optional_step_is_skipped_once_a_step_it_reaches_starts() {
+        let p = project(&[("opt", OPTIONAL)]);
+        let events = seq(&[
+            &step(10, "a1", "architect", None),
+            &step(20, "a2", "dev", None),
+            &step(30, "a3", "qa", None),
+            &[start(40, "a4", "lead")],
+        ]);
+        let got = runs(&p, &events);
+        assert_eq!(got.len(), 1);
+        assert_eq!(
+            marks(&got[0]),
+            [
+                ("design", Mark::Done),
+                ("build", Mark::Done),
+                ("guard", Mark::Done),
+                ("check", Mark::Skipped),
+                ("release", Mark::Running),
+            ]
+        );
+        assert_eq!(
+            got[0].steps[3],
+            view("check", Mark::Skipped, None, Some("skipped"))
+        );
+        // the link taken goes from `guard` to `release`, not into the skipped step
+        assert_eq!(
+            got[0].transitions.last(),
+            Some(&t(40, "guard", "release", Some("done")))
+        );
+        assert!(got[0].transitions.iter().all(|x| x.2 != "check"));
+    }
+
+    #[test]
+    fn an_optional_step_stays_pending_while_nothing_started_after_it() {
+        let p = project(&[("opt", OPTIONAL)]);
+        let events = seq(&[
+            &step(10, "a1", "architect", None),
+            &step(20, "a2", "dev", None),
+            &step(30, "a3", "qa", None),
+        ]);
+        let got = runs(&p, &events);
+        assert_eq!(got[0].steps[3].mark, Mark::Pending);
+        // what follows it still has a link to take
+        assert!(!got[0].finished);
+    }
+
+    #[test]
+    fn an_optional_step_that_runs_is_not_skipped() {
+        let p = project(&[("opt", OPTIONAL)]);
+        let events = seq(&[
+            &step(10, "a1", "architect", None),
+            &step(20, "a2", "dev", None),
+            &step(30, "a3", "qa", None),
+            &step(40, "a4", "ops", None),
+            &step(50, "a5", "lead", None),
+        ]);
+        let got = runs(&p, &events);
+        assert_eq!(got.len(), 1);
+        assert!(
+            got[0].steps.iter().all(|v| v.mark == Mark::Done),
+            "{:?}",
+            marks(&got[0])
+        );
+        assert!(got[0].finished);
+    }
+
+    /// An optional step left pending holds nothing open: the run finishes and shows it skipped.
+    #[test]
+    fn a_run_finishes_over_a_last_optional_step_and_shows_it_skipped() {
+        let p = project(&[("opt", OPTIONAL_LAST)]);
+        let events = seq(&[
+            &step(10, "a1", "architect", None),
+            &step(20, "a2", "dev", None),
+        ]);
+        let got = runs(&p, &events);
+        assert_eq!(
+            marks(&got[0]),
+            [
+                ("design", Mark::Done),
+                ("build", Mark::Done),
+                ("check", Mark::Skipped)
+            ]
+        );
+        assert!(got[0].finished);
+        assert_eq!(
+            got[0].steps[2],
+            view("check", Mark::Skipped, None, Some("skipped"))
+        );
+    }
+
+    #[test]
+    fn steps_say_their_agent() {
+        let p = project(&[("opt", OPTIONAL)]);
+        let events = seq(&[
+            &step(10, "a1", "architect", None),
+            &step(20, "a2", "dev", None),
+        ]);
+        let got = super::runs(&p, &events);
+        let agents: Vec<(&str, &str)> = got[0]
+            .steps
+            .iter()
+            .map(|v| (v.step.as_str(), v.agent.as_str()))
+            .collect();
+        // as pending, running and finished views alike
+        assert_eq!(
+            agents,
+            [
+                ("design", "architect"),
+                ("build", "dev"),
+                ("guard", "qa"),
+                ("check", "ops"),
+                ("release", "lead")
+            ]
+        );
+    }
+
+    /// `check` (optional) sits on the way back of a rejection.
+    const OPTIONAL_LOOP: &str = "start: build\nsteps:\n  build: { agent: dev }\n  guard: { agent: qa, states: [approved, rejected] }\n  check: { agent: ops, optional: true }\n  release: { agent: lead }\nlinks:\n  - { from: build, to: guard }\n  - { from: guard, to: check, when: rejected }\n  - { from: check, to: build }\n  - { from: guard, to: release, when: approved }\n";
+
+    /// An optional step done in a turn of a loop is still crossed in the next one:
+    /// it stays done, and the link goes from `guard` straight to `build`.
+    #[test]
+    fn an_optional_step_done_in_a_turn_is_crossed_in_the_next() {
+        let p = project(&[("opt", OPTIONAL_LOOP)]);
+        let events = seq(&[
+            &step(10, "d1", "dev", None),
+            &step(20, "q1", "qa", Some("rejected")),
+            &step(30, "o1", "ops", None),
+            &step(40, "d2", "dev", None),
+            &step(50, "q2", "qa", Some("rejected")),
+            &step(60, "d3", "dev", None),
+            &step(70, "q3", "qa", Some("approved")),
+            &step(80, "l1", "lead", None),
+        ]);
+        let got = runs(&p, &events);
+        assert_eq!(got.len(), 1, "one run");
+        assert_eq!(
+            marks(&got[0]),
+            [
+                ("build", Mark::Done),
+                ("guard", Mark::Done),
+                ("check", Mark::Done),
+                ("release", Mark::Done),
+            ]
+        );
+        assert_eq!(
+            got[0].transitions,
+            vec![
+                t(20, "build", "guard", Some("done")),
+                t(30, "guard", "check", Some("rejected")),
+                t(40, "check", "build", Some("done")),
+                t(50, "build", "guard", Some("done")),
+                t(60, "guard", "build", Some("rejected")),
+                t(70, "build", "guard", Some("done")),
+                t(80, "guard", "release", Some("approved")),
+            ]
+        );
+        assert_eq!(got[0].loops, vec![("build".into(), "guard".into(), 3)]);
+        assert!(got[0].finished);
+    }
+
+    /// The optional step that starts after the step that follows it does not hold
+    /// the run open for the link `check -> release` it missed.
+    #[test]
+    fn an_optional_step_started_after_the_next_one_leaves_the_run_closed() {
+        let p = project(&[("opt", OPTIONAL)]);
+        let events = seq(&[
+            &step(10, "a1", "architect", None),
+            &step(20, "a2", "dev", None),
+            &step(30, "a3", "qa", None),
+            &step(40, "a4", "lead", None),
+            &step(50, "a5", "ops", None),
+        ]);
+        let got = runs(&p, &events);
+        assert_eq!(got.len(), 1);
+        assert_eq!(
+            marks(&got[0]),
+            [
+                ("design", Mark::Done),
+                ("build", Mark::Done),
+                ("guard", Mark::Done),
+                ("check", Mark::Done),
+                ("release", Mark::Done),
+            ]
+        );
+        assert!(got[0].finished);
+        assert_eq!(
+            got[0].transitions,
+            vec![
+                t(20, "design", "build", Some("done")),
+                t(30, "build", "guard", Some("done")),
+                t(40, "guard", "release", Some("done")),
+                t(50, "guard", "check", Some("done")),
+            ]
+        );
+    }
+
+    /// The optional step skipped in a turn and done in the next one: the bypass of the
+    /// first turn is not a late link of the second (another stop of `guard`), so
+    /// `check -> build` is taken and the run stays one.
+    #[test]
+    fn an_optional_step_skipped_then_run_in_a_later_turn_links_back() {
+        let p = project(&[("opt", OPTIONAL_LOOP)]);
+        let events = seq(&[
+            &step(10, "d1", "dev", None),
+            &step(20, "q1", "qa", Some("rejected")),
+            &step(30, "d2", "dev", None),
+            &step(40, "q2", "qa", Some("rejected")),
+            &step(50, "o1", "ops", None),
+            &step(60, "d3", "dev", None),
+            &step(70, "q3", "qa", Some("approved")),
+            &step(80, "l1", "lead", None),
+        ]);
+        let got = runs(&p, &events);
+        assert_eq!(got.len(), 1, "one run");
+        assert_eq!(
+            marks(&got[0]),
+            [
+                ("build", Mark::Done),
+                ("guard", Mark::Done),
+                ("check", Mark::Done),
+                ("release", Mark::Done),
+            ]
+        );
+        assert_eq!(
+            got[0].transitions,
+            vec![
+                t(20, "build", "guard", Some("done")),
+                t(30, "guard", "build", Some("rejected")),
+                t(40, "build", "guard", Some("done")),
+                t(50, "guard", "check", Some("rejected")),
+                t(60, "check", "build", Some("done")),
+                t(70, "build", "guard", Some("done")),
+                t(80, "guard", "release", Some("approved")),
+            ]
+        );
+        assert!(got[0].finished);
     }
 }

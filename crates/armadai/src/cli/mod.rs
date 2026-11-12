@@ -13,6 +13,7 @@ pub(crate) mod new;
 mod new_target;
 mod new_wizard;
 mod pack;
+mod pack_test;
 pub(crate) mod setup;
 mod skills;
 pub(crate) mod style;
@@ -404,7 +405,9 @@ pub enum Command {
             armadai pack update\n  \
             armadai pack update 1.4.0\n  \
             armadai pack new demo --empty\n  \
-            armadai pack new demo --from-project"
+            armadai pack new demo --from-project\n  \
+            armadai pack test\n  \
+            armadai pack test ./my-pack"
     )]
     Pack {
         #[command(subcommand)]
@@ -737,7 +740,7 @@ mod tests {
             );
         }
         let pack = root.find_subcommand("pack").expect("pack");
-        for cmd in ["sync", "status", "add", "update", "new"] {
+        for cmd in ["sync", "status", "add", "update", "new", "test"] {
             let sub = pack
                 .find_subcommand(cmd)
                 .unwrap_or_else(|| panic!("`pack {cmd}` missing from `pack --help`"));
@@ -780,6 +783,8 @@ Variables: {{var.name}} in the native block of project.yaml and in agent, templa
                 "  armadai pack update 1.4.0",
                 "  armadai pack new demo --empty",
                 "  armadai pack new demo --from-project",
+                "  armadai pack test",
+                "  armadai pack test ./my-pack",
             ]
         );
         let about = |c: &str| {
@@ -805,6 +810,10 @@ Variables: {{var.name}} in the native block of project.yaml and in agent, templa
         assert_eq!(
             about("new"),
             "Create a native pack: guided, minimal (--empty) or from this project (--from-project)"
+        );
+        assert_eq!(
+            about("test"),
+            "Run the scripts a pack lists under tests: in an isolated copy (no network isolation)"
         );
     }
 
