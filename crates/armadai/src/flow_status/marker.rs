@@ -12,8 +12,16 @@ pub struct Marker {
     pub lot: Option<String>,
 }
 
+/// A lot is a free name: 1 to `MAX_LOT` ASCII letters (either case), digits, `.` or `-`.
+/// `Y2` and `y2` are two lots (no normalization).
+pub fn is_valid_lot(l: &str) -> bool {
+    (1..=MAX_LOT).contains(&l.len())
+        && l.chars()
+            .all(|c| c.is_ascii_alphanumeric() || ".-".contains(c))
+}
+
 /// `[<flow>/<step>]` or `[<flow>/<step>#<lot>]` at the very start of `description`;
-/// flow, step and lot are ids (`is_valid_id`), the lot at most `MAX_LOT` chars.
+/// flow and step are ids (`is_valid_id`), the lot is `is_valid_lot`.
 pub fn parse(description: &str) -> Option<Marker> {
     let inner = description.strip_prefix('[')?.split_once(']')?.0;
     let (flow, rest) = inner.split_once('/')?;
@@ -22,7 +30,7 @@ pub fn parse(description: &str) -> Option<Marker> {
         None => (rest, None),
     };
     let id = armadai_model::is_valid_id;
-    let lot_ok = lot.is_none_or(|l| id(l) && l.chars().count() <= MAX_LOT);
+    let lot_ok = lot.is_none_or(is_valid_lot);
     (id(flow) && id(step) && lot_ok).then(|| Marker {
         flow: flow.into(),
         step: step.into(),
@@ -53,6 +61,17 @@ mod tests {
     }
 
     #[test]
+    fn a_lot_is_a_free_name_with_case() {
+        for l in ["Y2", "GA1", "v1.8.0", "cc1-sm1", "y2"] {
+            assert_eq!(
+                parse(&format!("[mr/revue-mr#{l}] x")),
+                m("mr", "revue-mr", Some(l)),
+                "{l}"
+            );
+        }
+    }
+
+    #[test]
     fn a_lot_of_40_characters_passes_and_41_does_not() {
         let l40 = "a".repeat(40);
         let l41 = "a".repeat(41);
@@ -68,10 +87,10 @@ mod tests {
         for bad in [
             "[Flow/step]",
             "[flow/Step]",
-            "[flow/step#Lot]",
             "[fl_ow/step]",
             "[flow/st_ep]",
             "[flow/step#a_b]",
+            "[flow/step#a+b]",
             " [flow/step]",
             "x [flow/step]",
             "[flow/step",

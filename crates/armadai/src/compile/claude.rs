@@ -514,7 +514,7 @@ pub(super) fn has_optional_step(project: &Project) -> bool {
 }
 
 /// How the coordinator marks a delegation, so `armadai flow status` can place it.
-const MARKING_SECTION: &str = "\n### Marking delegations\n\nStart the `description` of every Agent call to an agent that holds a step with `[<flow>/<step>#<lot>]`, for example `[lot/plan#12] write the plan`. `#<lot>` is optional: it names one batch of work, so that two batches of one flow stay apart in `armadai flow status`. A free agent needs no marker. Ask the agent to end its reply with `REF: <ref>` after its `STATE:` line when it produced something to point at (a branch, a merge request): up to 64 letters, digits or `._/#-`.";
+const MARKING_SECTION: &str = "\n### Marking delegations\n\nStart the `description` of every Agent call to an agent that holds a step with `[<flow>/<step>#<lot>]`, for example `[lot/plan#12] write the plan`. `#<lot>` is optional: it names one batch of work (up to 40 letters, digits, `.` or `-`; `Y2` and `y2` are two lots), so that two batches of one flow stay apart in `armadai flow status`. A free agent needs no marker. Ask the agent to end its reply with `REF: <ref>` after its `STATE:` line when it produced something to point at (a branch, a merge request): up to 64 letters, digits or `._/#-`.";
 
 const MARKING_STRICT: &str =
     " Under policy.delegation: strict the gate refuses a delegation without it.";
@@ -1004,7 +1004,7 @@ mod tests {
         ]
     }
 
-    const MARKING: &str = "\n### Marking delegations\n\nStart the `description` of every Agent call to an agent that holds a step with `[<flow>/<step>#<lot>]`, for example `[lot/plan#12] write the plan`. `#<lot>` is optional: it names one batch of work, so that two batches of one flow stay apart in `armadai flow status`. A free agent needs no marker. Ask the agent to end its reply with `REF: <ref>` after its `STATE:` line when it produced something to point at (a branch, a merge request): up to 64 letters, digits or `._/#-`.";
+    const MARKING: &str = "\n### Marking delegations\n\nStart the `description` of every Agent call to an agent that holds a step with `[<flow>/<step>#<lot>]`, for example `[lot/plan#12] write the plan`. `#<lot>` is optional: it names one batch of work (up to 40 letters, digits, `.` or `-`; `Y2` and `y2` are two lots), so that two batches of one flow stay apart in `armadai flow status`. A free agent needs no marker. Ask the agent to end its reply with `REF: <ref>` after its `STATE:` line when it produced something to point at (a branch, a merge request): up to 64 letters, digits or `._/#-`.";
 
     #[test]
     fn the_block_ends_with_the_marking_section_when_there_is_a_flow() {

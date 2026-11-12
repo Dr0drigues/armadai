@@ -94,7 +94,7 @@ hop into it once (`f → hub`), then one hop per step reached (`hub → x`, `hub
 
 On Claude Code, the coordinator starts the `description` of an `Agent` call to an agent that holds a
 step with `[<flow>/<step>]` or `[<flow>/<step>#<lot>]` (for example `[lot/plan#12] write the plan`).
-`#<lot>` is optional: it names one batch of work, so two batches of one flow stay apart. Under
+`#<lot>` is optional: it names one batch of work, so two batches of one flow stay apart. A lot is a free name of 1 to 40 ASCII letters (either case), digits, `.` or `-` (`Y2`, `GA1`, `v1.8.0`); `Y2` and `y2` are two lots, and `_` or `+` make the marker invalid. `flow` and `step` stay ids. Under
 `policy.delegation: strict` the [gate](policy-gate.md#the-delegation-marker) refuses a delegation
 without it; without `strict` it is optional, and recorded when present. When the project has a flow,
 `link` writes the form into the `### Marking delegations` section of the root `CLAUDE.md` block.
