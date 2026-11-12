@@ -91,10 +91,10 @@ time, even one that fails, is left alone, and so is anything it detached. The ch
 Unix only (Windows shows the flow line alone). The report line is `chained after your user status
 line when there is one`.
 
-Cost, measured on 2026-11-12 with the development binary, `{}` on stdin, an isolated `HOME`, 20
-runs each: without a user bar a median of 11 ms (the first, cold run 699 ms); with a bar that prints
-`bar` a median of 25 ms, about 14 ms more; with a bar that sleeps 5 s a median of 1016 ms, the 1
-second limit plus about 16 ms, never the 5 s. A real bar such as ccstatusline was not measured.
+Cost, measured on 2026-11-12 with the development binary, `{}` on stdin, an isolated `HOME`: 20
+runs each without a user bar (a median of 11 ms, the first, cold run 699 ms) and with a bar that
+prints `bar` (a median of 25 ms, about 14 ms more); with a bar that sleeps 5 s, 3 runs only, a median
+of 1016 ms (the longest 1026 ms), the 1 second limit plus about 16 ms, never the 5 s. A real bar such as ccstatusline was not measured.
 
 **Commands use `.claude/commands/`**, the format Claude Code documents as merged into skills
 whose files "keep working" (skills page, read on 2026-10-21): a legacy format that may be

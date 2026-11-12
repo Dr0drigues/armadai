@@ -297,7 +297,7 @@ what follows it can start without it. It shows `⤼ skipped` (JSON `mark: "skipp
 `note: "skipped"`) as soon as a step it reaches has started, or the run is over; before that it stays
 `○ pending`. A pending optional step does not hold the run open: a flow whose last step is optional
 finishes when the step before it does, with that step skipped. The link taken goes straight from the
-step before to the one after (`guard → release`), with no line into the skipped step. An optional
+step before to the one after (`build → release` in the example below), with no line into the skipped step. An optional
 step that ran in a turn of a loop keeps its `✓` and is crossed again in the next turn. `--line` does
 not count skipped steps, and the animated `--watch` draws `⤼` in the box of the step.
 
