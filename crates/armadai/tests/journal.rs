@@ -259,3 +259,102 @@ fn two_processes_appending_leave_every_line_whole() {
         }
     }
 }
+
+fn line(ts: u64, kind: &str, lot: Option<&str>, by: Option<&str>, text: &str) -> String {
+    let mut v = serde_json::json!({"schema": "armadai.journal/1", "ts": ts, "kind": kind});
+    if let Some(l) = lot {
+        v["lot"] = l.into();
+    }
+    if let Some(b) = by {
+        v["by"] = b.into();
+    }
+    v["text"] = text.into();
+    format!("{v}\n")
+}
+
+#[test]
+fn the_lot_and_author_columns_are_as_wide_as_their_longest_value() {
+    let e = Env::new();
+    let state = e.main().join(".armadai/state");
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::write(
+        state.join("journal-long-lot.jsonl"),
+        line(
+            1763000000,
+            "decision",
+            Some("long-lot"),
+            Some("reviewer"),
+            "one",
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        state.join("journal-a.jsonl"),
+        line(1763000100, "state", Some("a"), None, "two"),
+    )
+    .unwrap();
+    let (code, out, err) = e.run(&e.main(), &["journal", "show"]);
+    assert_eq!((code, err.as_str()), (Some(0), ""));
+    assert_eq!(
+        out,
+        format!(
+            "{}  long-lot  decision  reviewer  one\n{}  a         state     -         two\n",
+            local(1763000000),
+            local(1763000100)
+        )
+    );
+}
+
+#[test]
+fn skipped_lines_are_counted_on_stderr_per_file_and_a_future_version_is_one_of_them() {
+    let e = Env::new();
+    let state = e.main().join(".armadai/state");
+    std::fs::create_dir_all(&state).unwrap();
+    let future = line(5, "note", None, None, "later").replace("journal/1", "journal/2");
+    std::fs::write(
+        state.join("journal.jsonl"),
+        format!("not json\n{future}{}", line(6, "note", None, None, "kept")),
+    )
+    .unwrap();
+    let (code, out, err) = e.run(&e.main(), &["journal", "show"]);
+    assert_eq!(code, Some(0));
+    assert_eq!(err, "journal.jsonl: 2 unreadable lines skipped\n");
+    assert_eq!(out, format!("{}  (all)  note      -  kept\n", local(6)));
+}
+
+#[cfg(unix)]
+#[test]
+fn show_refuses_a_linked_journal_file_with_a_non_zero_code() {
+    let e = Env::new();
+    let state = e.main().join(".armadai/state");
+    std::fs::create_dir_all(&state).unwrap();
+    let target = e.dir.path().join("elsewhere.jsonl");
+    std::fs::write(&target, line(1, "note", None, None, "x")).unwrap();
+    std::os::unix::fs::symlink(&target, state.join("journal.jsonl")).unwrap();
+    let (code, out, err) = e.run(&e.main(), &["journal", "show"]);
+    assert_eq!((code, out.as_str()), (Some(1), ""));
+    assert!(
+        err.contains("is a symbolic link; the journal is not read through it"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_project_in_a_subfolder_writes_to_its_own_main_checkout_folder() {
+    let e = Env::new();
+    for d in [e.main(), e.wt()] {
+        std::fs::create_dir_all(d.join("sub/.armadai")).unwrap();
+        std::fs::write(d.join("sub/.armadai/project.yaml"), "schema_version: 1\n").unwrap();
+    }
+    let r = e.run(
+        &e.wt().join("sub"),
+        &["journal", "add", "--lot", "menu", "x"],
+    );
+    assert_eq!(r.0, Some(0), "{r:?}");
+    assert!(
+        e.main()
+            .join("sub/.armadai/state/journal-menu.jsonl")
+            .is_file()
+    );
+    assert!(!e.main().join(".armadai/state").exists());
+}
