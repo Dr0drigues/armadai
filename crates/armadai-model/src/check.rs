@@ -270,6 +270,11 @@ fn first_word(spec: &str) -> String {
         .find(|w| !is_assignment(w))
         .unwrap_or("");
     let base = word.rsplit('/').next().unwrap_or("").to_lowercase();
+    // `python3.13t` (free-threaded): a `t` right after a digit belongs to the version
+    let base = match base.strip_suffix('t') {
+        Some(b) if b.ends_with(|c: char| c.is_ascii_digit()) => b,
+        _ => &base,
+    };
     base.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.')
         .to_string()
 }

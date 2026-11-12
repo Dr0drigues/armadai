@@ -1596,6 +1596,9 @@ fn a_broad_grant_rule_is_a_warning() {
         "Bash(/usr/bin/python3 *)",
         "Bash(python3.12 *)",
         "Bash(Python3 *)",
+        "Bash(python3.13t x.py)",
+        "Bash(/usr/bin/python3t *)",
+        "Bash(sudo:*)",
         "Bash(FOO=1 python3 *)",
         "Bash(A=1 B=2 /opt/bin/Node18 x)",
     ] {
@@ -1634,7 +1637,7 @@ fn a_broad_grant_rule_is_a_warning() {
         assert!(!broad(&format!("{word} a b")), "{word} without a glob");
     }
     let ds = grants(
-        "policy:\n  grants:\n    g:\n      allow: [\"Bash(git push origin feature/*)\", \"Bash(cp a b)\", \"Bash(FOO=1 git status)\", \"Bash(/usr/bin/git push *)\", \"Bash(make test)\", \"Bash(glab mr create *)\"]\n",
+        "policy:\n  grants:\n    g:\n      allow: [\"Bash(git push origin feature/*)\", \"Bash(cp a b)\", \"Bash(FOO=1 git status)\", \"Bash(/usr/bin/git push *)\", \"Bash(make test)\", \"Bash(test -f x)\", \"Bash(sht x)\", \"Bash(glab mr create *)\"]\n",
         &[],
     );
     assert!(ds.iter().all(|d| d.code != "grant-broad-rule"), "{ds:?}");
