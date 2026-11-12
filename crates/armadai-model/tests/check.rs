@@ -1735,13 +1735,13 @@ fn invalid_session_link_names_the_faulty_key() {
     for ok in ["chantier", "Chantier", "a_b", "release notes", "Fronto-61"] {
         assert_eq!(code(&link(ok, "scope question")), 0, "{ok}");
     }
-    for bad in ["", " x", "x ", "a\nb", "\tx"] {
+    for bad in ["", " x", "x ", "a\nb", "\tx", "a`b"] {
         let ds = link(bad, "scope question");
         let d = err(&ds, "invalid-session-link", (4, 3));
         assert_eq!(
             d.message,
             format!(
-                "session_link.to `{bad}` is not a session name: one line, no blank at either end"
+                "session_link.to `{bad}` is not a session name: one line, no blank at either end, no backtick"
             )
         );
         assert_eq!(
