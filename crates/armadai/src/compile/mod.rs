@@ -123,6 +123,21 @@ pub(super) fn journal_not_compiled(r: &mut Report, t: &str, project: &Project) {
     }
 }
 
+/// `flow <id> session link` for each flow that declares one, on a target that does not
+/// compile it: Claude Code only.
+pub(super) fn session_link_not_compiled(r: &mut Report, t: &str, project: &Project) {
+    for (fid, flow) in &project.flows {
+        if flow.session_link.is_some() {
+            r.push(
+                t,
+                format!("flow {fid} session link"),
+                Status::NotCompiled,
+                Some(report::UI_CLAUDE_ONLY),
+            );
+        }
+    }
+}
+
 /// The `## Verdict` section appended to the prompt of an agent holding at least one
 /// flow step with `states` or a failure path (`on_failure`, a `when: failed` link):
 /// the union of those states, plus `failed` for a failure path (and `done` when the

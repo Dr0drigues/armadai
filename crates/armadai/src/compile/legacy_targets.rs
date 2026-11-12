@@ -203,6 +203,7 @@ impl Compiler for LegacyCompiler {
             );
         }
         super::journal_not_compiled(r, t, project);
+        super::session_link_not_compiled(r, t, project);
         if project.manifest.ui.status_line {
             r.push(
                 t,
@@ -571,6 +572,42 @@ mod tests {
                     .filter(|l| l.element.contains("journal"))
                     .count(),
                 2,
+                "{t}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_session_link_is_not_compiled_for_codex_and_copilot() {
+        let (dir, _) = migrated();
+        std::fs::write(
+            dir.path().join(".armadai/flows/evolution.yaml"),
+            "steps:\n  s: { agent: qa }\nsession_link:\n  to: chantier\n  when: w\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join(".armadai/agents/qa.md"),
+            "---\ndescription: d\n---\nB\n",
+        )
+        .unwrap();
+        let (p, _) = armadai_model::load_checked(dir.path()).unwrap();
+        for t in TARGETS {
+            let plan = LegacyCompiler { target: t }
+                .compile(&p, dir.path(), dir.path())
+                .unwrap();
+            let l = line(&plan, "flow evolution session link").unwrap_or_else(|| panic!("{t}"));
+            assert_eq!(
+                (l.status, l.reason.as_deref()),
+                (Status::NotCompiled, Some("Claude Code only")),
+                "{t}"
+            );
+            assert_eq!(
+                plan.report
+                    .lines
+                    .iter()
+                    .filter(|l| l.element.contains("session link"))
+                    .count(),
+                1,
                 "{t}"
             );
         }
