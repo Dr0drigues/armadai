@@ -115,6 +115,7 @@ tags: [dev]
 skills: [rust-conventions]              # skill ids of the project
 slots: [code-standards]                 # optional: slots other packs fill (see Slots)
 capabilities: { read: allow, write: ask, shell: ask, web: deny, delegate: allow }
+journal: read                           # optional: read | write, the lot-journal instructions (see Link)
 native: { claude: { model: claude-sonnet-4-5 } }
 ---
 You are the developer…
@@ -222,7 +223,7 @@ links:
   - { from: fixes, to: review }
   - { from: review, to: delivery, when: approved }
 session_link:                           # optional: another session this flow's coordinator writes to
-  to: chantier                          # its name, as started with `claude --name` (a kebab-case id)
+  to: chantier                          # its name, as started with `claude --name` (any one-line name)
   when: a question about the scope      # when to write to it (not blank)
 ```
 
