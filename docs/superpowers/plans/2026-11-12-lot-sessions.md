@@ -32,7 +32,7 @@ Légende : **V** = relu au code par l'architecte ou par `Explore` (fichier:ligne
   - `adapter-specialist` : `compile/`, `claude_adapter/`, `cli/link.rs`, le nouveau `worktree.rs`.
   - `cli-specialist` : `cli/` (hors `link.rs`), `pack/`, le nouveau `journal.rs`.
   - `framer` : `.armadai/` et `armadai-rules`.
-- **Commits.** Conventional Commits, sujet en anglais, un seul type ; trailer `Co-Authored-By` de la session.
+- **Commits.** Conventional Commits, sujet en anglais, un seul type ; aucun trailer `Co-Authored-By` (règle de Dimitri du 2026-11-12, tous ses dépôts).
 
 ## 2. Citations de la documentation officielle (règle A5)
 
@@ -424,7 +424,7 @@ Décision de Dimitri (2026-11-12, mot pour mot), sur T1 à T20 : « Validés, aj
   Décision de Dimitri (2026-11-12, mot pour mot) : agent sans Bash, « Ligne approximated (Recommandé) » ; les deux cas limites (coordinateur qui porte `journal:`, `sessions.journal` sans coordinateur), « Traiter les deux (Recommandé) ». Textes T17c et T17d validés tels quels.
 
 **PR 2, lien**
-- **T18a, `invalid-session-link`** : ``session_link.to `‹x›` is not a session name: one line, no blank at either end, no backtick`` ; indice `name the session as you start it: claude --name <name>`
+- **T18a, `invalid-session-link`** : ``session_link.to `‹x›` is not a session name: one line, no blank at either end, no backtick`` (‹x› écrit avec `escape_debug` : `a\rb` s'affiche `a\rb` sur quatre caractères, `chantier` et ``a`b`` ne changent pas ; décision de Dimitri, 2026-11-12 : « Oui, échappé (Recommandé) ») ; indice `name the session as you start it: claude --name <name>`
 - **T18b** : ``session_link.when is empty: say when to write to session `‹to›` ``
 - **T19, section du bloc `CLAUDE.md`** :
   ```
