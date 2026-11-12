@@ -578,7 +578,7 @@ Sources, mot pour mot :
 - [ ] Nouveau code `grant-broad-rule` (Warning), un par règle large d'un niveau. Le texte est T21, en choix par défaut.
 - [ ] Est large une règle `Bash` qui remplit l'une de ces conditions. Le premier mot est normalisé selon le choix « graphies » de §6 (P2.4).
   - `Bash(*)` ou `Bash(* …)` (spécificateur qui commence par `*`). `Bash` seul n'en est pas : `grant-unsupported-rule` le couvre déjà (§6, P2.4).
-  - Un spécificateur dont le premier mot est un interpréteur ou un lanceur : `python` (`python3`, `python3.13t` and the like normalize to it), `node`, `ruby`, `perl`, `sh`, `bash`, `zsh`, `env`, `xargs`, `eval`, `exec`, `sudo`, `npx`, `timeout`, `nice`, `nohup`.
+  - Un spécificateur dont le premier mot est un interpréteur ou un lanceur : `python` (`python3`, `python3.13t` et les graphies voisines s'y ramènent), `node`, `ruby`, `perl`, `sh`, `bash`, `zsh`, `env`, `xargs`, `eval`, `exec`, `sudo`, `npx`, `timeout`, `nice`, `nohup`.
   - Un spécificateur dont le premier mot est un outil de copie ou de déplacement et qui contient un `*` : `cp`, `mv`, `rsync`, `ln`, `tar`.
 - [ ] Limite connue, à écrire dans le wiki (`project-format.md`) : `make`, `npm run`, `cargo run` et `git` ne sont pas dans la liste (§6, P2.4).
 - [ ] La liste est une constante commentée « incomplète par construction : un avertissement, pas une frontière (D16) ».
@@ -738,6 +738,9 @@ Dimitri est absent ; son mandat : « continue en autonomie » et « Prends les r
   - une commande qui contient un caractère hors ASCII.
 - Le filtre de shell est plus large que Q2 : il refuse aussi `$VAR`, les guillemets, les redirections et les globs.
 - Note : sous un niveau large, `grant` est une commodité, pas une frontière (D16). Quatre contournements ont été trouvés en revue. Le point est à revoir avec Dimitri avant la fusion.
+
+**P2.4**
+- La normalisation du premier mot retire aussi un `t` final qui suit un chiffre, avant le suffixe `[0-9.]+` : `python3.13t` devient `python`.
 
 **P2.3**
 - Heure en double : la première occurrence.
