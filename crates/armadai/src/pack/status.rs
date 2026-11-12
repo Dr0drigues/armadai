@@ -57,7 +57,10 @@ fn cached(registry: &Path, source: &str, pack: &str) -> Vec<Available> {
 /// from a folder or the embedded ones (they have no `versions.yaml`).
 pub fn newer(root: &Path, registry: &Path) -> Option<Newer> {
     if let Some(d) = declared(root) {
-        // the pin is not read: `pack update`, which this note advises, is refused under it
+        // `pack update`, which this note advises, is refused under a pin
+        if lock::read_pin(root).map_or(true, |p| p.is_some()) {
+            return None;
+        }
         let lock = lock::read_committed(root).ok()??;
         let range = resolve::parse_range(&d.version).ok()?;
         let all = cached(registry, &source::real_url(&d.source).ok()?, &d.name);

@@ -554,9 +554,11 @@ mod tests {
             "schema_version: 1\npack: { name: demo, source: 'https://example.com/packs.git', version: latest }\n",
         )
         .unwrap();
-        if pin_path(&root).is_some() {
-            return; // the temporary folder sits inside a repository on this machine
-        }
+        assert_eq!(
+            pin_path(&root),
+            None,
+            "the temporary folder sits inside a git repository"
+        );
         assert_eq!(read(&root).unwrap(), None);
         assert_eq!(
             pin(&root).unwrap_err().to_string(),

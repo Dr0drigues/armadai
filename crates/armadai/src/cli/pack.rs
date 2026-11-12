@@ -343,16 +343,28 @@ fn check_lock(
         }
     }
     let clone = registry.join("starters").join(cache_key(&source.url));
+    // the lock read above is the pin when this checkout has one
+    let pinned = lock::read_pin(root).is_ok_and(|p| p.is_some());
+    let (says, keeps) = if pinned {
+        ("the pack pin of this checkout says", "the pin is kept")
+    } else {
+        (".armadai/pack.lock says", "the lock is kept")
+    };
+    let keeps_id = if pinned {
+        "the pack pin of this checkout keeps"
+    } else {
+        ".armadai/pack.lock keeps"
+    };
     match lock::tag_moved(&clone, &lock.pack, r) {
         Ok(Some(TagState::Moved(now))) => eprintln!(
-            "  warn: tag {} of pack {} now points to {}, .armadai/pack.lock says {}: the lock is kept (link uses its commit)",
+            "  warn: tag {} of pack {} now points to {}, {says} {}: {keeps} (link uses its commit)",
             r.tag.as_deref().unwrap_or_default(),
             lock.pack,
             status::id12(&now),
             status::id12(&r.id())
         ),
         Ok(Some(TagState::Gone)) => eprintln!(
-            "  warn: tag {} of pack {} no longer exists, .armadai/pack.lock keeps {}",
+            "  warn: tag {} of pack {} no longer exists, {keeps_id} {}",
             r.tag.as_deref().unwrap_or_default(),
             lock.pack,
             status::id12(&r.id())

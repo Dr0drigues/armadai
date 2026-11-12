@@ -2582,3 +2582,94 @@ fn sync_lays_the_snapshot_the_pin_names_not_the_committed_one() {
         "the committed lock's snapshot was laid"
     );
 }
+
+/// Pinned on c1 (tag demo-v1.0.0), the committed lock moved on to c2 (1.1.0).
+fn pinned_on_c1() -> (Env, String, String) {
+    let (env, c1, c2) = locked();
+    assert_eq!(env.run(&["pack", "pin"], &[]).code, Some(0));
+    put(
+        &env.root(),
+        ".armadai/pack.lock",
+        &format!(
+            "format: 1\npack: demo\nsource: '{}'\nresolved:\n  version: 1.1.0\n  tag: demo-v1.1.0\n  commit: '{c2}'\n",
+            env.url()
+        ),
+    );
+    (env, c1, c2)
+}
+
+#[test]
+fn a_moved_tag_names_the_pin_under_a_pin() {
+    let (env, c1, c2) = pinned_on_c1();
+    assert_eq!(env.run(&["pack", "sync"], &[]).code, Some(0));
+    git(&env.origin(), &["tag", "-f", "demo-v1.0.0", &c2]);
+    let moved = env.run(&["pack", "sync"], &[]);
+    assert_eq!(moved.code, Some(0), "{}{}", moved.out, moved.err);
+    let want = format!(
+        "  warn: tag demo-v1.0.0 of pack demo now points to {}, the pack pin of this checkout says {}: the pin is kept (link uses its commit)",
+        id12(&c2),
+        id12(&c1)
+    );
+    assert!(moved.err_has(&want), "{}", moved.err);
+}
+
+#[test]
+fn a_gone_tag_names_the_pin_under_a_pin() {
+    let (env, c1, _) = pinned_on_c1();
+    assert_eq!(env.run(&["pack", "sync"], &[]).code, Some(0));
+    git(&env.origin(), &["tag", "-d", "demo-v1.0.0"]);
+    let gone = env.run(&["pack", "sync"], &[]);
+    assert_eq!(gone.code, Some(0), "{}{}", gone.out, gone.err);
+    let want = format!(
+        "  warn: tag demo-v1.0.0 of pack demo no longer exists, the pack pin of this checkout keeps {}",
+        id12(&c1)
+    );
+    assert!(gone.err_has(&want), "{}", gone.err);
+}
+
+#[test]
+fn a_pinned_checkout_gets_no_update_advice_from_sync_or_link() {
+    // pinned, committed lock unchanged, a newer version in the cache
+    let (env, _, _) = locked();
+    assert_eq!(env.run(&["pack", "pin"], &[]).code, Some(0));
+    let sync = env.run(&["pack", "sync"], &[]);
+    assert_eq!(sync.code, Some(0), "{}{}", sync.out, sync.err);
+    let link = env.run(&["link"], &[]);
+    assert!(
+        !sync
+            .err
+            .lines()
+            .chain(link.err.lines())
+            .any(|l| l.starts_with("note:")),
+        "{}{}",
+        sync.err,
+        link.err
+    );
+    // without the pin the same state does advise (the case the guard must not hide)
+    env.run(&["pack", "unpin"], &[]);
+    let sync = env.run(&["pack", "sync"], &[]);
+    assert!(
+        sync.err_has(
+            "note: pack demo 1.1.0 is in the cache (locked: 1.0.0): run `armadai pack update`"
+        ),
+        "{}",
+        sync.err
+    );
+}
+
+#[test]
+fn add_under_a_pin_is_refused_before_the_network() {
+    let env = Env::new();
+    env.reference(URL, "^1", LOCK_C);
+    assert_eq!(env.run(&["pack", "pin"], &[]).code, Some(0));
+    put(&env.root(), ".armadai/project.yaml", "schema_version: 1\n");
+    let (path, witness) = fake_tools(env.dir.path());
+    let run = env.run(&["pack", "add", "demo"], &[("PATH", &path)]);
+    assert_eq!(run.code, Some(1), "{}{}", run.out, run.err);
+    assert!(
+        run.err_has("Error: refused: this checkout pins pack demo 1.0.0 (armadai pack pin); run armadai pack unpin first"),
+        "{}",
+        run.err
+    );
+    assert!(!witness.exists(), "git or curl was started");
+}

@@ -423,6 +423,10 @@ pub fn add_in(
         valid_name(name),
         "pack {name} has an invalid name or version id: {name}"
     );
+    // before any network access, as in `update_in`
+    if let Some(pin) = lock::read_pin(root)? {
+        bail!("{}", lock::pinned_refusal(&pin));
+    }
     let file = root.join(".armadai/project.yaml");
     let text = match std::fs::read_to_string(&file) {
         Ok(t) => Some(t),
