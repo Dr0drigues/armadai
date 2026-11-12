@@ -202,6 +202,7 @@ impl Compiler for LegacyCompiler {
                 Some(super::report::UI_CLAUDE_ONLY),
             );
         }
+        super::journal_not_compiled(r, t, project);
         if project.manifest.ui.status_line {
             r.push(
                 t,
@@ -534,5 +535,44 @@ mod tests {
         );
         assert_eq!(model(&p, "codex").as_deref(), Some("gpt-5-codex"));
         assert_eq!(model(&p, "copilot"), None);
+    }
+
+    #[test]
+    fn the_journal_is_not_compiled_for_codex_and_copilot() {
+        let (dir, _) = migrated();
+        std::fs::write(
+            dir.path().join(".armadai/agents/qa.md"),
+            "---\ndescription: d\njournal: write\n---\nB\n",
+        )
+        .unwrap();
+        let manifest = std::fs::read_to_string(dir.path().join(".armadai/project.yaml")).unwrap();
+        std::fs::write(
+            dir.path().join(".armadai/project.yaml"),
+            format!("{manifest}sessions:\n  journal: true\n"),
+        )
+        .unwrap();
+        let (p, _) = armadai_model::load_checked(dir.path()).unwrap();
+        for t in TARGETS {
+            let plan = LegacyCompiler { target: t }
+                .compile(&p, dir.path(), dir.path())
+                .unwrap();
+            for e in ["journal", "agent qa journal"] {
+                let l = line(&plan, e).unwrap_or_else(|| panic!("{t}: no `{e}`"));
+                assert_eq!(
+                    (l.status, l.reason.as_deref()),
+                    (Status::NotCompiled, Some("Claude Code only")),
+                    "{t} {e}"
+                );
+            }
+            assert_eq!(
+                plan.report
+                    .lines
+                    .iter()
+                    .filter(|l| l.element.contains("journal"))
+                    .count(),
+                2,
+                "{t}"
+            );
+        }
     }
 }
