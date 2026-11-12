@@ -270,8 +270,9 @@ Chaque tâche finit barrière verte. Les mutations citées sont le minimum ; le 
       #[serde(default, skip_serializing_if = "Option::is_none")] pub by: Option<String>,
       pub text: String }
   pub enum Kind { Decision, State, Note }          // closed list on write; any string read back
-  /// `.armadai/state/` of the main checkout when `root` is a linked worktree whose main
-  /// checkout holds `.armadai/project.yaml`, else of `root`.
+  /// `.armadai/state/` of the project of `root` in the main checkout, when `root` is in a linked
+  /// worktree and that project (the same path relative to the worktree's top) holds
+  /// `.armadai/project.yaml`, else of `root`.
   pub fn state_dir(root: &Path) -> PathBuf;
   /// `journal.jsonl` for None, `journal-<lot in lowercase>.jsonl` otherwise.
   pub fn file_name(lot: Option<&str>) -> anyhow::Result<String>;
@@ -287,7 +288,7 @@ Chaque tâche finit barrière verte. Les mutations citées sont le minimum ; le 
 - [ ] `every_kept_command_has_a_help_description` gagne `journal`.
 - Tests :
   - Unitaires : chaque nom refusé du critère 7 (`.`, `..`, `.x`, `a_b`, `a+b`, 41 caractères) avec T11a à égalité et aucun fichier ni dossier créé ; `Menu-2.1` → `journal-menu-2.1.jsonl` ; `show --lot Menu-2.1` ne rend pas une entrée `menu-2.1` du même fichier ; `a` et `b` fusionnés par `ts` avec égalité de `ts` départagée par le lot ; `--lot a` ne rend rien de `b` ; `journal.jsonl` rendu avec `--lot a` ; 2000 caractères acceptés, 2001 refusés ; un texte de 2000 caractères de 3 octets (6000 o) refusé par T11d ; saut de ligne refusé ; lien symbolique sur `state/` et sur le fichier.
-  - `state_dir` : worktree à `.git` fichier vers un checkout principal qui a `project.yaml` → le `state/` principal ; principal sans `project.yaml` → celui du worktree ; hors git → celui de `root`.
+  - `state_dir` : worktree à `.git` fichier vers un checkout principal qui a `project.yaml` → le `state/` principal ; projet en sous-dossier : le même chemin relatif dans le principal ; principal sans `project.yaml` à ce chemin → celui du worktree ; hors git → celui de `root`.
   - Binaire (`tests/journal.rs`) : `add` dans le worktree puis `show --lot menu` dans le principal (critère 5), sortie entière à égalité (le test lit `ts` dans le fichier écrit et en déduit la ligne attendue, sans variable d'environnement de test) ; `--json` à égalité avec `schema` ; `--kind other` refusé par clap avec la liste ; journal vide, code 0, stdout vide.
   - Concurrence (critère 6) : deux processus `armadai journal add` en boucle de 50 chacun, lancés ensemble ; 100 lignes, chacune un JSON valide ; 5 passes. Mutation : deux `write_all` (préfixe puis reste) au lieu d'un, le test rougit sur au moins une des 5 passes ; sinon le rapport le dit et la mutation est remplacée par une écriture sans `append`.
   - Rétrocompatibilité : `tests/fixtures/journal/v1.jsonl` (lignes figées, noms génériques) se relit à égalité.
@@ -442,7 +443,7 @@ Et sur la spec (2026-11-12) : verrou de worktree ; `pack pin` explicite + `updat
 - **C3, primitive commune de lien symbolique.** Le test est écrit en ligne sur 28 sites relevés par `Explore` (V), sous six formes. (a) Le nouveau code reprend le motif en ligne, chaque site testé et muté. (b) Une primitive `refuse_symlink(path)` et la migration des sites existants : six domaines touchés, hors périmètre, risque de régression sur des messages publiés. (c) Une primitive pour le seul code nouveau : une septième forme. **Retenu : (a)** ; (b) peut faire l'objet d'une issue.
 - **C4, lecture de `.git` à la main** plutôt que `git rev-parse` (G4) : le gate et le hook de grant ouvrent la vue à chaque délégation. Validé ou infirmé par K.0.
 - **C5, « sans capacité shell »** = `capabilities.shell: deny` seulement ; absent veut dire outils hérités (V, `compile/claude.rs:370-386`, cité par le plan du lot #12 : seul `deny` écrit `disallowedTools`).
-- **C6, racine du journal** : le checkout principal s'il a un `project.yaml`, sinon le projet lui-même (un principal sans `.armadai/` ne doit pas recevoir un `state/` orphelin).
+- **C6, racine du journal** : le projet du checkout principal au même chemin relatif que celui du worktree, s'il a un `project.yaml`, sinon le projet lui-même (un principal sans `.armadai/` ne doit pas recevoir un `state/` orphelin).
 - **C7, `show` par défaut** : les 20 dernières entrées (risque 5 de la spec), `--last N` pour plus.
 - **C8, `ts`** : secondes Unix (`u64`), affichées en heure locale par `chrono`.
 
