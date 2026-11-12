@@ -202,8 +202,8 @@ mod tests {
     const SESSION_LINK: &str =
         "session_link:\n  to: chantier\n  when: \"a question about the scope of the lot\"\n";
 
-    /// The same project with a `session_link` on its flow `ship` (and `sessions.journal`
-    /// in the second one): the `### Sessions` section of `CLAUDE.md` and the report line.
+    /// The same project with a `session_link` on its flow `ship`: the `### Sessions` section of
+    /// `CLAUDE.md` and the report line.
     #[test]
     fn the_session_link_matches_its_golden() {
         ui_golden_with(
