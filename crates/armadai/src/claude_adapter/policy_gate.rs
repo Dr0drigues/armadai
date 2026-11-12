@@ -245,9 +245,8 @@ fn deny(reason: String) -> String {
     .to_string()
 }
 
-/// A project referencing pack `demo`, committed lock at `C2`, pinned at `C1`; the cache
-/// holds a snapshot of each (`one`/`two` are the policy bodies, `qa`/`rev` the agent
-/// holding the step). Returns the project and the registry directory.
+/// Fixtures of a checkout that pins pack `demo` 1.3.0 (`C1`) while its committed lock
+/// has moved on to 1.4.0 (`C2`); tests plant a snapshot of each in the cache.
 #[cfg(test)]
 pub(crate) mod pinned_fixture {
     use crate::pack::lock::{self, PackLock, Resolved};
@@ -257,13 +256,13 @@ pub(crate) mod pinned_fixture {
     pub const C1: &str = "1111111111111111111111111111111111111111";
     pub const C2: &str = "2222222222222222222222222222222222222222";
 
-    pub fn lock_at(commit: &str) -> PackLock {
+    pub fn lock_at(version: &str, commit: &str) -> PackLock {
         PackLock {
             format: 1,
             pack: "demo".into(),
             source: URL.into(),
             resolved: Resolved {
-                version: "1.0.0".into(),
+                version: version.into(),
                 tag: None,
                 commit: Some(commit.into()),
                 digest: None,
@@ -295,11 +294,11 @@ pub(crate) mod pinned_fixture {
             ".armadai/project.yaml",
             "pack: { name: demo, source: 'https://example.com/packs.git', version: latest }\n",
         );
-        lock::write(root.path(), &lock_at(C1)).unwrap();
+        lock::write(root.path(), &lock_at("1.3.0", C1)).unwrap();
         lock::pin(root.path()).unwrap();
         std::fs::write(
             root.path().join(lock::LOCK),
-            armadai_model::yaml::to_string(&lock_at(C2)).unwrap(),
+            armadai_model::yaml::to_string(&lock_at("1.4.0", C2)).unwrap(),
         )
         .unwrap();
         root
@@ -820,7 +819,31 @@ mod tests {
         .unwrap();
         let root = pinned_fixture::pinned_project();
         let r = reason(decide(&marked("", "rev", "[f/review]", root.path())));
-        assert!(r.contains("run `armadai pack sync`"), "{r}");
-        assert!(r.contains("1111111111"), "{r}");
+        assert_eq!(
+            r,
+            "the project's pack cannot be read, so the delegation policy cannot be checked: pack demo 1.3.0 (111111111111) is not in the local cache: run `armadai pack sync`"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_pin_is_denied_by_name_by_the_gate() {
+        let iso = armadai_core::test_support::IsolatedConfigDir::enter();
+        two_snapshots(&pinned_fixture::registry_of(iso.config_dir()));
+        let root = pinned_fixture::pinned_project();
+        let pin = crate::pack::lock::pin_path(root.path()).unwrap();
+        std::fs::remove_file(&pin).unwrap();
+        std::os::unix::fs::symlink(root.path().join(crate::pack::lock::LOCK), &pin).unwrap();
+        let r = reason(decide(&marked("", "rev", "[f/review]", root.path())));
+        assert!(
+            r.starts_with(
+                "the project's pack cannot be read, so the delegation policy cannot be checked: "
+            ),
+            "{r}"
+        );
+        assert!(
+            r.ends_with("is a symbolic link; it is not read through"),
+            "{r}"
+        );
     }
 }
