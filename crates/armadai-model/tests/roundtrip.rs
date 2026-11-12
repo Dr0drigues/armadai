@@ -372,3 +372,36 @@ fn new_keys_are_written_only_when_set() {
     write_project(&p, dir.path()).unwrap();
     assert_eq!(load_ok(dir.path()), p);
 }
+
+#[test]
+fn sessions_and_journal_are_written_only_when_set() {
+    let text = "schema_version: 1\nsessions:\n  journal: true\n";
+    let m: Manifest = armadai_model::yaml::from_str(text).unwrap();
+    assert!(m.sessions.journal);
+    assert_eq!(render_manifest(&m), text);
+    let off: Manifest =
+        armadai_model::yaml::from_str("schema_version: 1\nsessions: { journal: false }\n").unwrap();
+    assert_eq!(render_manifest(&off), "schema_version: 1\n");
+    let agent = "---\ndescription: d\njournal: write\n---\n";
+    let dir = tempfile::tempdir().unwrap();
+    for (path, text) in [
+        (".armadai/project.yaml", "schema_version: 1\n"),
+        (".armadai/agents/a.md", agent),
+        (".armadai/agents/b.md", "---\ndescription: d\n---\n"),
+        (".armadai/templates/t.md", "---\njournal: read\n---\n"),
+    ] {
+        let p = dir.path().join(path);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    }
+    let p = load_ok(dir.path());
+    assert_eq!(render_agent("a", &p.agents["a"]), agent);
+    assert_eq!(
+        render_agent("b", &p.agents["b"]),
+        "---\ndescription: d\n---\n"
+    );
+    assert_eq!(
+        render_template(&p.templates["t"]),
+        "---\njournal: read\n---\n"
+    );
+}

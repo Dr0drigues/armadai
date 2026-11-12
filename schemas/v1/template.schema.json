@@ -64,6 +64,14 @@
       },
       "type": "object"
     },
+    "JournalAccess": {
+      "description": "What an agent does with the lot journal; `write` includes reading.",
+      "enum": [
+        "read",
+        "write"
+      ],
+      "type": "string"
+    },
     "Tier": {
       "enum": [
         "fast",
@@ -85,6 +93,17 @@
         "string",
         "null"
       ]
+    },
+    "journal": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/JournalAccess"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Access to the lot journal (`armadai journal`): `read`, or `write` (which includes reading)."
     },
     "native": {
       "additionalProperties": true,

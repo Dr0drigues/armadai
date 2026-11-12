@@ -355,7 +355,7 @@ fn unknown_key_of_the_instance_is_reported_on_the_instance() {
             "invalid-yaml",
             "guardian.md".into(),
             Some(4),
-            "agent rendered from template `checker`: unknown field `bogus`, expected one of `description`, `title`, `tier`, `temperature`, `tags`, `skills`, `slots`, `capabilities`, `native`".into(),
+            "agent rendered from template `checker`: unknown field `bogus`, expected one of `description`, `title`, `tier`, `temperature`, `tags`, `skills`, `slots`, `capabilities`, `journal`, `native`".into(),
             None,
         )]
     );
@@ -378,7 +378,7 @@ fn unknown_key_of_the_template_is_reported_on_the_template() {
             "invalid-yaml",
             "checker.md".into(),
             Some(3),
-            "unknown field `bogus`, expected one of description, title, tier, temperature, tags, skills, slots, capabilities, native".into(),
+            "unknown field `bogus`, expected one of description, title, tier, temperature, tags, skills, slots, capabilities, journal, native".into(),
             None,
         )]
     );

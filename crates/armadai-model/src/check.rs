@@ -9,6 +9,7 @@ use crate::diag::{
     locate_pair,
 };
 use crate::load::{Kind, Origins, Project, load_project};
+use crate::types::Cap;
 
 const MAX_SKILL_DESCRIPTION: usize = 1024;
 
@@ -877,6 +878,20 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
                 Some(("temperature", true)),
                 format!("temperature must be a finite number, got {t}"),
                 None,
+            );
+        }
+        if let (Some(j), Some(Cap::Deny)) = (a.front.journal, a.front.capabilities.shell) {
+            o.emit(
+                at("journal"),
+                Severity::Warning,
+                "journal-without-shell",
+                Some(("journal", true)),
+                format!(
+                    "agent `{id}` declares journal: {} but shell: deny, so it cannot run \
+                     armadai journal",
+                    j.as_str()
+                ),
+                Some("allow shell (ask or allow), or drop journal".into()),
             );
         }
         for s in a
