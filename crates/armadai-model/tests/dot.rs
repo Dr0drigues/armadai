@@ -95,6 +95,7 @@ digraph "delivery" {
 #[test]
 fn a_lone_step_is_start_and_end() {
     let f = Flow {
+        session_link: None,
         description: None,
         start: None,
         steps: BTreeMap::from([("solo".to_string(), step("worker"))]),
@@ -110,6 +111,7 @@ fn a_lone_step_is_start_and_end() {
 #[test]
 fn hostile_ids_are_quoted() {
     let f = Flow {
+        session_link: None,
         description: None,
         start: None,
         steps: BTreeMap::from([
@@ -151,6 +153,7 @@ fn the_dot_export_is_deterministic() {
 #[test]
 fn failed_and_done_links() {
     let f = Flow {
+        session_link: None,
         description: None,
         start: None,
         steps: BTreeMap::from([
@@ -190,6 +193,7 @@ digraph "w" {
 #[test]
 fn a_newline_in_the_id_stays_in_the_comment() {
     let f = Flow {
+        session_link: None,
         description: None,
         start: None,
         steps: BTreeMap::from([("a".to_string(), step("a"))]),

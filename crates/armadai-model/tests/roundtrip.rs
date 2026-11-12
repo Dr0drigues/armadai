@@ -405,3 +405,23 @@ fn sessions_and_journal_are_written_only_when_set() {
         "---\njournal: read\n---\n"
     );
 }
+
+#[test]
+fn a_session_link_is_written_back_and_absent_is_not_written() {
+    let dir = tempfile::tempdir().unwrap();
+    let with = "steps:\n  a:\n    agent: dev\nsession_link:\n  to: chantier\n  when: scope\n";
+    let without = "steps:\n  a:\n    agent: dev\n";
+    for (path, text) in [
+        (".armadai/project.yaml", "schema_version: 1\n"),
+        (".armadai/agents/dev.md", "---\ndescription: d\n---\n"),
+        (".armadai/flows/with.yaml", with),
+        (".armadai/flows/without.yaml", without),
+    ] {
+        let p = dir.path().join(path);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    }
+    let p = load_ok(dir.path());
+    assert_eq!(render_flow(&p.flows["with"]), with);
+    assert_eq!(render_flow(&p.flows["without"]), without);
+}

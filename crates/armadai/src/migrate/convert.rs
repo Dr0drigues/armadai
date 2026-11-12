@@ -522,6 +522,7 @@ fn convert_orchestration(
         return None;
     }
     Some(Flow {
+        session_link: None,
         description: Some("Delegations of the legacy `orchestration:` section".into()),
         start: None,
         steps,

@@ -991,6 +991,32 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
     // flows
     for (id, f) in &project.flows {
         let at = (Kind::Flow, id.as_str());
+        if let Some(l) = &f.session_link {
+            if !is_valid_id(&l.to) {
+                o.err(
+                    at,
+                    "invalid-session-link",
+                    Some(("to", true)),
+                    format!(
+                        "session_link.to `{}` is not a session name: lowercase letters, digits and -",
+                        l.to
+                    ),
+                    Some("name the session as you start it: claude --name <name>".into()),
+                );
+            }
+            if l.when.trim().is_empty() {
+                o.err(
+                    at,
+                    "invalid-session-link",
+                    Some(("when", true)),
+                    format!(
+                        "session_link.when is empty: say when to write to session `{}`",
+                        l.to
+                    ),
+                    None,
+                );
+            }
+        }
         if f.steps.is_empty() {
             o.err(at, "empty-flow", None, "flow has no step".into(), None);
             continue;

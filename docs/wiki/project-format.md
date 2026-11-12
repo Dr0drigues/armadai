@@ -221,6 +221,9 @@ links:
   - { from: review, to: fixes, when: rejected }
   - { from: fixes, to: review }
   - { from: review, to: delivery, when: approved }
+session_link:                           # optional: another session this flow's coordinator writes to
+  to: chantier                          # its name, as started with `claude --name` (a kebab-case id)
+  when: a question about the scope      # when to write to it (not blank)
 ```
 
 - **Linear shortcut**: `sequence: [developer, reviewer, deliverer]` (exclusive with
@@ -231,6 +234,7 @@ links:
 - `optional: true` marks a step a run may never reach: it is skipped, not pending, once a later step starts. An optional step cannot be an entry step (`optional-start-step`).
 - `on_failure: <step>` is a `when: failed` link; a step has at most one failure path.
 - Loops are allowed; a link from a step to itself is an error.
+- `session_link: { to, when }` names another session (`to`, a kebab-case id; any other key under it is `invalid-yaml`) and when to write to it (`when`, not blank); both are checked by `invalid-session-link`.
 - Only `.yaml` is loaded: a `.yml` file is ignored with a warning.
 - `start: <step>` declares where the flow begins: it is then the only entry step. Without it, an
   **entry step** is one no unconditional link (`when` absent or `done`) leads to; a conditional
@@ -538,6 +542,7 @@ warning on stderr.
 | `ambiguous-entry` | warning | The flow declares no `start` and a step the guess above takes as an entry has an incoming link (of any kind): where the flow begins is only a guess (an entry with no incoming link at all is not warned) | Declare `start: <step>` to say where the flow begins |
 | `optional-start-step` | error | A step marked `optional: true` is an entry step of its flow (the declared `start`, or the one the heuristic finds) | A flow must begin with a step that runs: make another step the start, or drop `optional` |
 | `unreachable-step` | warning | A step cannot be reached from any entry step (every link and `on_failure` counts here) | Link it, or remove it |
+| `invalid-session-link` | error | A flow's `session_link.to` is not a kebab-case id, or its `when` is empty or blank | Name the session as you start it (`claude --name <name>`), and say when to write to it |
 | `empty-command` | error | An automation's `run` is empty | Give the command to run |
 | `unknown-template` | error | An agent's `from` names no template of `templates/` | Use an existing template id (the hint suggests a close one) |
 | `missing-template-var` | error | The template uses `{{x}}` and the instance's `vars` does not set `x` | Add `x` to `vars` |

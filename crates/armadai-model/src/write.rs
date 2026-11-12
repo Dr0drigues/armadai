@@ -101,6 +101,7 @@ pub fn render_flow(f: &Flow) -> String {
         steps: f.steps.clone(),
         links: f.links.clone(),
         sequence: Vec::new(),
+        session_link: f.session_link.clone(),
     })
 }
 

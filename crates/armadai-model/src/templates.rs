@@ -146,5 +146,6 @@ pub fn flow_from_template(
         start,
         steps,
         links,
+        session_link: None,
     })
 }
