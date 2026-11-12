@@ -539,6 +539,14 @@ fn agent_file(
              {how} with the `subagent` tool, naming the agent by its id.\n",
             body.trim_end()
         );
+        // the same sentence as under Claude Code, and only for a flow with an optional step
+        if super::claude::has_optional_step(project) {
+            body = format!(
+                "{}\n\n{}\n",
+                body.trim_end(),
+                super::claude::OPTIONAL_SENTENCE
+            );
+        }
     }
     // only declared `skills:` restrict: an agent with none (slots or not) keeps
     // every skill of the project, as under Claude where a slot preloads only
@@ -1152,19 +1160,47 @@ mod tests {
         );
     }
 
+    const OPTIONAL: &str = "An optional step may be skipped: delegate the step after it directly.";
+
+    fn optional_team(flow: &'static [u8]) -> Vec<(&'static str, &'static [u8])> {
+        let mut files = team(b"schema_version: 1\ncoordinator: lead\n");
+        files[4] = (".armadai/flows/ship.yaml", flow);
+        files
+    }
+
+    const WITH_OPTIONAL: &[u8] = b"steps:\n  plan: { agent: lead }\n  review: { agent: rev, optional: true }\nlinks:\n  - { from: plan, to: review }\n";
+
     /// The team file is read by every agent and gives no instruction: an optional step is
-    /// marked in its line, and the coordinator's sentence about skipping it is Claude's.
+    /// marked in its line, and the sentence about skipping it is the coordinator's own.
     #[test]
     fn an_optional_step_is_marked_in_the_team_file_without_an_instruction() {
-        let mut files = team(b"schema_version: 1\ncoordinator: lead\n");
-        files[4] = (
-            ".armadai/flows/ship.yaml",
-            b"steps:\n  plan: { agent: lead }\n  review: { agent: rev, optional: true }\nlinks:\n  - { from: plan, to: review }\n",
-        );
-        let plan = compile(&files).unwrap();
+        let plan = compile(&optional_team(WITH_OPTIONAL)).unwrap();
         let t = text(&plan, "armadai-team.md");
         assert!(t.contains("- `review` (agent `rev`, optional)\n"), "{t}");
         assert!(!t.contains("may be skipped"), "{t}");
+    }
+
+    #[test]
+    fn the_coordinator_is_told_an_optional_step_may_be_skipped_and_nobody_else() {
+        let plan = compile(&optional_team(WITH_OPTIONAL)).unwrap();
+        let lead = text(&plan, "agents/lead.md");
+        // the end of its `## Delegation` section, as its own paragraph
+        assert!(
+            lead.ends_with(&format!("naming the agent by its id.\n\n{OPTIONAL}\n")),
+            "{lead}"
+        );
+        assert_eq!(lead.matches(OPTIONAL).count(), 1, "{lead}");
+        for id in ["dev", "rev"] {
+            assert!(!text(&plan, &format!("agents/{id}.md")).contains("may be skipped"));
+        }
+    }
+
+    #[test]
+    fn a_project_without_an_optional_step_leaves_the_coordinator_unchanged() {
+        let plan = compile(&team(b"schema_version: 1\ncoordinator: lead\n")).unwrap();
+        let lead = text(&plan, "agents/lead.md");
+        assert!(lead.ends_with("naming the agent by its id.\n"), "{lead}");
+        assert!(!lead.contains("may be skipped"), "{lead}");
     }
 
     #[test]

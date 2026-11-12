@@ -489,7 +489,7 @@ fn claude_md(coordinator: &str, lead: &Agent, project: &Project) -> String {
         out.push_str(&flow_section(fid, flow));
     }
     // only a project with an optional step says so: no other project's block changes
-    if (project.flows.values()).any(|f| f.steps.values().any(|s| s.optional)) {
+    if has_optional_step(project) {
         out.push('\n');
         out.push_str(OPTIONAL_SENTENCE);
         out.push('\n');
@@ -505,8 +505,13 @@ fn claude_md(coordinator: &str, lead: &Agent, project: &Project) -> String {
 }
 
 /// Said to the coordinator when a flow has an optional step (decided by Dimitri, 2026-11-12).
-const OPTIONAL_SENTENCE: &str =
+pub(super) const OPTIONAL_SENTENCE: &str =
     "An optional step may be skipped: delegate the step after it directly.";
+
+/// Whether a flow of the project has an optional step (in any flow, whatever its key).
+pub(super) fn has_optional_step(project: &Project) -> bool {
+    (project.flows.values()).any(|f| f.steps.values().any(|s| s.optional))
+}
 
 /// How the coordinator marks a delegation, so `armadai flow status` can place it.
 const MARKING_SECTION: &str = "\n### Marking delegations\n\nStart the `description` of every Agent call to an agent that holds a step with `[<flow>/<step>#<lot>]`, for example `[lot/plan#12] write the plan`. `#<lot>` is optional: it names one batch of work, so that two batches of one flow stay apart in `armadai flow status`. A free agent needs no marker. Ask the agent to end its reply with `REF: <ref>` after its `STATE:` line when it produced something to point at (a branch, a merge request): up to 64 letters, digits or `._/#-`.";
@@ -1061,6 +1066,25 @@ mod tests {
         let (before, after) = block.split_once(&format!("\n{OPTIONAL}\n")).unwrap();
         assert!(before.ends_with("- `build` -> `review`\n"), "{before}");
         assert!(after.starts_with("\n### Marking delegations"), "{after}");
+    }
+
+    /// The optional step is in the flow that comes second by key: the condition looks at
+    /// every flow, not the first one.
+    #[test]
+    fn an_optional_step_in_a_later_flow_is_still_told() {
+        let mut files = team();
+        files.push((
+            ".armadai/flows/a.yaml",
+            b"steps:\n  one: { agent: lead }\n  two: { agent: dev }\nlinks:\n  - { from: one, to: two }\n",
+        ));
+        files[4] = (
+            ".armadai/flows/ship.yaml",
+            b"steps:\n  plan: { agent: lead }\n  review: { agent: rev, optional: true }\nlinks:\n  - { from: plan, to: review }\n",
+        );
+        let block = compile(&files).unwrap().blocks[0].1.clone();
+        // `a` comes before `ship`, and has none
+        assert!(block.find("### Flow `a`").unwrap() < block.find("### Flow `ship`").unwrap());
+        assert_eq!(block.matches(OPTIONAL).count(), 1, "{block}");
     }
 
     #[test]
