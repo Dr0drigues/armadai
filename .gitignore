@@ -19,14 +19,9 @@ Thumbs.db
 /armadai.yml
 
 
-# Claude Code
-.claude/*
-!.claude/CLAUDE.md
-!.claude/agents/
-!.claude/settings.json
-!.claude/skills/
-
-# ArmadAI project: .armadai/ is versioned (link state is ignored by .armadai/.gitignore)
+# Team files (local only, not versioned)
+/.armadai/
+/.claude/
 
 # Session state (not shipped)
 docs/SESSION-STATE.md
