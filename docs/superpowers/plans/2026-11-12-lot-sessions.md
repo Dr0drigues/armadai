@@ -49,6 +49,14 @@ Légende : **V** = relu au code par l'architecte ou par `Explore` (fichier:ligne
 | M7 | « The receiving session bypasses permission prompts: Claude Code holds each message for your approval. It delivers one only when the sending session identifies itself as also bypassing. » |
 | M8 | « A name with a space or other characters outside letters, digits, hyphens, and underscores: type it in double quotes, such as `@"release notes"`. » (même page, lue par le guardian de L.1 le 2026-11-12) ; `https://code.claude.com/docs/en/cli-reference.md`, ligne `--name, -n` : « Set a display name for the session… », sans contrainte de forme. |
 
+**Messagerie, relue en D2** : page téléchargée en `.md` (`https://code.claude.com/docs/en/cross-session-messaging.md`) le 2026-11-12 ; M7 est confirmée mot pour mot (en gras dans la page), et la page dit en plus, citée telle quelle :
+
+| # | Phrase exacte |
+|---|---|
+| M7a | « When the default holds a message in an interactive terminal session, Claude Code opens an approval dialog there. The dialog shows the sender and a preview: » ; « **Approve** delivers that one message to Claude. » ; « **Deny**, or dismissing the dialog, drops it. » ; « When the dialog stays unanswered past the `dialogExpiry` deadline, Claude Code closes it and drops the message. The deadline defaults to five minutes. » |
+| M7b | « A session in the VS Code extension or the Desktop app can't show the dialog. Claude Code keeps a held message there until the same deadline, as Non-interactive sessions describes. » ; « A `-p` session can't show the approval dialog. When the inbound default holds a message there, Claude Code keeps it for the same `dialogExpiry` deadline the dialog uses, five minutes by default: » ; « Past the deadline: Claude Code drops the message and reports it as expired to a sender it can reach. » |
+| M1b | La phrase M1 est suivie de : « On native Windows, it requires Claude Code v2.1.234 or later. » |
+
 **Git, worktrees** : lue par l'architecte le **2026-11-12**, WebFetch, `https://git-scm.com/docs/git-worktree` (backticks retirés par l'outil).
 
 | # | Phrase exacte |
