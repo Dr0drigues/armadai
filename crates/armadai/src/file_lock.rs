@@ -28,3 +28,13 @@ pub(crate) fn lock_exclusive(f: &std::fs::File) -> std::io::Result<()> {
 pub(crate) fn lock_exclusive(_f: &std::fs::File) -> std::io::Result<()> {
     Ok(())
 }
+
+/// Whether another open file description could take the lock right now (it takes it, and the
+/// answer is dropped with `f`). For tests.
+#[cfg(all(test, unix))]
+pub(crate) fn is_locked_elsewhere(f: &std::fs::File) -> bool {
+    use std::os::fd::AsRawFd;
+    // SAFETY: as in `lock_exclusive`; LOCK_NB makes the call return at once.
+    let rc = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    rc != 0
+}

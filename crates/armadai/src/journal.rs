@@ -97,6 +97,20 @@ pub fn add(
     text: &str,
     now: u64,
 ) -> anyhow::Result<()> {
+    add_with(root, lot, kind, by, text, now, |_| {})
+}
+
+/// `add`, calling `between(path)` after the last-byte check and before the write, both under
+/// the lock (a test looks at the lock there).
+fn add_with(
+    root: &Path,
+    lot: Option<&str>,
+    kind: Kind,
+    by: Option<&str>,
+    text: &str,
+    now: u64,
+    between: impl FnOnce(&Path),
+) -> anyhow::Result<()> {
     use std::io::{Read, Seek, SeekFrom, Write};
     let name = file_name(lot)?;
     if let Some(b) = by
@@ -164,6 +178,7 @@ pub fn add(
         }
     }
     out.extend_from_slice(line.as_bytes());
+    between(&path);
     f.write_all(&out)?;
     Ok(())
 }
@@ -580,33 +595,18 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn add_waits_for_the_lock_and_sees_the_line_written_under_it() {
+    fn the_file_is_locked_from_the_check_to_the_write() {
         let t = project();
-        let d = t.path().join(".armadai/state");
-        fs::create_dir_all(&d).unwrap();
-        let file = d.join("journal.jsonl");
-        fs::write(&file, "").unwrap();
-        let held = fs::OpenOptions::new().append(true).open(&file).unwrap();
-        crate::file_lock::lock_exclusive(&held).unwrap();
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::scope(|s| {
-            s.spawn(|| {
-                tx.send(()).unwrap();
-                put(t.path(), None, "after", 2);
-            });
-            rx.recv().unwrap();
-            // a writer mid-line: its first half is in the file, the lock still held
-            use std::io::Write;
-            (&held)
-                .write_all(b"{\"schema\":\"armadai.journal/1\",\"ts\":1,")
-                .unwrap();
-            drop(held);
-        });
-        let body = fs::read_to_string(&file).unwrap();
-        assert!(
-            body.starts_with("{\"schema\":\"armadai.journal/1\",\"ts\":1,\n{"),
-            "{body}"
-        );
-        assert_eq!(body.lines().count(), 2);
+        let mut seen = None;
+        add_with(t.path(), None, Kind::Note, None, "x", 1, |path| {
+            let other = fs::OpenOptions::new().append(true).open(path).unwrap();
+            seen = Some(crate::file_lock::is_locked_elsewhere(&other));
+        })
+        .unwrap();
+        assert_eq!(seen, Some(true));
+        // and the lock is gone with the call
+        let path = t.path().join(".armadai/state/journal.jsonl");
+        let other = fs::OpenOptions::new().append(true).open(path).unwrap();
+        assert!(!crate::file_lock::is_locked_elsewhere(&other));
     }
 }
