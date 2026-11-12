@@ -898,9 +898,10 @@ pub fn newer_pack_note(root: &std::path::Path) -> Option<String> {
 }
 
 /// `.claude` and `.armadai` that are symbolic links leaving the checkout: link would write
-/// through them into another checkout. Refused (T9) when this checkout pins its pack, a
+/// through them into another checkout (`verb` is `link` or `unlink`, `note`: write T10).
+/// Refused (T9) when this checkout pins its pack, a
 /// note (T10) otherwise (for `.armadai` only). Resolved paths are compared, so a link inside the root is fine.
-fn check_outgoing_links(root: &Path) -> anyhow::Result<()> {
+pub(crate) fn check_outgoing_links(root: &Path, verb: &str, note: bool) -> anyhow::Result<()> {
     let Ok(real_root) = std::fs::canonicalize(root) else {
         return Ok(());
     };
@@ -919,12 +920,12 @@ fn check_outgoing_links(root: &Path) -> anyhow::Result<()> {
         let target = target.display();
         if crate::pack::lock::read_pin(root)?.is_some() {
             bail!(
-                "link refused: {name} is a symbolic link to {target}, outside this checkout, and this checkout pins its pack; give the worktree its own {name}/ or run armadai pack unpin"
+                "{verb} refused: {name} is a symbolic link to {target}, outside this checkout, and this checkout pins its pack; give the worktree its own {name}/ or run armadai pack unpin"
             );
         }
         // without a pin, a `.claude` leading out is already refused by the patching of
         // settings.json ("resolves outside the project"); only `.armadai` is written through
-        if name == ".claude" {
+        if name == ".claude" || !note {
             continue;
         }
         eprintln!(
@@ -943,7 +944,11 @@ pub fn execute(
     json: bool,
     adopt_hooks: bool,
 ) -> anyhow::Result<()> {
-    check_outgoing_links(&compile::find_project(&std::env::current_dir()?)?)?;
+    check_outgoing_links(
+        &compile::find_project(&std::env::current_dir()?)?,
+        "link",
+        true,
+    )?;
     let (root, view, project) = load_project()?;
     let targets = targets_of(&targets, &project);
     if output.is_some() && targets.len() > 1 {

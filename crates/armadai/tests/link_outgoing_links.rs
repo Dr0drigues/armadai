@@ -68,12 +68,16 @@ impl Env {
     }
 
     fn link(&self) -> (Option<i32>, String, String) {
+        self.run(&self.wt(), "link")
+    }
+
+    fn run(&self, dir: &Path, cmd: &str) -> (Option<i32>, String, String) {
         let o = Command::cargo_bin("armadai")
             .unwrap()
-            .current_dir(self.wt())
+            .current_dir(dir)
             .env("HOME", self.0.path().join("home"))
             .env("ARMADAI_CONFIG_DIR", self.0.path().join("config"))
-            .arg("link")
+            .arg(cmd)
             .output()
             .unwrap();
         (
@@ -97,9 +101,9 @@ impl Env {
     }
 }
 
-fn t9(name: &str, target: &Path) -> String {
+fn t9(verb: &str, name: &str, target: &Path) -> String {
     format!(
-        "Error: link refused: {name} is a symbolic link to {}, outside this checkout, and this checkout pins its pack; give the worktree its own {name}/ or run armadai pack unpin\n",
+        "Error: {verb} refused: {name} is a symbolic link to {}, outside this checkout, and this checkout pins its pack; give the worktree its own {name}/ or run armadai pack unpin\n",
         std::fs::canonicalize(target).unwrap().display()
     )
 }
@@ -120,7 +124,7 @@ fn a_pinned_checkout_refuses_a_claude_link_out_and_leaves_the_other_checkout_alo
     let before = env.snapshot();
     let (code, _, err) = env.link();
     assert_eq!(code, Some(1), "{err}");
-    assert_eq!(err, t9(".claude", &target));
+    assert_eq!(err, t9("link", ".claude", &target));
     assert_eq!(env.snapshot(), before);
 }
 
@@ -132,7 +136,7 @@ fn a_pinned_checkout_refuses_an_armadai_link_out() {
     let before = env.snapshot();
     let (code, _, err) = env.link();
     assert_eq!(code, Some(1), "{err}");
-    assert_eq!(err, t9(".armadai", &target));
+    assert_eq!(err, t9("link", ".armadai", &target));
     assert_eq!(env.snapshot(), before);
 }
 
@@ -174,4 +178,54 @@ fn a_link_that_stays_inside_the_checkout_is_neither_refused_nor_noted() {
     assert_eq!(code, Some(0), "{err}");
     assert!(!err.contains("symbolic link"), "{err}");
     assert!(!err.contains("link refused"), "{err}");
+}
+
+/// A chantier already linked, and a worktree whose `.claude` and `.armadai` lead to it.
+fn linked_chantier(pinned: bool) -> Env {
+    let env = Env::new(pinned);
+    let (code, _, err) = env.run(&env.chantier(), "link");
+    assert_eq!(code, Some(0), "{err}");
+    assert!(env.chantier().join(".claude/agents/lead.md").exists());
+    env.link_to(".claude", &env.chantier().join(".claude"));
+    env.link_to(".armadai", &env.chantier().join(".armadai"));
+    env
+}
+
+#[test]
+fn a_pinned_checkout_refuses_unlink_through_a_claude_link_out() {
+    let env = linked_chantier(true);
+    std::fs::remove_file(env.wt().join(".armadai")).unwrap(); // only `.claude` leads out
+    env.own_project();
+    let before = env.snapshot();
+    let (code, out, err) = env.run(&env.wt(), "unlink");
+    assert_eq!(code, Some(1), "{out}{err}");
+    assert_eq!(
+        err,
+        t9("unlink", ".claude", &env.chantier().join(".claude"))
+    );
+    assert_eq!(env.snapshot(), before);
+}
+
+#[test]
+fn a_pinned_checkout_refuses_unlink_through_an_armadai_link_out() {
+    let env = linked_chantier(true);
+    std::fs::remove_file(env.wt().join(".claude")).unwrap(); // only `.armadai` leads out
+    let before = env.snapshot();
+    let (code, out, err) = env.run(&env.wt(), "unlink");
+    assert_eq!(code, Some(1), "{out}{err}");
+    assert_eq!(
+        err,
+        t9("unlink", ".armadai", &env.chantier().join(".armadai"))
+    );
+    assert_eq!(env.snapshot(), before);
+}
+
+#[test]
+fn without_a_pin_unlink_through_the_links_is_unchanged() {
+    let env = linked_chantier(false);
+    let (code, out, err) = env.run(&env.wt(), "unlink");
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert!(!err.contains("refused") && !err.contains("note:"), "{err}");
+    assert!(out.contains("deleted"), "{out}");
+    assert!(!env.chantier().join(".claude/agents/lead.md").exists());
 }
