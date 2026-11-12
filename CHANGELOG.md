@@ -1,8 +1,10 @@
-## Unreleased
+## v1.0.0-rc.12 (2026-11-12)
+
+Twelfth release candidate, a fix release. A lot, the name after the `#` in a delegation marker (`[flow/step#lot]`), is now a free name of 1 to 40 ASCII letters, digits, `.` or `-`, so `Y2` and `v1.8.0` are accepted; `Y2` and `y2` are two distinct lots. Coming from rc.11, run `armadai link --target claude` again to get the new sentence of the `### Marking delegations` block in the root `CLAUDE.md`.
 
 ### Fixed
 
-- The delegation marker accepts a free lot name: 1 to 40 ASCII letters (either case), digits, `.` or `-` (`[mr/revue-mr#Y2]`, `#v1.8.0`). Until now the gate refused a capitalized lot while accepting the same marker without a lot; `flow` and `step` stay lowercase ids. `Y2` and `y2` are two lots. The `### Marking delegations` block of `CLAUDE.md` and the gate's refusal now say which characters a lot may use; run `armadai link --target claude` again to refresh the block.
+- The delegation marker accepts a free lot name: 1 to 40 ASCII letters (either case), digits, `.` or `-` (`[mr/revue-mr#Y2]`, `#v1.8.0`). Until now the gate refused a capitalized lot while accepting the same marker without a lot; `flow` and `step` stay lowercase ids. `Y2` and `y2` are two lots. The `### Marking delegations` block of `CLAUDE.md` and the gate's refusal now say which characters a lot may use; run `armadai link --target claude` again to refresh the block (#564).
 
 ## v1.0.0-rc.11 (2026-11-12)
 
