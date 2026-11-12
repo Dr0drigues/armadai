@@ -247,7 +247,7 @@ fn marker_refusal(
     let Some(m) = crate::flow_status::marker::parse(description) else {
         return Some(format!(
             "the description of a delegation to `{target}` must start with [flow/step] or \
-             [flow/step#lot], with flow/step among: {among}"
+             [flow/step#lot] (a lot is up to 40 letters, digits, `.` or `-`), with flow/step among: {among}"
         ));
     };
     if held.contains(&format!("{}/{}", m.flow, m.step)) {
@@ -405,7 +405,7 @@ mod tests {
         )
         .unwrap();
         let expected = "the description of a delegation to `dev` must start with [flow/step] \
-                        or [flow/step#lot], with flow/step among: extra/s1, ship/build";
+                        or [flow/step#lot] (a lot is up to 40 letters, digits, `.` or `-`), with flow/step among: extra/s1, ship/build";
         for description in [
             "do work",
             "",

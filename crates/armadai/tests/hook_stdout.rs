@@ -63,6 +63,38 @@ mod tests {
     }
 
     #[test]
+    fn the_gate_accepts_a_capitalized_lot_and_refuses_an_underscore_one() {
+        let dir = tempfile::tempdir().unwrap();
+        strict_project(dir.path());
+        std::fs::create_dir_all(dir.path().join(".armadai/flows")).unwrap();
+        std::fs::write(
+            dir.path().join(".armadai/flows/f.yaml"),
+            "steps:\n  s: { agent: qa-specialist }\n  t: { agent: dev-lead }\nlinks:\n  - { from: s, to: t }\n",
+        )
+        .unwrap();
+        let run = |marker: &str| {
+            let payload = serde_json::json!({
+                "cwd": dir.path().to_string_lossy(),
+                "tool_name": "Agent",
+                "agent_type": "",
+                "tool_input": {"subagent_type": "qa-specialist", "description": format!("{marker} go")},
+            });
+            let out = Command::cargo_bin("armadai")
+                .unwrap()
+                .arg("__claude-policy-gate")
+                .write_stdin(payload.to_string())
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        assert_eq!(run("[f/s#Y2]"), "", "a capitalized lot passes the gate");
+        assert!(
+            run("[f/s#a_b]").contains("\"deny\""),
+            "an underscore lot is refused"
+        );
+    }
+
+    #[test]
     fn a_legacy_project_warns_on_stderr_and_leaves_stdout_clean() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
