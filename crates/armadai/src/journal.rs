@@ -45,13 +45,22 @@ impl Kind {
     }
 }
 
-/// `.armadai/state/` of the main checkout when `root` is a linked worktree whose main
-/// checkout holds `.armadai/project.yaml`, else of `root`.
+/// `.armadai/state/` of the project of `root` in the main checkout, when `root` is in a
+/// linked worktree and that project (the same path relative to the worktree) holds
+/// `.armadai/project.yaml`, else of `root`.
 pub fn state_dir(root: &Path) -> PathBuf {
     let own = root.join(".armadai/state");
-    match crate::worktree::main_checkout_of(root) {
-        Some(main) if main.join(".armadai/project.yaml").is_file() => main.join(".armadai/state"),
-        _ => own,
+    let Some(main) = crate::worktree::main_checkout_of(root) else {
+        return own;
+    };
+    let Some(top) = root.ancestors().find(|d| d.join(".git").exists()) else {
+        return own;
+    };
+    let project = main.join(root.strip_prefix(top).unwrap_or(Path::new("")));
+    if project.join(".armadai/project.yaml").is_file() {
+        project.join(".armadai/state")
+    } else {
+        own
     }
 }
 
@@ -88,7 +97,7 @@ pub fn add(
     text: &str,
     now: u64,
 ) -> anyhow::Result<()> {
-    use std::io::Write;
+    use std::io::{Read, Seek, SeekFrom, Write};
     let name = file_name(lot)?;
     if let Some(b) = by
         && !((1..=64).contains(&b.len())
@@ -134,12 +143,24 @@ pub fn add(
     }
     std::fs::create_dir_all(&dir)?;
     // One write of the whole line in append mode: two writers never mix their lines.
-    std::fs::OpenOptions::new()
+    let mut f = std::fs::OpenOptions::new()
         .create(true)
+        .read(true)
         .append(true)
         .open(&path)
-        .with_context(|| format!("cannot open {}", path.display()))?
-        .write_all(line.as_bytes())?;
+        .with_context(|| format!("cannot open {}", path.display()))?;
+    let mut out = Vec::with_capacity(line.len() + 1);
+    // a torn last line (no `\n`) must not swallow this entry
+    if f.metadata()?.len() > 0 {
+        let mut last = [0u8];
+        f.seek(SeekFrom::End(-1))?;
+        f.read_exact(&mut last)?;
+        if last[0] != b'\n' {
+            out.push(b'\n');
+        }
+    }
+    out.extend_from_slice(line.as_bytes());
+    f.write_all(&out)?;
     Ok(())
 }
 
@@ -166,6 +187,37 @@ fn files_to_read(dir: &Path, lot: Option<&str>) -> anyhow::Result<Vec<String>> {
     Ok(v)
 }
 
+/// The file's bytes, `None` when absent; a symbolic link (the folder or the file) is refused.
+fn read_unlinked(dir: &Path, name: &str) -> anyhow::Result<Option<Vec<u8>>> {
+    use std::io::Read;
+    let path = dir.join(name);
+    for at in [dir, path.as_path()] {
+        if is_link(at) {
+            bail!(
+                "{} is a symbolic link; the journal is not read through it",
+                at.display()
+            );
+        }
+    }
+    let mut o = std::fs::OpenOptions::new();
+    o.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // closes the gap between the check above and the open
+        o.custom_flags(libc::O_NOFOLLOW);
+    }
+    match o.open(&path) {
+        Ok(mut f) => {
+            let mut v = Vec::new();
+            f.read_to_end(&mut v)?;
+            Ok(Some(v))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("cannot read {}", path.display())),
+    }
+}
+
 pub fn show(
     root: &Path,
     lot: Option<&str>,
@@ -175,13 +227,15 @@ pub fn show(
     let dir = state_dir(root);
     let mut all: Vec<Entry> = Vec::new();
     for name in files_to_read(&dir, lot)? {
-        let Ok(bytes) = std::fs::read(dir.join(&name)) else {
+        let Some(bytes) = read_unlinked(&dir, &name)? else {
             continue;
         };
         let mut bad = 0;
         for raw in bytes.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
             match serde_json::from_slice::<Entry>(raw) {
                 // a lot's file holds that lot's entries to the exact case; `journal.jsonl` all
+                // a line of another version is skipped and counted, not read as this one
+                Ok(e) if e.schema != SCHEMA => bad += 1,
                 Ok(e) if lot.is_none() || e.lot.is_none() || e.lot.as_deref() == lot => all.push(e),
                 Ok(_) => {}
                 Err(_) => bad += 1,
@@ -432,5 +486,91 @@ mod tests {
         assert_eq!(state_dir(&main), main.join(".armadai/state"));
         let out = tempfile::tempdir().unwrap();
         assert_eq!(state_dir(out.path()), out.path().join(".armadai/state"));
+    }
+
+    #[test]
+    fn a_project_in_a_subfolder_keeps_its_own_journal_in_the_main_checkout() {
+        let t = tempfile::tempdir().unwrap();
+        let main = t.path().join("main");
+        let wt = t.path().join("wt");
+        fs::create_dir_all(main.join(".git/worktrees/wt")).unwrap();
+        fs::create_dir_all(wt.join("sub")).unwrap();
+        fs::write(
+            wt.join(".git"),
+            format!("gitdir: {}\n", main.join(".git/worktrees/wt").display()),
+        )
+        .unwrap();
+        // the main checkout has a project at its root, none in sub/: sub keeps its own
+        fs::create_dir_all(main.join(".armadai")).unwrap();
+        fs::write(main.join(".armadai/project.yaml"), "").unwrap();
+        assert_eq!(state_dir(&wt.join("sub")), wt.join("sub/.armadai/state"));
+        fs::create_dir_all(main.join("sub/.armadai")).unwrap();
+        fs::write(main.join("sub/.armadai/project.yaml"), "").unwrap();
+        assert_eq!(state_dir(&wt.join("sub")), main.join("sub/.armadai/state"));
+        assert_eq!(state_dir(&wt), main.join(".armadai/state"));
+        // a main checkout without a root project but with one in sub/
+        fs::remove_file(main.join(".armadai/project.yaml")).unwrap();
+        assert_eq!(state_dir(&wt), wt.join(".armadai/state"));
+    }
+
+    #[test]
+    fn an_entry_after_a_torn_line_is_not_lost_and_a_clean_file_gets_no_blank_line() {
+        let t = project();
+        let d = t.path().join(".armadai/state");
+        fs::create_dir_all(&d).unwrap();
+        fs::write(
+            d.join("journal.jsonl"),
+            "{\"schema\":\"armadai.journal/1\",\"ts\":1,\"kind\":\"note\",\"text\":\"half",
+        )
+        .unwrap();
+        put(t.path(), None, "whole", 2);
+        let got = show(t.path(), None, None, 20).unwrap();
+        assert_eq!(
+            got.iter().map(|e| e.text.as_str()).collect::<Vec<_>>(),
+            ["whole"]
+        );
+        put(t.path(), None, "next", 3);
+        let body = fs::read_to_string(d.join("journal.jsonl")).unwrap();
+        assert_eq!(body.matches("\n\n").count(), 0);
+        assert_eq!(body.lines().count(), 3);
+    }
+
+    #[test]
+    fn a_line_of_another_schema_version_is_skipped() {
+        let t = project();
+        let d = t.path().join(".armadai/state");
+        fs::create_dir_all(&d).unwrap();
+        fs::write(
+            d.join("journal.jsonl"),
+            "{\"schema\":\"armadai.journal/2\",\"ts\":1,\"kind\":\"note\",\"text\":\"future\"}\n",
+        )
+        .unwrap();
+        put(t.path(), None, "now", 2);
+        let got = show(t.path(), None, None, 20).unwrap();
+        assert_eq!(
+            got.iter().map(|e| e.text.as_str()).collect::<Vec<_>>(),
+            ["now"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn show_refuses_to_read_through_a_link() {
+        use std::os::unix::fs::symlink;
+        let t = project();
+        let out = tempfile::tempdir().unwrap();
+        let d = t.path().join(".armadai/state");
+        fs::create_dir_all(&d).unwrap();
+        fs::write(out.path().join("x.jsonl"), "").unwrap();
+        symlink(out.path().join("x.jsonl"), d.join("journal.jsonl")).unwrap();
+        let e = show(t.path(), None, None, 20).unwrap_err();
+        assert!(
+            e.to_string()
+                .ends_with(" is a symbolic link; the journal is not read through it"),
+            "{e}"
+        );
+        let t = project();
+        symlink(out.path(), t.path().join(".armadai/state")).unwrap();
+        assert!(show(t.path(), None, None, 20).is_err());
     }
 }
