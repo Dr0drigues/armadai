@@ -158,8 +158,8 @@ cannot read, gives no opinion.
 ## Messages between sessions
 
 The gate judges `Agent` and `Task` calls only. A `SendMessage` to another session (the
-[session link](link.md#the-lot-journal-and-the-session-link)) is given no opinion, under `strict` too, and no hook can
-observe that message: it is not recorded by `flow status` either. A message is not a delegation, and the
+[session link](link.md#the-lot-journal-and-the-session-link)) is given no opinion, under `strict` too, and no hook of ArmadAI
+observes that message: it is not recorded by `flow status` either. A message is not a delegation, and the
 topology says nothing about it.
 
 ## Limits

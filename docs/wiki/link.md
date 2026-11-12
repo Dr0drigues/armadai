@@ -107,7 +107,7 @@ writes (Claude Code only, the other targets report `not-compiled (Claude Code on
   Report `journal: compiled (instructions in CLAUDE.md (armadai journal))`. A coordinator that itself
   declares `journal: read` or `write` gets the same section without the project key. Without a coordinator
   there is nothing to carry it and the report says `journal: not-compiled (no coordinator: nothing to carry the instructions)`.
-- **`journal: read | write` on an agent** (or its template) ends the compiled body of the agent with a `## Journal` section:
+- **`journal: read | write` on an agent** (or its template) adds a `## Journal` section at the end of the agent's body, before the closing `STATE:` instruction when it has one:
   read the journal of the lot its brief names before judging; `write` adds the sentence to record a decision
   with `--by <agent id>`. It does not depend on `sessions.journal`. Report `agent <id> journal: compiled (instructions in .claude/agents/<id>.md)`;
   when the agent's `native.claude` keeps it from running Bash (a `tools` list without `Bash`, or `disallowedTools`
@@ -120,17 +120,16 @@ writes (Claude Code only, the other targets report `not-compiled (Claude Code on
   neither a consent nor a request to change permissions, `CLAUDE.md` or configuration. The fallback on the journal is
   always there, since the commands exist without the key. `session_link.to` is any one-line name with no blank at either end and no
   backtick; `when` is not blank (`invalid-session-link`). Report `flow <id> session link: approximated (instructions in CLAUDE.md;
-  Claude Code decides whether to send)`.
+  Claude Code decides whether to send)`; without a coordinator it is `not-compiled (no coordinator: no CLAUDE.md to render the flow into)`.
 
 The session link is **guidance, nothing else**. `link` writes no setting (no `crossSessionInbound`), no permission
 rule for `SendMessage` or `ListAgents`, and no hook; the delegation gate does not judge `SendMessage` either
-([Policy gate](policy-gate.md#limits)). Whether the model sends the message is its own decision, and a hook cannot see
-it.
+([Policy gate](policy-gate.md#limits)). Whether the model sends the message is its own decision, and no hook of ArmadAI observes it.
 
-What the target requires, from the documentation of Claude Code read on 2026-11-12 (`cross-session-messaging`):
-- Version: "Cross-session messaging requires Claude Code v2.1.224 or later on macOS and Linux, including Linux inside WSL 2."
+What the target requires, from the documentation of Claude Code (`cross-session-messaging`, read again on 2026-11-12):
+- Version: "Cross-session messaging requires Claude Code v2.1.224 or later on macOS and Linux, including Linux inside WSL 2. On native Windows, it requires Claude Code v2.1.234 or later."
 - Names: "A session answers to the name you set with the `/rename` command or the `--name` flag. When you don't set one, Claude Code names the session itself."
-- **A session that bypasses permission prompts holds messages.** "The receiving session bypasses permission prompts: Claude Code holds each message for your approval. It delivers one only when the sending session identifies itself as also bypassing." The channel then blocks without a sound: a question to such a session gets no answer. That is why the section falls back on the journal, which is a file; and a session that is to receive questions should not run in that mode.
+- **A session that bypasses permission prompts holds the messages it receives.** "The receiving session bypasses permission prompts: Claude Code holds each message for your approval. It delivers one only when the sending session identifies itself as also bypassing." In an interactive terminal session Claude Code then opens an approval dialog showing the sender and a preview: Approve delivers that one message, Deny drops it, and a dialog left unanswered past `dialogExpiry` (five minutes by default) is closed and the message dropped. A VS Code, Desktop or `-p` session cannot show the dialog and keeps the message until the same deadline. So the question reaches that session only if someone answers in time; otherwise it expires, and the section falls back on the journal, which is a file. A session that is to receive questions is best run without that mode.
 
 <a id="the-chained-status-line"></a>
 **The chained status line.** `ui.status_line: true` writes the `statusLine` of the project
