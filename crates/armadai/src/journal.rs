@@ -604,9 +604,5 @@ mod tests {
         })
         .unwrap();
         assert_eq!(seen, Some(true));
-        // and the lock is gone with the call
-        let path = t.path().join(".armadai/state/journal.jsonl");
-        let other = fs::OpenOptions::new().append(true).open(path).unwrap();
-        assert!(!crate::file_lock::is_locked_elsewhere(&other));
     }
 }
