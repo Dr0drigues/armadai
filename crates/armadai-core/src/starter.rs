@@ -49,10 +49,12 @@ impl StarterPack {
     }
 
     /// The `tests:` entries that are not a relative path inside the pack: empty,
-    /// absolute (either separator, or a drive letter, on every platform), or holding a `..` component.
+    /// absolute (either separator, or a drive letter, on every platform), holding a `..`
+    /// component or a NUL byte.
     pub fn bad_test_paths(&self) -> Vec<&str> {
         let bad = |t: &str| {
             t.trim().is_empty()
+                || t.contains('\0')
                 || Path::new(t).is_absolute()
                 || t.starts_with(['/', '\\'])
                 || matches!(t.as_bytes(), [d, b':', ..] if d.is_ascii_alphabetic())
@@ -532,7 +534,12 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let list: String = tests
                 .iter()
-                .map(|t| format!("  - \"{}\"\n", t.replace('\\', "\\\\")))
+                .map(|t| {
+                    format!(
+                        "  - \"{}\"\n",
+                        t.replace('\\', "\\\\").replace('\0', "\\u0000")
+                    )
+                })
                 .collect();
             let yaml = format!("name: p\ndescription: d\ntests:\n{list}");
             std::fs::write(dir.path().join("pack.yaml"), yaml).unwrap();
@@ -554,6 +561,7 @@ mod tests {
             "tests\\..\\x.sh",
             "C:\\x.sh",
             "C:x.sh",
+            "tests/a\0b.sh",
         ] {
             assert_eq!(
                 pack(&["tests/ok.sh", bad]).bad_test_paths(),

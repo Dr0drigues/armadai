@@ -90,7 +90,7 @@ pub fn run_user(command: &str, stdin: &[u8], limit: Duration) -> Option<String> 
 
 /// SIGKILL to every process of the group `pgid` (the child made itself the leader).
 #[cfg(unix)]
-fn kill_group(pgid: libc::pid_t) {
+pub(crate) fn kill_group(pgid: libc::pid_t) {
     // SAFETY: `kill` takes two integers and touches no memory; `-pgid` addresses the group
     // we created with `process_group(0)`, so no other process of ours is hit, and an
     // already empty group only makes it return -1 (ESRCH), which we ignore.

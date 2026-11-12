@@ -36,6 +36,19 @@ pub enum PackCommand {
         /// An exact version instead of the range's best
         version: Option<String>,
     },
+    /// Run the scripts a pack lists under tests: in an isolated copy (no network isolation)
+    #[command(
+        long_about = "Run the scripts a pack lists under tests: in pack.yaml, with bash, in a copy of the pack \
+            and with HOME, CLAUDE_CONFIG_DIR and ARMADAI_CONFIG_DIR pointing at temporary folders. Without a \
+            folder, the snapshot the project locks (from the local cache, never the network); with one, that \
+            folder. Each test may run 60 seconds; the exit code is 1 when one fails.\n\n\
+            The scripts run with your permissions and see your network: the copy and the three variables are \
+            the only isolation."
+    )]
+    Test {
+        /// A pack folder instead of the project's locked snapshot
+        dir: Option<PathBuf>,
+    },
     /// Create a native pack: guided, minimal (--empty) or from this project (--from-project)
     New {
         name: String,
@@ -87,6 +100,13 @@ pub fn execute(what: PackCommand) -> anyhow::Result<()> {
     }
     let root = crate::compile::find_project(&std::env::current_dir()?);
     let registry = armadai_core::config::registry_cache_dir();
+    if let PackCommand::Test { dir } = what {
+        // the scratch folders of the run are gone before the process ends
+        if !crate::cli::pack_test::execute(dir, &registry)? {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     match what {
         PackCommand::Sync { source } => sync(root.ok().as_deref(), &registry, source),
         PackCommand::Add { pack, source } => {
@@ -121,7 +141,7 @@ pub fn execute(what: PackCommand) -> anyhow::Result<()> {
             )?;
             finish(&root, done)
         }
-        PackCommand::New { .. } => unreachable!("handled above"),
+        PackCommand::New { .. } | PackCommand::Test { .. } => unreachable!("handled above"),
         PackCommand::Status => {
             let config = armadai_core::config::config_dir();
             print!("{}", status::report(&root?, &registry, &config)?);
