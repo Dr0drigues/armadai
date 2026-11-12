@@ -232,8 +232,9 @@ fn the_fixtures_hold_nothing_private() {
 #[test]
 fn two_processes_appending_leave_every_line_whole() {
     let e = Env::new();
-    // long enough that a write split in two can be interleaved with the other process
-    let text = "x".repeat(1500);
+    // about 3.9 KB (3-byte characters, under the 4096 bound): a line that crosses a page of the
+    // page cache, where Linux shows a half-written line to a reader of the last byte
+    let text = "€".repeat(1300);
     let file = e.main().join(".armadai/state/journal-menu.jsonl");
     for pass in 0..5 {
         let _ = std::fs::remove_file(&file);

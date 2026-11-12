@@ -149,6 +149,10 @@ pub fn add(
         .append(true)
         .open(&path)
         .with_context(|| format!("cannot open {}", path.display()))?;
+    // The check below and the write must not interleave with another writer's: a writer's
+    // line can be seen half written (Linux updates the size page by page), which would
+    // read as a torn line and add a blank one.
+    crate::file_lock::lock_exclusive(&f)?;
     let mut out = Vec::with_capacity(line.len() + 1);
     // a torn last line (no `\n`) must not swallow this entry
     if f.metadata()?.len() > 0 {
@@ -572,5 +576,37 @@ mod tests {
         let t = project();
         symlink(out.path(), t.path().join(".armadai/state")).unwrap();
         assert!(show(t.path(), None, None, 20).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn add_waits_for_the_lock_and_sees_the_line_written_under_it() {
+        let t = project();
+        let d = t.path().join(".armadai/state");
+        fs::create_dir_all(&d).unwrap();
+        let file = d.join("journal.jsonl");
+        fs::write(&file, "").unwrap();
+        let held = fs::OpenOptions::new().append(true).open(&file).unwrap();
+        crate::file_lock::lock_exclusive(&held).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                tx.send(()).unwrap();
+                put(t.path(), None, "after", 2);
+            });
+            rx.recv().unwrap();
+            // a writer mid-line: its first half is in the file, the lock still held
+            use std::io::Write;
+            (&held)
+                .write_all(b"{\"schema\":\"armadai.journal/1\",\"ts\":1,")
+                .unwrap();
+            drop(held);
+        });
+        let body = fs::read_to_string(&file).unwrap();
+        assert!(
+            body.starts_with("{\"schema\":\"armadai.journal/1\",\"ts\":1,\n{"),
+            "{body}"
+        );
+        assert_eq!(body.lines().count(), 2);
     }
 }
