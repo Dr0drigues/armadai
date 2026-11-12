@@ -66,7 +66,17 @@ pub fn load_project() -> anyhow::Result<(PathBuf, Effective, Project)> {
     let env = |n: &str| std::env::var(n).ok();
     let view = effective::open(&root, Vars::Resolve(&env))?;
     match view.load_checked() {
-        Ok((p, _)) => Ok((root, view, p)),
+        Ok((p, _)) => {
+            // `load_checked` drops the warnings of a valid project; those of the permission
+            // levels are the ones link is the last chance to show (they say a rule is
+            // never granted, or is broad)
+            for d in view.validate() {
+                if d.severity == armadai_model::Severity::Warning && d.code.starts_with("grant-") {
+                    eprintln!("{}", d.render());
+                }
+            }
+            Ok((root, view, p))
+        }
         Err(ds) => {
             for d in &ds {
                 eprintln!("{}", d.render());
