@@ -301,6 +301,8 @@ step before to the one after (`build → release` in the example below), with no
 step that ran in a turn of a loop keeps its `✓` and is crossed again in the next turn. `--line` does
 not count skipped steps, and the animated `--watch` draws `⤼` in the box of the step.
 
+For Claude Code, the coordinator block of `CLAUDE.md` that `link` writes says it too when a flow has an optional step: `An optional step may be skipped: delegate the step after it directly.` The step's line in the flow section carries `optional`. OpenCode's `.opencode/armadai-team.md` marks the step but gives no instruction.
+
 ```
 opt  in progress
   ✓ design   done
