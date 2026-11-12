@@ -145,7 +145,15 @@ whose merged project has errors is still "no opinion" (the invalid-project case 
 
 The gate finds the project from the session's directory upwards (without crossing a `.git`
 boundary), and from a git worktree falls back to the main checkout when the worktree has no
-`.armadai/` of its own.
+`.armadai/` of its own. Inside a git submodule there is no such fallback to the superproject.
+
+The gate and the `grant` hook decide on the lock of the checkout they resolve the project in, so a checkout that has
+[pinned](starter-packs.md#pinning-a-pack-per-checkout) its pack is gated by the pinned version of
+the pack, not by the one `.armadai/pack.lock` now says. When the worktree has no `.armadai/` of
+its own and the gate falls back to the main checkout, it reads that checkout's lock: its pin if it
+has one, else its `.armadai/pack.lock`, never the worktree's pin. A pinned snapshot that is not in the cache
+is refused like any missing snapshot, naming `armadai pack sync`; the `grant` hook, on a pin it
+cannot read, gives no opinion.
 
 ## Limits
 

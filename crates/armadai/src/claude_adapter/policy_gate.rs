@@ -70,33 +70,7 @@ fn legacy_root(cwd: &Path) -> Option<PathBuf> {
 /// The project for `cwd`, reaching into the main checkout when `cwd` sits in a git
 /// worktree that has no `.armadai/` of its own (an untracked or older checkout).
 pub(crate) fn resolve_project(cwd: &Path) -> Option<PathBuf> {
-    find_root(cwd).or_else(|| find_root(&main_checkout_of(cwd)?))
-}
-
-/// The main checkout behind a git worktree, or `None` if `cwd` is not in one.
-///
-/// A worktree's `.git` is a *file* reading `gitdir: <repo>/.git/worktrees/<name>`,
-/// so the main checkout is the ancestor of that `.git` directory. Parsed by
-/// hand rather than shelling out to git: the gate runs on every delegation and
-/// must stay cheap.
-fn main_checkout_of(cwd: &Path) -> Option<PathBuf> {
-    let mut dir = Some(cwd);
-    while let Some(d) = dir {
-        let dot_git = d.join(".git");
-        if dot_git.is_file() {
-            let raw = std::fs::read_to_string(&dot_git).ok()?;
-            let gitdir = raw.trim().strip_prefix("gitdir:")?.trim();
-            // <repo>/.git/worktrees/<name>  ->  <repo>
-            let marker = std::path::MAIN_SEPARATOR_STR.to_string() + ".git";
-            let cut = gitdir.find(&marker)?;
-            return Some(PathBuf::from(&gitdir[..cut]));
-        }
-        if dot_git.is_dir() {
-            return None; // a real checkout, not a worktree
-        }
-        dir = d.parent();
-    }
-    None
+    find_root(cwd).or_else(|| find_root(&crate::worktree::main_checkout_of(cwd)?))
 }
 
 /// The sub-agent Claude Code spawns when an `Agent` call omits
@@ -269,6 +243,70 @@ fn deny(reason: String) -> String {
         }
     })
     .to_string()
+}
+
+/// Fixtures of a checkout that pins pack `demo` 1.3.0 (`C1`) while its committed lock
+/// has moved on to 1.4.0 (`C2`); tests plant a snapshot of each in the cache.
+#[cfg(test)]
+pub(crate) mod pinned_fixture {
+    use crate::pack::lock::{self, PackLock, Resolved};
+    use std::path::{Path, PathBuf};
+
+    pub const URL: &str = "https://example.com/packs.git";
+    pub const C1: &str = "1111111111111111111111111111111111111111";
+    pub const C2: &str = "2222222222222222222222222222222222222222";
+
+    pub fn lock_at(version: &str, commit: &str) -> PackLock {
+        PackLock {
+            format: 1,
+            pack: "demo".into(),
+            source: URL.into(),
+            resolved: Resolved {
+                version: version.into(),
+                tag: None,
+                commit: Some(commit.into()),
+                digest: None,
+            },
+        }
+    }
+
+    pub fn put(dir: &Path, rel: &str, text: &str) {
+        let p = dir.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    }
+
+    /// A snapshot of `demo` at `commit` in the registry of the isolated config dir.
+    pub fn snapshot(registry: &Path, commit: &str, files: &[(&str, &str)]) {
+        let dir = crate::pack::cache::snapshot_dir_in(registry, URL, "demo", commit);
+        for (rel, text) in files {
+            put(&dir, rel, text);
+        }
+    }
+
+    /// The project: a `.git` folder, a pack reference, the lock at `C1` pinned, then the
+    /// committed lock moved to `C2` (what a `pack update` of another checkout does).
+    pub fn pinned_project() -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join(".git")).unwrap();
+        put(
+            root.path(),
+            ".armadai/project.yaml",
+            "pack: { name: demo, source: 'https://example.com/packs.git', version: latest }\n",
+        );
+        lock::write(root.path(), &lock_at("1.3.0", C1)).unwrap();
+        lock::pin(root.path()).unwrap();
+        std::fs::write(
+            root.path().join(lock::LOCK),
+            armadai_model::yaml::to_string(&lock_at("1.4.0", C2)).unwrap(),
+        )
+        .unwrap();
+        root
+    }
+
+    pub fn registry_of(config: &Path) -> PathBuf {
+        config.join("registry")
+    }
 }
 
 #[cfg(test)]
@@ -727,5 +765,85 @@ mod tests {
         )
         .unwrap();
         assert!(decide(&raw).is_none());
+    }
+
+    const POLICY: &str = "schema_version: 1\ncoordinator: lead\npolicy:\n  delegation: strict\n";
+    const LEAD: &str = "---\ndescription: d\n---\nB\n";
+
+    /// Pack 1.3.0 (`C1`) holds `review` with `qa`; 1.4.0 (`C2`) holds it with `rev`.
+    fn two_snapshots(registry: &Path) {
+        use pinned_fixture::*;
+        for (commit, holder) in [(C1, "qa"), (C2, "rev")] {
+            snapshot(
+                registry,
+                commit,
+                &[
+                    ("project.yaml", POLICY),
+                    ("agents/lead.md", LEAD),
+                    (&format!("agents/{holder}.md"), LEAD),
+                    (
+                        "flows/f.yaml",
+                        &format!("steps:\n  review: {{ agent: {holder} }}\nlinks: []\n"),
+                    ),
+                ],
+            );
+        }
+    }
+
+    #[test]
+    fn the_gate_decides_on_the_pinned_view() {
+        let iso = armadai_core::test_support::IsolatedConfigDir::enter();
+        two_snapshots(&pinned_fixture::registry_of(iso.config_dir()));
+        let root = pinned_fixture::pinned_project();
+        // pinned at 1.3.0: `qa` holds the step, `rev` does not exist
+        assert!(decide(&marked("", "qa", "[f/review]", root.path())).is_none());
+        assert!(decide(&marked("", "rev", "[f/review]", root.path())).is_some());
+        // unpinned, the committed lock (1.4.0) rules: the verdicts swap
+        crate::pack::lock::unpin(root.path()).unwrap();
+        assert!(decide(&marked("", "rev", "[f/review]", root.path())).is_none());
+        assert!(decide(&marked("", "qa", "[f/review]", root.path())).is_some());
+    }
+
+    #[test]
+    fn a_pinned_snapshot_missing_from_the_cache_is_denied_by_name() {
+        let iso = armadai_core::test_support::IsolatedConfigDir::enter();
+        // only the committed lock's snapshot (C2) is cached, not the pinned one (C1)
+        let registry = pinned_fixture::registry_of(iso.config_dir());
+        two_snapshots(&registry);
+        std::fs::remove_dir_all(crate::pack::cache::snapshot_dir_in(
+            &registry,
+            pinned_fixture::URL,
+            "demo",
+            pinned_fixture::C1,
+        ))
+        .unwrap();
+        let root = pinned_fixture::pinned_project();
+        let r = reason(decide(&marked("", "rev", "[f/review]", root.path())));
+        assert_eq!(
+            r,
+            "the project's pack cannot be read, so the delegation policy cannot be checked: pack demo 1.3.0 (111111111111) is not in the local cache: run `armadai pack sync`"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_pin_is_denied_by_name_by_the_gate() {
+        let iso = armadai_core::test_support::IsolatedConfigDir::enter();
+        two_snapshots(&pinned_fixture::registry_of(iso.config_dir()));
+        let root = pinned_fixture::pinned_project();
+        let pin = crate::pack::lock::pin_path(root.path()).unwrap();
+        std::fs::remove_file(&pin).unwrap();
+        std::os::unix::fs::symlink(root.path().join(crate::pack::lock::LOCK), &pin).unwrap();
+        let r = reason(decide(&marked("", "rev", "[f/review]", root.path())));
+        assert!(
+            r.starts_with(
+                "the project's pack cannot be read, so the delegation policy cannot be checked: "
+            ),
+            "{r}"
+        );
+        assert!(
+            r.ends_with("is a symbolic link; it is not read through"),
+            "{r}"
+        );
     }
 }

@@ -740,7 +740,9 @@ mod tests {
             );
         }
         let pack = root.find_subcommand("pack").expect("pack");
-        for cmd in ["sync", "status", "add", "update", "new", "test"] {
+        for cmd in [
+            "sync", "status", "add", "update", "pin", "unpin", "new", "test",
+        ] {
             let sub = pack
                 .find_subcommand(cmd)
                 .unwrap_or_else(|| panic!("`pack {cmd}` missing from `pack --help`"));
@@ -807,6 +809,11 @@ Variables: {{var.name}} in the native block of project.yaml and in agent, templa
             about("update"),
             "Move the pack to the best cached version of its range (or the one given), then link"
         );
+        assert_eq!(
+            about("pin"),
+            "Keep this checkout on the pack version it locks now, even when .armadai/pack.lock moves"
+        );
+        assert_eq!(about("unpin"), "Follow .armadai/pack.lock again");
         assert_eq!(
             about("new"),
             "Create a native pack: guided, minimal (--empty) or from this project (--from-project)"

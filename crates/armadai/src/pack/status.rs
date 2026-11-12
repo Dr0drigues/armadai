@@ -57,7 +57,11 @@ fn cached(registry: &Path, source: &str, pack: &str) -> Vec<Available> {
 /// from a folder or the embedded ones (they have no `versions.yaml`).
 pub fn newer(root: &Path, registry: &Path) -> Option<Newer> {
     if let Some(d) = declared(root) {
-        let lock = lock::read(root).ok()??;
+        // `pack update`, which this note advises, is refused under a pin
+        if lock::read_pin(root).map_or(true, |p| p.is_some()) {
+            return None;
+        }
+        let lock = lock::read_committed(root).ok()??;
         let range = resolve::parse_range(&d.version).ok()?;
         let all = cached(registry, &source::real_url(&d.source).ok()?, &d.name);
         let best = resolve::best(&range, &all)?;
@@ -104,11 +108,18 @@ pub fn id12(id: &str) -> &str {
     &id[..id.len().min(12)]
 }
 
+fn at_of(r: &lock::Resolved) -> String {
+    match &r.tag {
+        Some(t) => format!("tag {t}, {}", id12(&r.id())),
+        None => id12(&r.id()).to_string(),
+    }
+}
+
 /// M17: the text of `pack status`.
 pub fn report(root: &Path, registry: &Path, config: &Path) -> anyhow::Result<String> {
     let mut blocks = Vec::new();
     if let Some(d) = declared(root) {
-        let Some(lock) = lock::read(root)? else {
+        let Some(lock) = lock::read_committed(root)? else {
             return Err(anyhow!(super::effective::lock_missing(&d.name)));
         };
         let all = cached(registry, &source::real_url(&d.source)?, &d.name);
@@ -122,12 +133,21 @@ pub fn report(root: &Path, registry: &Path, config: &Path) -> anyhow::Result<Str
             (_, None) => "nothing (run `armadai pack sync`)".to_string(),
         };
         let r = &lock.resolved;
-        let at = match &r.tag {
-            Some(t) => format!("tag {t}, {}", id12(&r.id())),
-            None => id12(&r.id()).to_string(),
+        let at = at_of(r);
+        let pinned = match lock::read_pin(root)? {
+            None => String::new(),
+            Some(pin) => {
+                let r = &pin.resolved;
+                let at = at_of(r);
+                let gone = match super::effective::snapshot_path(root, &pin, registry) {
+                    Ok((dir, _)) if dir.is_dir() => "",
+                    _ => " (not in cache: run armadai pack sync)",
+                };
+                format!("  pinned (worktree): {} ({at}){gone}\n", r.version)
+            }
         };
         let mut b = format!(
-            "Pack {} (reference)\n  source:    {}\n  range:     {}\n  locked:    {} ({at})\n  in cache:  {in_cache}\n",
+            "Pack {} (reference)\n  source:    {}\n  range:     {}\n  locked:    {} ({at})\n{pinned}  in cache:  {in_cache}\n",
             d.name,
             source::recorded(&d.source),
             d.version,

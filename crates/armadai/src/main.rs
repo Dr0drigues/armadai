@@ -9,6 +9,7 @@ mod pack;
 mod process;
 mod skills_registry;
 mod starters_registry;
+mod worktree;
 
 use clap::Parser;
 

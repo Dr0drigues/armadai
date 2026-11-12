@@ -86,7 +86,7 @@ run `armadai pack sync`, or to change `pack.version`.
 archive source: its digest). The commit is what counts: `link` reads the snapshot of that commit
 and nothing else, so a tag that moves changes nothing. Only `pack update` advances the lock;
 `pack update <version>` must stay inside the range. `pack sync` never writes it: it warns when
-the tag now points elsewhere (`  warn: tag demo-v1.3.0 of pack demo now points to <new12>, .armadai/pack.lock says <old12>: the lock is kept (link uses its commit)`) or no longer exists. When the cache holds a
+the tag now points elsewhere (`  warn: tag demo-v1.3.0 of pack demo now points to <new12>, .armadai/pack.lock says <old12>: the lock is kept (link uses its commit)`) or no longer exists (under a [pin](#pinning-a-pack-per-checkout) the two warnings name the pin instead). When the cache holds a
 newer version than the lock, `pack sync`, `list`, `inspect` and `link` print
 
 ```
@@ -122,6 +122,37 @@ Other projects referencing pack demo (not changed; run `armadai pack update` in 
   /path/to/other-project
 ```
 
+## Pinning a pack per checkout
+
+`.armadai/pack.lock` is versioned, so a `pack update` committed in one checkout moves every other
+checkout of the repository on its next pull. A checkout that must stay on the version it has (a
+worktree holding a long piece of work, say) pins it:
+
+```
+$ armadai pack pin
+pinned pack demo 1.3.0 for this checkout; pack update is refused here until armadai pack unpin
+$ armadai pack unpin
+unpinned pack demo (was 1.3.0); this checkout follows .armadai/pack.lock (1.3.0) again
+```
+
+`pack pin` copies the committed lock to `<git dir>/armadai/pack.lock`: the git directory of this
+checkout (`.git/worktrees/<name>/` for a linked worktree, `.git/` for the main one). Git never
+lists that folder, so `git status` stays clean, it is not shared with another checkout, and
+`git worktree remove` deletes it with the worktree. From then on every command that reads the lock
+(`link`, `list`, `inspect`, `graph`, `validate`, `flow`, `pack test`, the policy
+gate and the `grant` hook) reads the pin instead, whatever `.armadai/pack.lock` says. The pin is
+never set by another command, and `pack unpin` removes only that file.
+
+- `pack update` and `pack add` are refused before any network access: `refused: this checkout pins pack demo 1.3.0 (armadai pack pin); run armadai pack unpin first`. A second `pack pin` says `this checkout already pins pack demo 1.3.0; run armadai pack unpin first`, and `pack unpin` without a pin `this checkout pins no pack`.
+- `pack status` adds a line under `locked:`, `  pinned (worktree): 1.3.0 (tag demo-v1.3.0, 0123456789ab)`, with the suffix ` (not in cache: run armadai pack sync)` when the snapshot is missing. `locked:` still shows `.armadai/pack.lock`. Without a pin the output does not change.
+- `pack sync` lays the snapshot of the pin, and the "newer version" note is not printed (its advice, `pack update`, is refused). Its tag warnings read `  warn: tag demo-v1.3.0 of pack demo now points to <new12>, the pack pin of this checkout says <old12>: the pin is kept (link uses its commit)` and `  warn: tag demo-v1.3.0 of pack demo no longer exists, the pack pin of this checkout keeps <old12>`.
+- A pin whose snapshot is not in the cache is refused like a lock is, naming the cure (`armadai pack sync`); a pin for another pack or source than `project.yaml` says so and names `armadai pack unpin`.
+- A pin that is a symbolic link (or sits in a symbolic link) is refused, not read through.
+- A worktree whose `.claude` or `.armadai` is a symbolic link leading out of the checkout (into another checkout already linked) is refused by `link` and `unlink` once it is pinned: see [Link](link.md#packs-and-variables). Give a pinned worktree its own `.claude/`.
+- Not concerned: a pack installed by copy (the files are in the checkout; `pack pin` says so). Limit: outside a git checkout there is nowhere to keep a pin, `pack pin` refuses with `pack pin needs a git checkout: the pin is kept in its git directory, and there is no .git above <root>`.
+
+- Limit: the pin is kept per git directory, so two `.armadai` projects in one git checkout (a monorepo, say) share the one `<git dir>/armadai/pack.lock`; `pack pin` in one of them is read by the other.
+
 ## Pack commands
 
 | Command | Does |
@@ -130,6 +161,8 @@ Other projects referencing pack demo (not changed; run `armadai pack update` in 
 | `armadai pack add <name>[@<range>] [--source <url>]` | Reference mode: see above |
 | `armadai pack status` | Locked and newest cached versions, and the projects referencing the pack (no network). In copy mode: the installed version and what is in the cache |
 | `armadai pack update [<version>]` | Reference: sync the source, move the lock to the best version of the range (or the one given), link. Copy: apply the new version of the pack to the files (below), link |
+| `armadai pack pin` | Keep this checkout on the pack version it locks now, even when `.armadai/pack.lock` moves (above) |
+| `armadai pack unpin` | Follow `.armadai/pack.lock` again |
 | `armadai pack new <name> [--empty \| --from-project] [--description …] [--dir …]` | Create a native pack folder |
 | `armadai pack test [<dir>]` | Run the scripts the pack lists under `tests:` (the project's locked snapshot, or a folder; no network access of its own) |
 

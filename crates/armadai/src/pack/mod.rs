@@ -304,6 +304,10 @@ pub fn update_in(
     let Some(d) = status::declared(root) else {
         return copy::update_in(root, registry, known, version, env);
     };
+    // before any network access
+    if let Some(pin) = lock::read_pin(root)? {
+        anyhow::bail!("{}", lock::pinned_refusal(&pin));
+    }
     let source = source_of(known, &source::real_url_in(&d.source, known)?);
     sync_or_stop(registry, &source)?;
     // The range comes first: an exact version outside it is refused cached or not.
@@ -322,7 +326,7 @@ pub fn update_in(
     }
     cache::ensure_snapshot_in(registry, &source, &d.name, &path, &best)?;
     let new = lock_of(&d.name, &d.source, &best);
-    let old = lock::read(root)?;
+    let old = lock::read_committed(root)?;
     let id12 = status::id12(&best.id()).to_string();
     if old.as_ref().is_some_and(|l| {
         l.pack == new.pack && l.source == new.source && l.resolved.id() == best.id()
@@ -419,6 +423,10 @@ pub fn add_in(
         valid_name(name),
         "pack {name} has an invalid name or version id: {name}"
     );
+    // before any network access, as in `update_in`
+    if let Some(pin) = lock::read_pin(root)? {
+        bail!("{}", lock::pinned_refusal(&pin));
+    }
     let file = root.join(".armadai/project.yaml");
     let text = match std::fs::read_to_string(&file) {
         Ok(t) => Some(t),

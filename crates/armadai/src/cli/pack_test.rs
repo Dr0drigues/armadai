@@ -613,6 +613,7 @@ mod tests {
 
     const URL: &str = "https://example.com/packs.git";
     const C1: &str = "1111111111111111111111111111111111111111";
+    const C2: &str = "2222222222222222222222222222222222222222";
 
     fn project(reference: bool, lock: bool) -> tempfile::TempDir {
         let root = tempfile::tempdir().unwrap();
@@ -650,6 +651,26 @@ mod tests {
             (dir, name.as_str(), version.as_str()),
             (snap, "demo", "1.4.0")
         );
+    }
+
+    #[test]
+    fn a_pinned_checkout_tests_the_pinned_snapshot() {
+        let registry = tempfile::tempdir().unwrap();
+        let root = project(true, true);
+        std::fs::create_dir_all(root.path().join(".git")).unwrap();
+        crate::pack::lock::pin(root.path()).unwrap();
+        // the committed lock moves on to 1.5.0
+        put(
+            root.path(),
+            ".armadai/pack.lock",
+            &format!(
+                "format: 1\npack: demo\nsource: '{URL}'\nresolved:\n  version: 1.5.0\n  commit: {C2}\n"
+            ),
+        );
+        let snap = crate::pack::cache::snapshot_dir_in(registry.path(), URL, "demo", C1);
+        put(&snap, "pack.yaml", "name: demo\ndescription: d\n");
+        let (dir, _, version) = locked_snapshot_of(root.path(), registry.path()).unwrap();
+        assert_eq!((dir, version.as_str()), (snap, "1.4.0"));
     }
 
     #[test]

@@ -124,6 +124,14 @@ pub(crate) fn snapshot_path(
     if let Some((name, source)) = pack_ref(root)
         && (name != lock.pack || source != lock.source)
     {
+        if lock::read_pin(root)?.as_ref() == Some(lock) {
+            bail!(
+                "the pack pin of this checkout is for pack {} from {}, but .armadai/project.yaml \
+                 references {name} from {source}: run armadai pack unpin",
+                lock.pack,
+                lock.source
+            );
+        }
         bail!(
             ".armadai/pack.lock is for pack {} from {}, but .armadai/project.yaml references {name} \
              from {source}: run `armadai pack update`",
@@ -437,6 +445,57 @@ mod tests {
         let e = open_in(root.path(), Vars::Resolve(&none), root.path()).unwrap();
         assert_eq!(e.sources, root.path());
         assert!(e._scratch.is_none());
+    }
+
+    #[test]
+    fn a_pinned_checkout_reads_the_pinned_snapshot_while_the_lock_moves() {
+        let fx = Fx::new();
+        std::fs::create_dir_all(fx.root.path().join(".git")).unwrap();
+        fx.snapshot(
+            C1,
+            &[("project.yaml", MANIFEST), ("agents/one.md", AGENT_A)],
+        );
+        fx.snapshot(
+            C2,
+            &[("project.yaml", MANIFEST), ("agents/two.md", AGENT_A)],
+        );
+        lock::pin(fx.root.path()).unwrap();
+        // what a `pack update` of another checkout does to the committed lock
+        std::fs::write(
+            fx.root.path().join(lock::LOCK),
+            armadai_model::yaml::to_string(&lock(C2)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(agents(&fx.open(Vars::Literal).unwrap()), ["one"]);
+        lock::unpin(fx.root.path()).unwrap();
+        assert_eq!(agents(&fx.open(Vars::Literal).unwrap()), ["two"]);
+    }
+
+    #[test]
+    fn a_pin_for_another_pack_names_the_pin_and_a_missing_snapshot_the_cache() {
+        let fx = Fx::new();
+        std::fs::create_dir_all(fx.root.path().join(".git")).unwrap();
+        lock::pin(fx.root.path()).unwrap();
+        // the pinned snapshot is not in the cache
+        assert_eq!(
+            fx.err(),
+            "pack demo 1.0.0 (111111111111) is not in the local cache: run `armadai pack sync`"
+        );
+        put(
+            fx.root.path(),
+            ".armadai/project.yaml",
+            "pack: { name: other, source: 'https://example.com/more.git', version: latest }\n",
+        );
+        assert_eq!(
+            fx.err(),
+            "the pack pin of this checkout is for pack demo from https://example.com/packs.git, but .armadai/project.yaml references other from https://example.com/more.git: run armadai pack unpin"
+        );
+        // without the pin the committed lock is the one named
+        lock::unpin(fx.root.path()).unwrap();
+        assert_eq!(
+            fx.err(),
+            ".armadai/pack.lock is for pack demo from https://example.com/packs.git, but .armadai/project.yaml references other from https://example.com/more.git: run `armadai pack update`"
+        );
     }
 
     #[test]

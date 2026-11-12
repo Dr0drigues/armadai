@@ -13,6 +13,8 @@ pub fn execute(
     agents_filter: Option<Vec<String>>,
 ) -> anyhow::Result<()> {
     let root = compile::find_project(&std::env::current_dir()?)?;
+    // before anything is deleted: a pinned checkout must not delete through a link out
+    crate::cli::link::check_outgoing_links(&root, "unlink", false)?;
     // targets and outputs only: a project that no longer validates can still be unlinked
     let project = match crate::pack::effective::open(&root, crate::pack::effective::Vars::Literal) {
         Ok(view) => view.load_project().project,

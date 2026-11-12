@@ -1,3 +1,13 @@
+## Unreleased
+
+### Added
+
+- `armadai pack pin` and `armadai pack unpin`: a checkout (a git worktree, typically) keeps the pack version it locks now, in `<git dir>/armadai/pack.lock`, while `.armadai/pack.lock` moves on. Every command that reads the lock, the policy gate and the `grant` hook read the pin; `pack update` and `pack add` are refused under it before any network access; `pack status` adds a `pinned (worktree):` line; `pack sync` names the pin in its tag warnings and prints no update note. Under a pin, `link` and `unlink` refuse a `.claude` or `.armadai` that is a symbolic link leading out of the checkout; without a pin `link` notes a leaving `.armadai`. Nothing changes for a checkout that never pins. See [Starter packs](docs/wiki/starter-packs.md#pinning-a-pack-per-checkout).
+
+### Fixed
+
+- Inside a git submodule the delegation gate no longer falls back to the superproject's `.armadai/`: a submodule is not a linked worktree.
+
 ## v1.0.0-rc.12 (2026-11-12)
 
 Twelfth release candidate, a fix release. A lot, the name after the `#` in a delegation marker (`[flow/step#lot]`), is now a free name of 1 to 40 ASCII letters, digits, `.` or `-`, so `Y2` and `v1.8.0` are accepted; `Y2` and `y2` are two distinct lots. Coming from rc.11, run `armadai link --target claude` again to get the new sentence of the `### Marking delegations` block in the root `CLAUDE.md`.
