@@ -59,6 +59,12 @@ Légende : **V** = relu au code par l'architecte ou par `Explore` (fichier:ligne
 
 G4 dit de passer par `git rev-parse`. Le plan lit le fichier `.git` à la main, comme le gate (`policy_gate.rs:79-81` : « must stay cheap »), parce que `effective::open` tourne à chaque délégation. La mesure K.0 compare la lecture à la main à `git rev-parse --absolute-git-dir` sur chaque forme de checkout.
 
+**Sous-agents, `disallowedTools`** : lue par le guardian de J.3 le **2026-11-12**, `https://code.claude.com/docs/en/sub-agents.md`, champ `disallowedTools`.
+
+| # | Phrase exacte |
+|---|---|
+| S1 | « An entry with a specifier, such as `Bash(git push *)`, still removes the whole tool » |
+
 ## 3. Diagrammes
 
 ### 3.1 Quel lock lit une commande (PR 1)
@@ -400,11 +406,11 @@ Décision de Dimitri (2026-11-12, mot pour mot), sur T1 à T20 : « Validés, aj
 
   Before you judge, read `armadai journal show --lot <lot> --last 20`, where <lot> is the lot your brief names; check a premise about another lot with `--lot <other>`, not from memory.
   ```
-  **T16w**, en plus pour `write` : `Record a decision you take: armadai journal add --lot <lot> --kind decision --by ‹id› "<one line>".`
+  **T16w**, en plus pour `write` : `Record a decision you take: `armadai journal add --lot <lot> --kind decision --by ‹id› "<one line>"`.` (commande entre backticks, comme T15 ; retouche proposée par le guardian de J.3, à signaler à Dimitri dans la PR)
 - **T17a, rapport** `journal` (`compiled`) : `instructions in CLAUDE.md (armadai journal)` ; **T17b** `agent ‹id› journal` (`compiled`) : `instructions in .claude/agents/‹id›.md`. Autres cibles : `not-compiled`, `Claude Code only`.
-- **T17c, agent sans Bash** (rapport Claude, remplace T17b pour cet agent) : `agent ‹id› journal` (`approximated`) : `native tools exclude Bash: the agent cannot run armadai journal`. Cas couverts, dans `claude.rs` : un `native.claude.tools` en liste blanche sans `Bash` (`Bash(...)` compte comme `Bash`), un `native.claude.disallowedTools` qui nomme `Bash`.
+- **T17c, agent sans Bash** (rapport Claude, remplace T17b pour cet agent) : `agent ‹id› journal` (`approximated`) : `native tools exclude Bash: the agent cannot run armadai journal`. Cas couverts, dans `claude.rs` : un `native.claude.tools` en liste blanche sans `Bash` (`Bash(...)` compte comme `Bash`), un `native.claude.disallowedTools` qui nomme `Bash`, avec ou sans spécificateur (`Bash(git push *)` retire tout l'outil, S1, §2).
 - **T17d, `sessions.journal` sans coordinateur** (rapport Claude) : `journal` (`not-compiled`) : `no coordinator: nothing to carry the instructions`.
-- **Coordinateur qui porte `journal:`** : la section T15 entre dans `CLAUDE.md` avec `--by` = son id, même sans `sessions.journal` (aucun texte nouveau).
+- **Coordinateur qui porte `journal:`** : la section T15 entre dans `CLAUDE.md` avec `--by` = son id, même sans `sessions.journal`, et la ligne T17a est aussi émise pour que la section ne soit pas silencieuse (aucun texte nouveau).
   Décision de Dimitri (2026-11-12, mot pour mot) : agent sans Bash, « Ligne approximated (Recommandé) » ; les deux cas limites (coordinateur qui porte `journal:`, `sessions.journal` sans coordinateur), « Traiter les deux (Recommandé) ». Textes T17c et T17d validés tels quels.
 
 **PR 2, lien**
