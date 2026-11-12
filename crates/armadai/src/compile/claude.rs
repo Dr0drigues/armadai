@@ -577,7 +577,7 @@ fn sessions_section(project: &Project) -> String {
         }
         let (to, when) = (&link.to, one_line(&link.when));
         let record = if project.manifest.sessions.journal {
-            "; record its answer with `armadai journal add --kind decision`"
+            "; record its answer with `armadai journal add --lot <lot> --kind decision \"<one line>\"`"
         } else {
             ""
         };
@@ -1887,7 +1887,7 @@ mod tests {
             linked_team(b"schema_version: 1\ncoordinator: lead\nsessions:\n  journal: true\n");
         let block = &plan.blocks[0].1;
         let section = format!(
-            "\n### Sessions\n\n{PARA_EVO}; record its answer with `armadai journal add --kind decision`{PARA_TAIL_A}"
+            "\n### Sessions\n\n{PARA_EVO}; record its answer with `armadai journal add --lot <lot> --kind decision \"<one line>\"`{PARA_TAIL_A}"
         );
         assert!(
             block.ends_with(&format!("{T15}{section}{MARKING}\n")),
