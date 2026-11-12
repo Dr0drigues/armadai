@@ -245,6 +245,71 @@ fn deny(reason: String) -> String {
     .to_string()
 }
 
+/// A project referencing pack `demo`, committed lock at `C2`, pinned at `C1`; the cache
+/// holds a snapshot of each (`one`/`two` are the policy bodies, `qa`/`rev` the agent
+/// holding the step). Returns the project and the registry directory.
+#[cfg(test)]
+pub(crate) mod pinned_fixture {
+    use crate::pack::lock::{self, PackLock, Resolved};
+    use std::path::{Path, PathBuf};
+
+    pub const URL: &str = "https://example.com/packs.git";
+    pub const C1: &str = "1111111111111111111111111111111111111111";
+    pub const C2: &str = "2222222222222222222222222222222222222222";
+
+    pub fn lock_at(commit: &str) -> PackLock {
+        PackLock {
+            format: 1,
+            pack: "demo".into(),
+            source: URL.into(),
+            resolved: Resolved {
+                version: "1.0.0".into(),
+                tag: None,
+                commit: Some(commit.into()),
+                digest: None,
+            },
+        }
+    }
+
+    pub fn put(dir: &Path, rel: &str, text: &str) {
+        let p = dir.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    }
+
+    /// A snapshot of `demo` at `commit` in the registry of the isolated config dir.
+    pub fn snapshot(registry: &Path, commit: &str, files: &[(&str, &str)]) {
+        let dir = crate::pack::cache::snapshot_dir_in(registry, URL, "demo", commit);
+        for (rel, text) in files {
+            put(&dir, rel, text);
+        }
+    }
+
+    /// The project: a `.git` folder, a pack reference, the lock at `C1` pinned, then the
+    /// committed lock moved to `C2` (what a `pack update` of another checkout does).
+    pub fn pinned_project() -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join(".git")).unwrap();
+        put(
+            root.path(),
+            ".armadai/project.yaml",
+            "pack: { name: demo, source: 'https://example.com/packs.git', version: latest }\n",
+        );
+        lock::write(root.path(), &lock_at(C1)).unwrap();
+        lock::pin(root.path()).unwrap();
+        std::fs::write(
+            root.path().join(lock::LOCK),
+            armadai_model::yaml::to_string(&lock_at(C2)).unwrap(),
+        )
+        .unwrap();
+        root
+    }
+
+    pub fn registry_of(config: &Path) -> PathBuf {
+        config.join("registry")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -701,5 +766,61 @@ mod tests {
         )
         .unwrap();
         assert!(decide(&raw).is_none());
+    }
+
+    const POLICY: &str = "schema_version: 1\ncoordinator: lead\npolicy:\n  delegation: strict\n";
+    const LEAD: &str = "---\ndescription: d\n---\nB\n";
+
+    /// Pack 1.3.0 (`C1`) holds `review` with `qa`; 1.4.0 (`C2`) holds it with `rev`.
+    fn two_snapshots(registry: &Path) {
+        use pinned_fixture::*;
+        for (commit, holder) in [(C1, "qa"), (C2, "rev")] {
+            snapshot(
+                registry,
+                commit,
+                &[
+                    ("project.yaml", POLICY),
+                    ("agents/lead.md", LEAD),
+                    (&format!("agents/{holder}.md"), LEAD),
+                    (
+                        "flows/f.yaml",
+                        &format!("steps:\n  review: {{ agent: {holder} }}\nlinks: []\n"),
+                    ),
+                ],
+            );
+        }
+    }
+
+    #[test]
+    fn the_gate_decides_on_the_pinned_view() {
+        let iso = armadai_core::test_support::IsolatedConfigDir::enter();
+        two_snapshots(&pinned_fixture::registry_of(iso.config_dir()));
+        let root = pinned_fixture::pinned_project();
+        // pinned at 1.3.0: `qa` holds the step, `rev` does not exist
+        assert!(decide(&marked("", "qa", "[f/review]", root.path())).is_none());
+        assert!(decide(&marked("", "rev", "[f/review]", root.path())).is_some());
+        // unpinned, the committed lock (1.4.0) rules: the verdicts swap
+        crate::pack::lock::unpin(root.path()).unwrap();
+        assert!(decide(&marked("", "rev", "[f/review]", root.path())).is_none());
+        assert!(decide(&marked("", "qa", "[f/review]", root.path())).is_some());
+    }
+
+    #[test]
+    fn a_pinned_snapshot_missing_from_the_cache_is_denied_by_name() {
+        let iso = armadai_core::test_support::IsolatedConfigDir::enter();
+        // only the committed lock's snapshot (C2) is cached, not the pinned one (C1)
+        let registry = pinned_fixture::registry_of(iso.config_dir());
+        two_snapshots(&registry);
+        std::fs::remove_dir_all(crate::pack::cache::snapshot_dir_in(
+            &registry,
+            pinned_fixture::URL,
+            "demo",
+            pinned_fixture::C1,
+        ))
+        .unwrap();
+        let root = pinned_fixture::pinned_project();
+        let r = reason(decide(&marked("", "rev", "[f/review]", root.path())));
+        assert!(r.contains("run `armadai pack sync`"), "{r}");
+        assert!(r.contains("1111111111"), "{r}");
     }
 }

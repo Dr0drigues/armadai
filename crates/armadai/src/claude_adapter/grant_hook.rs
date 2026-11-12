@@ -826,4 +826,50 @@ mod tests {
             at("2026-01-01T00:00:00Z")
         ));
     }
+
+    fn grants_pack(registry: &Path) {
+        use crate::claude_adapter::policy_gate::pinned_fixture::*;
+        for (commit, rule) in [(C1, "Bash(echo *)"), (C2, "Bash(ls *)")] {
+            snapshot(
+                registry,
+                commit,
+                &[(
+                    "project.yaml",
+                    &format!(
+                        "schema_version: 1\npolicy:\n  grants:\n    ops:\n      description: d\n      allow: [\"{rule}\"]\n"
+                    ),
+                )],
+            );
+        }
+    }
+
+    fn cwd_payload(root: &Path) -> String {
+        serde_json::json!({ "cwd": root.to_string_lossy() }).to_string()
+    }
+
+    #[test]
+    fn the_grant_hook_reads_the_rules_of_the_pinned_pack() {
+        use crate::claude_adapter::policy_gate::pinned_fixture::*;
+        let iso = armadai_core::test_support::IsolatedConfigDir::enter();
+        grants_pack(&registry_of(iso.config_dir()));
+        let root = pinned_project();
+        let (_, rules) = project_rules(&cwd_payload(root.path()), "ops").unwrap();
+        assert_eq!(rules, ["Bash(echo *)"]);
+        crate::pack::lock::unpin(root.path()).unwrap();
+        let (_, rules) = project_rules(&cwd_payload(root.path()), "ops").unwrap();
+        assert_eq!(rules, ["Bash(ls *)"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_pin_gives_the_grant_hook_no_opinion() {
+        use crate::claude_adapter::policy_gate::pinned_fixture::*;
+        let iso = armadai_core::test_support::IsolatedConfigDir::enter();
+        grants_pack(&registry_of(iso.config_dir()));
+        let root = pinned_project();
+        let pin = crate::pack::lock::pin_path(root.path()).unwrap();
+        std::fs::remove_file(&pin).unwrap();
+        std::os::unix::fs::symlink(root.path().join(crate::pack::lock::LOCK), &pin).unwrap();
+        assert!(project_rules(&cwd_payload(root.path()), "ops").is_none());
+    }
 }
