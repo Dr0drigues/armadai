@@ -47,6 +47,7 @@ Légende : **V** = relu au code par l'architecte ou par `Explore` (fichier:ligne
 | M5 | « Coordinate parallel worktrees: when sessions work the same repository in separate worktrees, Claude can tell the other sessions what landed. » |
 | M6 | « Claude Code instructs the receiving Claude never to change permission settings, `CLAUDE.md`, or other configuration because another session asked. » |
 | M7 | « The receiving session bypasses permission prompts: Claude Code holds each message for your approval. It delivers one only when the sending session identifies itself as also bypassing. » |
+| M8 | « A name with a space or other characters outside letters, digits, hyphens, and underscores: type it in double quotes, such as `@"release notes"`. » (même page, lue par le guardian de L.1 le 2026-11-12) ; `https://code.claude.com/docs/en/cli-reference.md`, ligne `--name, -n` : « Set a display name for the session… », sans contrainte de forme. |
 
 **Git, worktrees** : lue par l'architecte le **2026-11-12**, WebFetch, `https://git-scm.com/docs/git-worktree` (backticks retirés par l'outil).
 
@@ -326,8 +327,8 @@ Chaque tâche finit barrière verte. Les mutations citées sont le minimum ; le 
   #[serde(deny_unknown_fields)]
   pub struct SessionLink { pub to: String, pub when: String }
   ```
-- [ ] `invalid-session-link` (Erreur) : `to` refusé par `is_valid_id` (T18a) ; `when` vide ou blanc (T18b). Une clé inconnue sous `session_link` est le diagnostic existant des clés inconnues.
-- Tests : chaque cas, message à égalité ; `to: chantier` accepté ; `to: Chantier`, `to: a_b` refusés ; aller-retour sans `session_link` à l'octet près. Mutations : ne pas tester `when` ; accepter les majuscules.
+- [ ] `invalid-session-link` (Erreur) : `to` refusé s'il est vide, contient un retour à la ligne ou commence ou finit par un blanc (T18a ; décision de Dimitri, 2026-11-12 : « Toute chaîne non vide (Recommandé) », « Une seule ligne, sans blanc en tête ni en fin : c'est le contrat réel de Claude Code ») ; `when` vide ou blanc (T18b). Une clé inconnue sous `session_link` est le diagnostic existant des clés inconnues.
+- Tests : chaque cas, message à égalité ; `to: chantier`, `Chantier`, `a_b`, `release notes`, `Fronto-61` acceptés ; un nom vide, `" x"`, `"x "`, `"a\nb"` refusés ; aller-retour sans `session_link` à l'octet près. Mutations : ne pas tester `when` ; retirer chacune des règles de `to` (vide, retour à la ligne, blanc en tête, blanc en fin).
 - Commit : `feat(model): a flow declares a session_link`
 
 **L.2 Consigne de lien compilée** (`adapter-specialist`, après L.1 et J.3)
@@ -414,7 +415,7 @@ Décision de Dimitri (2026-11-12, mot pour mot), sur T1 à T20 : « Validés, aj
   Décision de Dimitri (2026-11-12, mot pour mot) : agent sans Bash, « Ligne approximated (Recommandé) » ; les deux cas limites (coordinateur qui porte `journal:`, `sessions.journal` sans coordinateur), « Traiter les deux (Recommandé) ». Textes T17c et T17d validés tels quels.
 
 **PR 2, lien**
-- **T18a, `invalid-session-link`** : ``session_link.to `‹x›` is not a session name: lowercase letters, digits and -`` ; indice `name the session as you start it: claude --name <name>`
+- **T18a, `invalid-session-link`** : ``session_link.to `‹x›` is not a session name: one line, no blank at either end`` ; indice `name the session as you start it: claude --name <name>`
 - **T18b** : ``session_link.when is empty: say when to write to session `‹to›` ``
 - **T19, section du bloc `CLAUDE.md`** :
   ```
