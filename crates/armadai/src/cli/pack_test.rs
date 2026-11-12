@@ -133,29 +133,21 @@ fn run_one(
         })
     })
     .collect();
-    let exited = loop {
-        if crate::claude_adapter::statusline_chain::exited(&mut child) {
-            break true;
-        }
-        if start.elapsed() >= limit {
-            break false;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    };
-    // the whole group, also after a normal end: no grandchild outlives its test; the
-    // leader is not reaped yet, so its pid still names the group
-    crate::claude_adapter::statusline_chain::kill_group(&mut child);
-    let waited = child.wait();
-    let status = if exited { waited.ok() } else { None };
+    // the whole group, also after a normal end: no grandchild outlives its test
+    let finished = crate::claude_adapter::statusline_chain::finish(&mut child, limit, true);
     let output: Vec<u8> = readers
         .into_iter()
         .flat_map(|r| r.join().unwrap_or_default())
         .collect();
     let took = start.elapsed();
-    let verdict = match status {
-        None => Verdict::TimedOut,
-        Some(s) if s.success() => Verdict::Ok,
-        Some(s) => Verdict::Failed(s.code(), String::from_utf8_lossy(&output).into_owned()),
+    use crate::claude_adapter::statusline_chain::Finish;
+    let verdict = match finished {
+        Finish::TimedOut => Verdict::TimedOut,
+        Finish::Lost => Verdict::Failed(None, "the exit status of the test was lost".to_string()),
+        Finish::Exited(s) if s.success() => Verdict::Ok,
+        Finish::Exited(s) => {
+            Verdict::Failed(s.code(), String::from_utf8_lossy(&output).into_owned())
+        }
     };
     Ok(TestRun {
         path: test.to_string(),
