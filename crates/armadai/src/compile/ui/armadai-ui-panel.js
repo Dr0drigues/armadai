@@ -34,6 +34,9 @@ const BAND_SIGN = { done: '✓', running: '■', pending: '□', skipped: '⤼',
 // Too long: the steps before the first one not done are folded into one `…`, then the
 // end is cut with `…`. Claude Code wraps a longer line (and draws its `[-]` after the
 // first row), so the band keeps itself narrower than `columns`.
+// shortcut: the width is counted in UTF-16 units, not terminal cells, so a wide or
+// ambiguous-width glyph (CJK in a step name, some emoji) can make a line wrap; improve
+// it with a cell-width table when a flow names steps outside the Latin alphabet.
 function bandText(run, columns) {
   const head = run.flow + (run.lot ? ' #' + run.lot : '')
   const steps = run.steps.filter(s => BAND_SIGN[s.mark]).map(s => BAND_SIGN[s.mark] + ' ' + s.step)
@@ -106,7 +109,11 @@ async function status($, root) {
       runs: [],
     }
   }
-  return { message: null, runs: json.runs }
+  // right schema, wrong shape (no `runs`, a run without `steps`): read as nothing to draw
+  const runs = (Array.isArray(json.runs) ? json.runs : [])
+    .filter(run => run && typeof run === 'object')
+    .map(run => ({ ...run, steps: Array.isArray(run.steps) ? run.steps : [] }))
+  return { message: null, runs }
 }
 
 // True while a refresh runs, so a slow `armadai` is not launched again every 2 seconds.

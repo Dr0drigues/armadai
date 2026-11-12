@@ -36,27 +36,29 @@ const BAND = (columns: number) =>
   }) as const
 
 const MARK_SIGN: any = { done: '✓', running: '●', pending: '○', skipped: '⤼', coordinator: '~' }
-// a run in progress; `steps` are [name, mark]
-const BAND_STATUS = (steps: [string, string][], status = 'in-progress', lot: string | null = 'menu') => async () => ({
+// a run; `steps` are [name, mark]
+const runOf = (flow: string, status: string, steps: [string, string][], lot: string | null = 'menu') => ({
+  flow,
+  lot,
+  status,
+  steps: steps.map(([step, mark]) => ({ step, mark, sign: MARK_SIGN[mark], state: null, note: null })),
+  loops: [],
+  transitions: [],
+})
+// what `armadai flow status --json` answers: these runs, under the right schema
+const STATUS_OF = (runs: any[]) => async () => ({
   value: {
     exitCode: 0,
     stderr: '',
     stdout: JSON.stringify({
       schema: 'armadai.flow-status/1',
       session: { id: 's1', started_at: null, last_event_at: null },
-      runs: [
-        {
-          flow: 'deliver',
-          lot,
-          status,
-          steps: steps.map(([step, mark]) => ({ step, mark, sign: MARK_SIGN[mark], state: null, note: null })),
-          loops: [],
-          transitions: [],
-        },
-      ],
+      runs,
     }),
   },
 })
+const BAND_STATUS = (steps: [string, string][], status = 'in-progress', lot: string | null = 'menu') =>
+  STATUS_OF([runOf('deliver', status, steps, lot)])
 const FIVE: [string, string][] = [
   ['frame', 'coordinator'],
   ['design', 'done'],
@@ -136,8 +138,9 @@ async function start(
   return await $.ui.mount(PANE)
 }
 
-// the band alone (`ui.flow_band` without `ui.panel`), drawn at `columns`
-async function band($: any, on: any, steps: [string, string][], columns: number, panelJson: any, status = 'in-progress') {
+// the band alone (`ui.flow_band` without `ui.panel`), drawn at `columns`, over what `status`
+// answers to `armadai flow status --json`
+async function bandOver($: any, on: any, status: any, columns: number, panelJson: any) {
   const opened: string[] = []
   const clock = mock.clock(on)
   on('command.register', () => ({ value: undefined }))
@@ -148,13 +151,17 @@ async function band($: any, on: any, steps: [string, string][], columns: number,
   })
   on('ui.render', () => ({ type: 'Text', props: {}, children: ['drawn by Claude Code'] }))
   on('session.start', (_: any, e: any) => ({ cwd: e.cwd }))
-  on('process.run', BAND_STATUS(steps, status))
+  on('process.run', status)
   on('fs.read', () => ({ value: JSON.stringify(panelJson) }))
   on('fs.list', () => ({ value: [] }))
   on('session.usage', () => ({ value: { startedAt: SINCE, context: {}, rateLimits: [], cost: {} } }))
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/p' })
   await clock.advance(10)
   return { ui: await $.ui.mount(BAND(columns)), opened }
+}
+
+async function band($: any, on: any, steps: [string, string][], columns: number, panelJson: any, status = 'in-progress', lot: string | null = 'menu') {
+  return bandOver($, on, BAND_STATUS(steps, status, lot), columns, panelJson)
 }
 
 test('a run is listed with its steps and the documents of ui.documents, newest first', async ($, on) => {
@@ -292,5 +299,65 @@ test('the panel shows a skipped step with its glyph', async ($, on) => {
   const opened: string[] = []
   const ui = await start($, on, 'armadai.flow-status/1', ['docs'], BAND_STATUS(FIVE), false, undefined, opened)
   expect(await ui.find({ type: 'Text', text: '⤼ test' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a run without a lot has no #lot in the band', async ($, on) => {
+  const { ui } = await band($, on, FIVE, 100, { band: true, pane: false }, 'in-progress', null)
+  expect(await ui.find({ type: 'Text', text: 'deliver  ✓ design  ✓ build  ■ guard  □ validate  ⤼ test' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /#/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('the band shows the latest run in progress, not an earlier one or a finished one after it', async ($, on) => {
+  const { ui } = await bandOver(
+    $,
+    on,
+    STATUS_OF([
+      runOf('deliver', 'in-progress', FIVE, 'one'),
+      runOf('ship', 'in-progress', [['plan', 'done'], ['build', 'running']], 'two'),
+      runOf('review', 'finished', [['check', 'done']], 'three'),
+    ]),
+    100,
+    { band: true, pane: false },
+  )
+  expect(await ui.find({ type: 'Text', text: 'ship #two  ✓ plan  ■ build' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /deliver|review/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+// a JSON of the right schema but of the wrong shape is read as nothing to draw
+const BAD_SHAPES: [string, any][] = [
+  ['no runs', async () => ({ value: { exitCode: 0, stderr: '', stdout: '{"schema":"armadai.flow-status/1"}' } })],
+  ['runs that is not a list', async () => ({ value: { exitCode: 0, stderr: '', stdout: '{"schema":"armadai.flow-status/1","runs":3}' } })],
+  ['a run that is null', async () => ({ value: { exitCode: 0, stderr: '', stdout: '{"schema":"armadai.flow-status/1","runs":[null]}' } })],
+]
+for (const [name, status] of BAD_SHAPES) {
+  test(`${name}: the band draws nothing`, async ($, on) => {
+    const { ui } = await bandOver($, on, status, 100, { band: true })
+    expect(await ui.find({ type: 'Text', text: 'drawn by Claude Code' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /deliver/ })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test(`${name}: the panel says there is no run, not an error`, async ($, on) => {
+    const ui = await start($, on, 'armadai.flow-status/1', ['docs'], status)
+    expect(await ui.find({ type: 'Text', text: 'No run of a declared flow in this session yet.' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /failed/ })).toBeUndefined()
+    await ui.unmount()
+  })
+}
+
+test('a run without steps is drawn with its name alone in the band', async ($, on) => {
+  const status = STATUS_OF([{ flow: 'deliver', lot: 'menu', status: 'in-progress' }])
+  const { ui } = await bandOver($, on, status, 100, { band: true })
+  expect(await ui.find({ type: 'Text', text: 'deliver #menu' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('the panel shows a run without steps as its name alone', async ($, on) => {
+  const status = STATUS_OF([{ flow: 'deliver', lot: 'menu', status: 'in-progress' }])
+  const ui = await start($, on, 'armadai.flow-status/1', ['docs'], status)
+  expect(await ui.find({ type: 'Text', text: 'deliver (in-progress)' })).toBeDefined()
   await ui.unmount()
 })
