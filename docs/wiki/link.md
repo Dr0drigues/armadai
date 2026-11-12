@@ -216,6 +216,12 @@ agent.
 zone skips (the spring change) is refused (`02:30 does not exist in your time zone`); a time it
 has twice (the autumn change) is the first one.
 
+**A worktree linked to a checkout.** When a pinned worktree's `.armadai` is a symbolic link to
+another checkout (see [Starter packs](starter-packs.md#pinning-a-pack-per-checkout)), `grant` and
+`revoke` write `.armadai/state/grants.yaml` of that other checkout, so the level is switched on
+for its session too, not only for the worktree's. `link` and `unlink` refuse in that setting;
+`grant` and `revoke` do not.
+
 ## OpenCode
 
 Target: OpenCode 2.x only (checked against [the agents page](https://opencode.ai/docs/agents/),

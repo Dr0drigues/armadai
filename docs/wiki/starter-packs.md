@@ -151,6 +151,8 @@ never set by another command, and `pack unpin` removes only that file.
 - A worktree whose `.claude` or `.armadai` is a symbolic link leading out of the checkout (into another checkout already linked) is refused by `link` and `unlink` once it is pinned: see [Link](link.md#packs-and-variables). Give a pinned worktree its own `.claude/`.
 - Not concerned: a pack installed by copy (the files are in the checkout; `pack pin` says so). Limit: outside a git checkout there is nowhere to keep a pin, `pack pin` refuses with `pack pin needs a git checkout: the pin is kept in its git directory, and there is no .git above <root>`.
 
+- Limit: the pin is kept per git directory, so two `.armadai` projects in one git checkout (a monorepo, say) share the one `<git dir>/armadai/pack.lock`; `pack pin` in one of them is read by the other.
+
 ## Pack commands
 
 | Command | Does |
