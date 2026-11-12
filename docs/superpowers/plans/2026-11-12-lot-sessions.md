@@ -290,7 +290,7 @@ Chaque tâche finit barrière verte. Les mutations citées sont le minimum ; le 
 - [ ] `by` : 1 à 64 caractères parmi lettres ASCII, chiffres, `._-` (T11e) ; absent sans `--by`.
 - [ ] Texte : non vide, sans `\n` ni `\r` (T11c), au plus `MAX_TEXT` caractères (T11b) ; ligne sérialisée au plus `MAX_LINE` octets (T11d).
 - [ ] Écriture : refus si `state/` ou le fichier est un lien symbolique (T11f), même motif que `flow_status/record.rs:280-289` ; `create_dir_all`, puis `OpenOptions::new().create(true).append(true)` et **un seul** `write_all` de la ligne complète, `\n` compris (`record.rs:290-297`). Aucune édition, aucune suppression.
-- [ ] Lecture : `--lot X` lit `file_name(Some(X))` (filtre `lot == X` à la casse exacte) et `journal.jsonl` ; sans `--lot`, `journal.jsonl` et chaque `journal-<n>.jsonl` dont `<n>` est un nom valide en minuscules ; tout autre fichier est ignoré. Fusion triée par `(ts, lot, ordre dans le fichier)`, `None` avant tout lot ; puis `--kind`, puis les `--last` dernières (20 par défaut, risque 5). Une ligne illisible est sautée, et une note T12c par fichier va sur stderr. Un genre inconnu est montré tel quel.
+- [ ] Lecture : `--lot X` lit `file_name(Some(X))` (filtre `lot == X` à la casse exacte) et `journal.jsonl` ; sans `--lot`, `journal.jsonl` et chaque `journal-<n>.jsonl` dont `<n>` est un nom valide en minuscules ; tout autre fichier est ignoré. Fusion triée par `(ts, lot, ordre dans le fichier)`, `None` avant tout lot ; puis `--kind`, puis les `--last` dernières (20 par défaut, risque 5). Une ligne illisible est sautée, et une note T12c par fichier va sur stderr. Un genre inconnu est montré tel quel. Une ligne dont le `schema` n'est pas `armadai.journal/1` est sautée et comptée dans la note T12c, comme une ligne illisible. Aucune lecture à travers un lien symbolique (`state/` ou fichier : T11g ; le fichier est ouvert avec `O_NOFOLLOW`). À l'écriture, si le fichier est non vide et ne finit pas par `\n`, un `\n` est préfixé dans le même et unique `write_all` (la borne de 4096 octets se vérifie avant).
 - [ ] Sorties : texte T12a, JSON T12b, journal vide ou absent : rien, code 0 ; `add` imprime T13.
 - [ ] `every_kept_command_has_a_help_description` gagne `journal`.
 - Tests :
@@ -385,6 +385,7 @@ Décision de Dimitri (2026-11-12, mot pour mot), sur T1 à T20 : « Validés, aj
 - **T11d** : `this entry is ‹4210› bytes once written; a journal line holds at most 4096 (shorten the text)`
 - **T11e** : `--by ‹x›: 1 to 64 letters, digits, . _ or -`
 - **T11f** : `‹path› is a symbolic link; the journal is not written through it`
+- **T11g** (à valider par Dimitri dans la PR) : `‹path› is a symbolic link; the journal is not read through it`
 - **T12a, `journal show`** (texte), une ligne par entrée, heure locale :
   ```
   2026-11-12 14:03  menu     decision  lead      Le lot garde la 1.3.0
@@ -440,6 +441,7 @@ Décision de Dimitri (2026-11-12, mot pour mot), sur T1 à T20 : « Validés, aj
 ### Décisions de Dimitri sur le plan (2026-11-12, mot pour mot)
 
 - **Q1, auteur d'une entrée (`by`)** (§0.6) : « Option --by (Recommandé) ». `journal add` prend `--by <nom>`, que les consignes compilées (T15, T16w) remplissent avec l'id de l'agent ; sans l'option, le champ `by` est absent. L'auteur est déclaratif : un agent peut écrire un autre nom. Options écartées : pas de `by` dans ce lot ; une variable d'environnement de Claude Code (aucune documentée). → J.2, J.3.
+- **Q2, ligne d'un schéma futur** (J.2, rejet du guardian) : à la question « que fait `show` d'une ligne d'une version future ? », « La sauter et la compter (Recommandé) ». → J.2.
 
 Et sur la spec (2026-11-12) : verrou de worktree ; `pack pin` explicite + `update` refusé ; refus sous lien vers le chantier ; un fichier par lot ; JSONL via `journal add` ; consigne + `journal: read` ; lien par flow ; 2 PR ; entrées sans lot dans `state/journal.jsonl`, lues avec chaque lot.
 
