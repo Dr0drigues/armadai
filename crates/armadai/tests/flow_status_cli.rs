@@ -738,15 +738,24 @@ fn line_does_not_wait_for_a_stdin_that_stays_open() {
 }
 
 impl Env {
-    /// `armadai __claude-statusline` with `stdin` piped, `NO_COLOR` set (it must colour anyway).
-    fn statusline(&self, cwd: &Path, stdin: &str) -> (Option<i32>, String, String) {
-        let out = Command::cargo_bin("armadai")
-            .unwrap()
-            .current_dir(cwd)
+    /// The `armadai __claude-statusline` command: fake HOME, `NO_COLOR` set (it must colour
+    /// anyway), and no variable of the developer's own shell that would change which user
+    /// bar it chains.
+    fn statusline_command(&self, cwd: &Path) -> std::process::Command {
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_armadai"));
+        cmd.current_dir(cwd)
             .env("ARMADAI_CONFIG_DIR", self.dir.path().join("config"))
             .env("HOME", self.dir.path())
             .env("NO_COLOR", "1")
-            .arg("__claude-statusline")
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .env_remove("ARMADAI_STATUSLINE_CHAINED")
+            .arg("__claude-statusline");
+        cmd
+    }
+
+    /// `armadai __claude-statusline` with `stdin` piped.
+    fn statusline(&self, cwd: &Path, stdin: &str) -> (Option<i32>, String, String) {
+        let out = Command::from_std(self.statusline_command(cwd))
             .write_stdin(stdin)
             .timeout(std::time::Duration::from_secs(20))
             .output()
@@ -756,6 +765,18 @@ impl Env {
             String::from_utf8_lossy(&out.stdout).into_owned(),
             String::from_utf8_lossy(&out.stderr).into_owned(),
         )
+    }
+}
+
+#[test]
+fn statusline_child_does_not_inherit_the_variables_that_pick_the_user_bar() {
+    // `get_envs` lists what the child is told: a removal shows as `None`, so a variable
+    // set in the shell that runs the tests cannot reach it.
+    let env = Env::new();
+    let cmd = env.statusline_command(env.dir.path());
+    for name in ["CLAUDE_CONFIG_DIR", "ARMADAI_STATUSLINE_CHAINED"] {
+        let seen = cmd.get_envs().find(|(k, _)| *k == name);
+        assert_eq!(seen, Some((std::ffi::OsStr::new(name), None)), "{name}");
     }
 }
 

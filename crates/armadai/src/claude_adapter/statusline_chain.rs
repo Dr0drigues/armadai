@@ -34,12 +34,18 @@ pub fn user_command(env: &dyn Fn(&str) -> Option<String>) -> Option<String> {
     (!command.is_empty() && command != STATUS_LINE_COMMAND).then(|| command.to_string())
 }
 
-/// Run `sh -c <command>` with `stdin`, at most `limit`: its stdout when it exits 0 in
-/// time, `None` otherwise (the child is killed on timeout).
+/// The most of the user's output we keep: a bar is a few lines, a runaway one is cut.
+const MAX_OUTPUT: u64 = 64 * 1024;
+
+/// Run `sh -c <command>` with `stdin`, at most `limit`: its first 64 KiB of stdout when it
+/// exits 0 in time, `None` otherwise. The command runs in its own process group, which is
+/// killed as a whole on timeout and once the shell is done, so no grandchild lingers.
 #[cfg(unix)]
 pub fn run_user(command: &str, stdin: &[u8], limit: Duration) -> Option<String> {
+    use std::os::unix::process::CommandExt;
     let mut child = Command::new("sh")
         .args(["-c", command])
+        .process_group(0)
         .env(CHAINED_ENV, "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -57,26 +63,39 @@ pub fn run_user(command: &str, stdin: &[u8], limit: Duration) -> Option<String> 
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut raw = Vec::new();
-        let _ = output.read_to_end(&mut raw);
+        let _ = (&mut output).take(MAX_OUTPUT).read_to_end(&mut raw);
+        // keep draining, so a chatty child is not blocked on a full pipe until the limit
+        let _ = std::io::copy(&mut output, &mut std::io::sink());
         let _ = tx.send(raw);
     });
+    let group = child.id() as libc::pid_t;
     let start = Instant::now();
-    loop {
+    let answer = loop {
         match child.try_wait() {
+            // the output only counts once the shell is gone and the pipe closes in time
             Ok(Some(status)) if status.success() => {
+                kill_group(group);
                 let left = limit.saturating_sub(start.elapsed());
-                let raw = rx.recv_timeout(left).ok()?;
-                return Some(String::from_utf8_lossy(&raw).into_owned());
+                break rx.recv_timeout(left).ok();
             }
-            Ok(Some(_)) | Err(_) => return None,
-            Ok(None) if start.elapsed() >= limit => {
-                // shortcut: only `sh` is killed, a grandchild may live on; upgrade with a process group
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
+            Ok(Some(_)) | Err(_) => break None,
+            Ok(None) if start.elapsed() >= limit => break None,
             Ok(None) => std::thread::sleep(Duration::from_millis(10)),
         }
+    };
+    kill_group(group);
+    let _ = child.wait();
+    answer.map(|raw| String::from_utf8_lossy(&raw).into_owned())
+}
+
+/// SIGKILL to every process of the group `pgid` (the child made itself the leader).
+#[cfg(unix)]
+fn kill_group(pgid: libc::pid_t) {
+    // SAFETY: `kill` takes two integers and touches no memory; `-pgid` addresses the group
+    // we created with `process_group(0)`, so no other process of ours is hit, and an
+    // already empty group only makes it return -1 (ESRCH), which we ignore.
+    unsafe {
+        libc::kill(-pgid, libc::SIGKILL);
     }
 }
 
@@ -186,6 +205,55 @@ mod tests {
             run_user("printf $ARMADAI_STATUSLINE_CHAINED", b"", limit).as_deref(),
             Some("1")
         );
+    }
+
+    #[cfg(unix)]
+    fn alive(pid: &str) -> bool {
+        Command::new("kill")
+            .args(["-0", pid])
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_grandchild_of_a_slow_command_dies_with_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("pid");
+        let command = format!("sleep 30 & echo $! > {}; wait", file.display());
+        // the defect leaves the `sleep` for its 30 s; it is dead well before 3 s
+        let start = Instant::now();
+        assert_eq!(run_user(&command, b"", Duration::from_secs(1)), None);
+        let pid = std::fs::read_to_string(&file).unwrap().trim().to_string();
+        let mut gone = false;
+        while start.elapsed() < Duration::from_secs(3) {
+            if !alive(&pid) {
+                gone = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if !gone {
+            // never leave the `sleep` behind, whatever the verdict
+            let _ = Command::new("kill").args(["-9", &pid]).status();
+        }
+        assert!(gone, "the grandchild {pid} was still alive after 3 s");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_runaway_output_is_cut_at_64_kib_and_does_not_block_the_command() {
+        // 200 000 bytes on a pipe holds `head` until someone reads them: kept 64 KiB, the rest drained
+        let out = run_user(
+            "head -c 200000 /dev/zero | tr '\\0' a",
+            b"",
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert_eq!(out.len(), 64 * 1024);
+        assert!(out.bytes().all(|b| b == b'a'));
     }
 
     #[cfg(unix)]
