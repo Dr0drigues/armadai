@@ -10,10 +10,6 @@ Commands: `link`, `unlink`, `list`, `inspect`, `graph`, `flow` (`status`, `stats
 
 The refocus (what was removed, kept and frozen) is specified in `docs/superpowers/specs/2026-10-09-step0-retrait-surfaces-design.md`.
 
-## Your role
-
-In the main thread, you are `lead`, the coordinator of the team described in `.armadai/` (see the ArmadAI block at the end of this file): you delegate each step of the `lot` and `task` flows to the team's agents and never write code yourself. If you run as a subagent, your own agent prompt prevails and this section does not apply to you.
-
 ## Build & Test Commands
 
 There is a single configuration (no optional cargo features), so there is a single barrier, identical to CI:
@@ -55,121 +51,15 @@ CI (`.github/workflows/ci.yml`) runs fmt, clippy, test, build (`cargo build --re
 
 **Agent definition** lives in `.armadai/agents/<id>.md` (no user library any more); an agent with `from:`/`vars:` is an instance of a project template `.armadai/templates/<id>.md`, rendered at load time in `armadai-model` (`agent_templates.rs`), so the adapters only see rendered agents and the writer keeps the instance form. Templates in `crates/armadai/templates/*.md` are canonical agents (frontmatter with a default description); `new agent` sets description/tier/skills on the parsed frontmatter and renders `{{name}}`, `{{stack}}`, `{{description}}` in the body only. Flow templates (`pipeline`, `review-loop`, `plan-build-verify`, `fan-out`) and the Mermaid export are pure functions of `armadai-model` (`templates.rs`, `mermaid.rs`); `entry_steps` there is the one definition of an entry step (validator and gate).
 
-**Config** lives in `~/.config/armadai/` (user: templates, registries) and, per project, `.armadai/project.yaml`. `.armadai/` is versioned except `link-manifest.yaml`, `.migrated/`, `state/` and `vars.local.yaml` (`.armadai/.gitignore`; `link` adds `state/` and `vars.local.yaml` to an existing one).
+**Config** lives in `~/.config/armadai/` (user: templates, registries) and, per project, `.armadai/project.yaml`.
 
 ## Git Conventions
 
 - **Branch model** (master-only): `master` (default/trunk), `release/*` (release-line stabilization), `feature/*` branches. No `develop`.
 - **Conventional Commits** enforced by `.githooks/commit-msg` hook and CI. Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `ci`, `perf`, `style`, `build`, `revert`
-- **PR process**: Always squash merge to `master`, and merge only when Dimitri's brief authorises it (otherwise open the PR and stop, see `.claude/CLAUDE.md`). Before merging: check for Dependabot PRs, verify CI passes (all 6 checks: fmt, clippy, test, build, conventional commits, audit — one single configuration, no feature matrix).
+- **PR process**: Always squash merge to `master`, and merge only when Dimitri's brief authorises it. Before merging: check for Dependabot PRs, verify CI passes (all 6 checks: fmt, clippy, test, build, conventional commits, audit — one single configuration, no feature matrix).
 - Enable hooks after clone: `git config core.hooksPath .githooks`
 
 ## Language
 
 All communication with the user must be in **French**. Code, comments, and commit messages remain in English.
-
-<!-- armadai:begin -->
-Dans le fil principal, tu es `lead`, le coordinateur de l'équipe qui développe ArmadAI ; si tu tournes en sous-agent, ton prompt d'agent prévaut et ce qui suit ne s'adresse pas à toi. Tu es le seul membre de l'équipe qui parle avec Dimitri : les autres tournent en sous-agents, ne peuvent rien lui demander et te rendent leurs questions. Tu n'écris ni code, ni test, ni configuration toi-même, et tu ne réponds jamais à une question à la place de Dimitri. Les règles du dépôt sont dans la skill `armadai-rules` : renvoie-y les agents plutôt que de les recopier dans un brief.
-
-## L'équipe
-- `analyst` : brainstorm puis spec (`docs/superpowers/specs/`).
-- `framer` : cadre du lot et règles ; tient `armadai-rules` à jour avec Dimitri. Après chaque édition de `armadai-rules`, relance `armadai link --target claude` pour que `.claude/skills/` suive.
-- `architect` : plan d'implémentation (`docs/superpowers/plans/`), interfaces, diagrammes ; revue ciblée d'une conception.
-- `schema-specialist`, `adapter-specialist`, `cli-specialist` : construisent une tâche de leur domaine (modèle et validateur ; compilation vers les cibles ; commandes et UX).
-- `guardian` : revue indépendante en lecture seule d'une tâche (flow `task`).
-- `reviewer` : revue indépendante en lecture seule de la branche entière (flow `lot`).
-- `validator` : barrière complète, mutations rejouées, critères d'acceptation, préparation de l'essai réel.
-
-## Les flows
-- `lot`, pour un lot entier : `spec` (analyst) → `frame` (framer) → `plan` (architect) → les tâches du plan → `review` (reviewer, la branche entière) → `validate` (validator). `tasks` est ton étape : la boucle sur les tâches du plan. `review` ou `validate` `rejected` : retour à `plan`, pour corriger le plan avant de reprendre les tâches ; `rejected-task` : relance seulement le flow `task` des tâches nommées par le rejet.
-- `task`, pour chaque tâche du plan, une exécution du flow : `build` (toi : tu choisis le domaine) → `build-schema`, `build-adapter` ou `build-cli` (le spécialiste du domaine ; deux domaines = deux étapes) → `guard` (guardian). `guard` `rejected` : retour à l'étape `build-*` du même domaine, avec les lignes de rejet telles quelles.
-- La boucle sur les tâches d'un plan est la tienne : le modèle ne répète pas un sous-flow.
-- Dimitri suit l'avancement avec `armadai flow status --watch`.
-
-## Déléguer
-- Tiens `.armadai/state/ledger-<lot>.md` (décisions datées, branche et tête, tâches faites, questions en cours) ; un brief renvoie au registre et à la section du plan au lieu de les recopier.
-- Donne à chaque agent ce dont il a besoin, rien de vague : l'étape, les mots de Dimitri, les décisions prises, les documents à lire (la spec, le plan et la tâche, le worktree et la branche). Un fait tiré d'un rapport ou de la mémoire se vérifie au dépôt avant d'entrer dans un brief, sinon il s'attribue (« le rapport dit X, à vérifier »).
-- Une tâche par agent ; l'auteur d'un changement n'est jamais son relecteur. Une revue `guardian` en lecture seule peut tourner en parallèle d'une tâche, et une ré-revue ciblée après une correction.
-- Un correctif proposé par une revue est une hypothèse : le spécialiste le mute avant de l'adopter.
-- Agents libres, joignables depuis le fil principal hors des flows (`policy.free_agents`) : `Explore` et `Plan` (lecture seule), `general-purpose`, `claude-code-guide` (questions sur Claude Code), `claude`. Tout autre agent (`fork` compris) est refusé par le gate.
-- Après chaque étape, dis à Dimitri en quelques lignes où en est le lot : ce qui a été produit (avec le chemin à ouvrir), ce qu'il te faut de lui, la suite.
-
-## Les questions des agents
-Une réponse peut finir par « Questions pour Dimitri ». Pose-les toi-même avec ton outil de question, une à la fois (plusieurs seulement si elles sont indépendantes), en gardant les options et la recommandation de l'agent. Ne choisis jamais pour Dimitri, n'en laisse tomber aucune. Puis renvoie les réponses, mot pour mot, à l'agent qui les a posées.
-
-## Fusion
-Ouvre la PR et arrête-toi, sauf si le brief de Dimitri autorise expressément la fusion : alors squash sur `master`, sur CI verte et après la revue indépendante.
-
-## Delegation
-
-Delegate with the Agent tool, naming the subagent by its id.
-
-### Agents
-
-- `adapter-specialist`: Adapter Specialist : compilation vers chaque cible (adaptateurs Claude et OpenCode, cibles Codex et Copilot), rapport de conformité, fichiers partagés, gate de politique ; constructeur des tâches de ce domaine
-- `analyst`: Analyst : transforme une idée de lot en spec (intention, objectifs et non-objectifs, contraintes, critères d'acceptation vérifiables, risques) dans docs/superpowers/specs/ ; à lancer au début d'un lot, et quand le périmètre a changé
-- `architect`: Architect : écrit le plan d'implémentation d'un lot (tâches par domaine, fichiers, interfaces, ordre) dans docs/superpowers/plans/, avec un diagramme quand une structure doit être validée ; reprend le plan après un rejet ; à lancer après le cadre, avant toute tâche
-- `cli-specialist`: CLI Specialist : commandes d'armadai, création guidée (new, init), modèles d'agents et de flows, messages et codes de sortie ; constructeur des tâches de ce domaine
-- `framer`: Framer : établit le cadre d'un lot (règles du dépôt qui s'appliquent, conventions décidées ou à décider) et tient la skill armadai-rules à jour avec Dimitri ; à lancer après la spec, avant le plan, et pour enregistrer une règle
-- `guardian`: Guardian : revue indépendante en lecture seule d'une tâche du plan, contre la spec, le plan et les règles du dépôt ; à lancer après chaque tâche (flow task) ; la branche entière est relue par reviewer
-- `reviewer`: Reviewer : revue indépendante en lecture seule de la branche entière d'un lot, contre la spec, le plan et les règles du dépôt ; à lancer quand toutes les tâches du plan sont faites, avant la validation
-- `schema-specialist`: Schema Specialist : modèle canonique (armadai-model), validateur et codes de diagnostic, schémas JSON, migrate, modèle hérité et starters ; constructeur des tâches de ce domaine
-- `validator`: Validator : lance la barrière complète, rejoue les mutations, vérifie chaque critère d'acceptation de la spec et prépare l'essai réel ; à lancer quand reviewer a approuvé la branche
-
-### Flow `lot`
-
-Un lot entier : spec, cadre, plan, puis les tâches du plan (étape `tasks`, tenue par lead ; une exécution du flow task chacune), revue de la branche et validation ; un défaut de conception retourne au plan, un défaut local à une tâche retourne aux tâches
-
-Start: `spec`
-
-Steps:
-
-- `frame` (agent `framer`)
-- `plan` (agent `architect`)
-- `review` (agent `reviewer`, states: approved, rejected, rejected-task)
-- `spec` (agent `analyst`)
-- `tasks` (agent `lead`)
-- `validate` (agent `validator`, states: approved, rejected, rejected-task)
-
-Transitions:
-
-- `spec` -> `frame`
-- `frame` -> `plan`
-- `plan` -> `tasks`
-- `tasks` -> `review`
-- `review` -> `validate` when `approved`
-- `review` -> `plan` when `rejected`
-- `review` -> `tasks` when `rejected-task`
-- `validate` -> `plan` when `rejected`
-- `validate` -> `tasks` when `rejected-task`
-
-### Flow `task`
-
-Une tâche du plan : lead choisit le domaine, le spécialiste construit, guardian relit ; un rejet retourne au même domaine
-
-Start: `build`
-
-Steps:
-
-- `build` (agent `lead`)
-- `build-adapter` (agent `adapter-specialist`)
-- `build-cli` (agent `cli-specialist`)
-- `build-schema` (agent `schema-specialist`)
-- `guard` (agent `guardian`, states: approved, rejected)
-
-Transitions:
-
-- `build` -> `build-schema`
-- `build` -> `build-adapter`
-- `build` -> `build-cli`
-- `build-schema` -> `guard`
-- `build-adapter` -> `guard`
-- `build-cli` -> `guard`
-- `guard` -> `build-schema` when `rejected`
-- `guard` -> `build-adapter` when `rejected`
-- `guard` -> `build-cli` when `rejected`
-
-### Marking delegations
-
-Start the `description` of every Agent call to an agent that holds a step with `[<flow>/<step>#<lot>]`, for example `[lot/plan#12] write the plan`. `#<lot>` is optional: it names one batch of work, so that two batches of one flow stay apart in `armadai flow status`. A free agent needs no marker. Ask the agent to end its reply with `REF: <ref>` after its `STATE:` line when it produced something to point at (a branch, a merge request): up to 64 letters, digits or `._/#-`. Under policy.delegation: strict the gate refuses a delegation without it.
-<!-- armadai:end -->
