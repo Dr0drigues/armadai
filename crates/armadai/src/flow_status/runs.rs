@@ -135,6 +135,11 @@ pub struct Run {
 ///   not hold, is ignored. (6) Without
 ///   any `mark` line nothing above applies. The `REF:` of the first stop
 ///   recorded for an `agent_id` shows on its step.
+/// - An `optional` step is crossed (its hops are not recorded, the step shows `⤼`
+///   or keeps its mark) while it is not running. Known limit: after one stop of a
+///   step, a target started past the optional step, then the optional step late,
+///   then the target again, leaves that last start with no incoming transition
+///   (the run itself stays right); not measured beyond that sequence.
 pub fn runs(project: &Project, events: &[FlowEvent]) -> Vec<Run> {
     runs_and_markers(project, events)
         .0
@@ -4146,5 +4151,47 @@ mod tests {
                 t(50, "guard", "check", Some("done")),
             ]
         );
+    }
+
+    /// The optional step skipped in a turn and done in the next one: the bypass of the
+    /// first turn is not a late link of the second (another stop of `guard`), so
+    /// `check -> build` is taken and the run stays one.
+    #[test]
+    fn an_optional_step_skipped_then_run_in_a_later_turn_links_back() {
+        let p = project(&[("opt", OPTIONAL_LOOP)]);
+        let events = seq(&[
+            &step(10, "d1", "dev", None),
+            &step(20, "q1", "qa", Some("rejected")),
+            &step(30, "d2", "dev", None),
+            &step(40, "q2", "qa", Some("rejected")),
+            &step(50, "o1", "ops", None),
+            &step(60, "d3", "dev", None),
+            &step(70, "q3", "qa", Some("approved")),
+            &step(80, "l1", "lead", None),
+        ]);
+        let got = runs(&p, &events);
+        assert_eq!(got.len(), 1, "one run");
+        assert_eq!(
+            marks(&got[0]),
+            [
+                ("build", Mark::Done),
+                ("guard", Mark::Done),
+                ("check", Mark::Done),
+                ("release", Mark::Done),
+            ]
+        );
+        assert_eq!(
+            got[0].transitions,
+            vec![
+                t(20, "build", "guard", Some("done")),
+                t(30, "guard", "build", Some("rejected")),
+                t(40, "build", "guard", Some("done")),
+                t(50, "guard", "check", Some("rejected")),
+                t(60, "check", "build", Some("done")),
+                t(70, "build", "guard", Some("done")),
+                t(80, "guard", "release", Some("approved")),
+            ]
+        );
+        assert!(got[0].finished);
     }
 }
