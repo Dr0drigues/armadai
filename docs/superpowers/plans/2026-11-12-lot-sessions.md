@@ -214,7 +214,7 @@ Chaque tâche finit barrière verte. Les mutations citées sont le minimum ; le 
 
 **K.3b `unlink` refuse aussi, sous verrou** (`adapter-specialist`, après K.3)
 - Origine : le guardian de K.3 a mesuré que, sous verrou, dans un worktree dont `.claude` et `.armadai` mènent à un chantier déjà lié, `unlink` supprime des fichiers du chantier (`deleted …/chantier/.claude/agents/lead.md`, code 0, empreinte modifiée) ; le comportement précède K.3. Décision de Dimitri (2026-11-12), à « que fait-on ? » : « Refuser aussi (K.3b) (Recommandé) » (option : « Même refus T9 à l'entrée d'`unlink` sous verrou, en réutilisant le contrôle de `link` ; petite tâche dans la PR 1. »).
-- [ ] `cli/unlink.rs` appelle `link::check_outgoing_links(root, "unlink", false)` avant toute suppression : T9 avec « unlink refused » à la place de « link refused » (texte à valider par Dimitri) ; sans verrou, aucun changement ni note.
+- [ ] `cli/unlink.rs` appelle `link::check_outgoing_links(root, "unlink", false)` avant toute suppression : T9 avec « unlink refused » à la place de « link refused » (texte validé par Dimitri, 2026-11-12 : « Validé (Recommandé) ») ; sans verrou, aucun changement ni note.
 - Tests au binaire (`tests/link_outgoing_links.rs`) : sous verrou, `.claude` puis `.armadai` sortants, code 1, T9 (unlink) à égalité, empreinte du chantier identique ; sans verrou, `unlink` inchangé (supprime à travers le lien, aucune note). Mutations : retirer l'appel ; note activée ; refus sans verrou.
 - Commit : `feat(unlink): refuse to delete through a link out of a pinned checkout`
 
