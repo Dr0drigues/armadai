@@ -70,33 +70,7 @@ fn legacy_root(cwd: &Path) -> Option<PathBuf> {
 /// The project for `cwd`, reaching into the main checkout when `cwd` sits in a git
 /// worktree that has no `.armadai/` of its own (an untracked or older checkout).
 pub(crate) fn resolve_project(cwd: &Path) -> Option<PathBuf> {
-    find_root(cwd).or_else(|| find_root(&main_checkout_of(cwd)?))
-}
-
-/// The main checkout behind a git worktree, or `None` if `cwd` is not in one.
-///
-/// A worktree's `.git` is a *file* reading `gitdir: <repo>/.git/worktrees/<name>`,
-/// so the main checkout is the ancestor of that `.git` directory. Parsed by
-/// hand rather than shelling out to git: the gate runs on every delegation and
-/// must stay cheap.
-fn main_checkout_of(cwd: &Path) -> Option<PathBuf> {
-    let mut dir = Some(cwd);
-    while let Some(d) = dir {
-        let dot_git = d.join(".git");
-        if dot_git.is_file() {
-            let raw = std::fs::read_to_string(&dot_git).ok()?;
-            let gitdir = raw.trim().strip_prefix("gitdir:")?.trim();
-            // <repo>/.git/worktrees/<name>  ->  <repo>
-            let marker = std::path::MAIN_SEPARATOR_STR.to_string() + ".git";
-            let cut = gitdir.find(&marker)?;
-            return Some(PathBuf::from(&gitdir[..cut]));
-        }
-        if dot_git.is_dir() {
-            return None; // a real checkout, not a worktree
-        }
-        dir = d.parent();
-    }
-    None
+    find_root(cwd).or_else(|| find_root(&crate::worktree::main_checkout_of(cwd)?))
 }
 
 /// The sub-agent Claude Code spawns when an `Agent` call omits
