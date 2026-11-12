@@ -1152,6 +1152,21 @@ mod tests {
         );
     }
 
+    /// The team file is read by every agent and gives no instruction: an optional step is
+    /// marked in its line, and the coordinator's sentence about skipping it is Claude's.
+    #[test]
+    fn an_optional_step_is_marked_in_the_team_file_without_an_instruction() {
+        let mut files = team(b"schema_version: 1\ncoordinator: lead\n");
+        files[4] = (
+            ".armadai/flows/ship.yaml",
+            b"steps:\n  plan: { agent: lead }\n  review: { agent: rev, optional: true }\nlinks:\n  - { from: plan, to: review }\n",
+        );
+        let plan = compile(&files).unwrap();
+        let t = text(&plan, "armadai-team.md");
+        assert!(t.contains("- `review` (agent `rev`, optional)\n"), "{t}");
+        assert!(!t.contains("may be skipped"), "{t}");
+    }
+
     #[test]
     fn team_file_is_neutral() {
         let mut files = team(b"schema_version: 1\ncoordinator: lead\n");

@@ -488,6 +488,12 @@ fn claude_md(coordinator: &str, lead: &Agent, project: &Project) -> String {
     for (fid, flow) in &project.flows {
         out.push_str(&flow_section(fid, flow));
     }
+    // only a project with an optional step says so: no other project's block changes
+    if (project.flows.values()).any(|f| f.steps.values().any(|s| s.optional)) {
+        out.push('\n');
+        out.push_str(OPTIONAL_SENTENCE);
+        out.push('\n');
+    }
     if !project.flows.is_empty() {
         out.push_str(MARKING_SECTION);
         if strict {
@@ -497,6 +503,10 @@ fn claude_md(coordinator: &str, lead: &Agent, project: &Project) -> String {
     }
     out
 }
+
+/// Said to the coordinator when a flow has an optional step (decided by Dimitri, 2026-11-12).
+const OPTIONAL_SENTENCE: &str =
+    "An optional step may be skipped: delegate the step after it directly.";
 
 /// How the coordinator marks a delegation, so `armadai flow status` can place it.
 const MARKING_SECTION: &str = "\n### Marking delegations\n\nStart the `description` of every Agent call to an agent that holds a step with `[<flow>/<step>#<lot>]`, for example `[lot/plan#12] write the plan`. `#<lot>` is optional: it names one batch of work, so that two batches of one flow stay apart in `armadai flow status`. A free agent needs no marker. Ask the agent to end its reply with `REF: <ref>` after its `STATE:` line when it produced something to point at (a branch, a merge request): up to 64 letters, digits or `._/#-`.";
@@ -1034,6 +1044,34 @@ mod tests {
                 "- `review` (agent `rev`, optional, states: changes)",
             ]
         );
+    }
+
+    const OPTIONAL: &str = "An optional step may be skipped: delegate the step after it directly.";
+
+    #[test]
+    fn a_flow_with_an_optional_step_tells_the_coordinator_it_may_be_skipped() {
+        let mut files = team();
+        files[4] = (
+            ".armadai/flows/ship.yaml",
+            b"steps:\n  plan: { agent: lead }\n  build: { agent: dev }\n  review: { agent: rev, optional: true }\nlinks:\n  - { from: plan, to: build }\n  - { from: build, to: review }\n",
+        );
+        let block = compile(&files).unwrap().blocks[0].1.clone();
+        assert_eq!(block.matches(OPTIONAL).count(), 1, "{block}");
+        // its own paragraph, after the flow and before the marking section
+        let (before, after) = block.split_once(&format!("\n{OPTIONAL}\n")).unwrap();
+        assert!(before.ends_with("- `build` -> `review`\n"), "{before}");
+        assert!(after.starts_with("\n### Marking delegations"), "{after}");
+    }
+
+    #[test]
+    fn a_project_without_an_optional_step_gets_no_such_sentence() {
+        let block = compile(&team()).unwrap().blocks[0].1.clone();
+        assert!(!block.contains("optional step"), "{block}");
+        // and not a project with no flow either
+        let mut files = team();
+        files.pop();
+        let block = compile(&files).unwrap().blocks[0].1.clone();
+        assert!(!block.contains("may be skipped"), "{block}");
     }
 
     #[test]
