@@ -327,8 +327,8 @@ Chaque tâche finit barrière verte. Les mutations citées sont le minimum ; le 
   #[serde(deny_unknown_fields)]
   pub struct SessionLink { pub to: String, pub when: String }
   ```
-- [ ] `invalid-session-link` (Erreur) : `to` refusé s'il est vide, contient un retour à la ligne ou commence ou finit par un blanc (T18a ; décision de Dimitri, 2026-11-12 : « Toute chaîne non vide (Recommandé) », « Une seule ligne, sans blanc en tête ni en fin : c'est le contrat réel de Claude Code ») ; `when` vide ou blanc (T18b). Une clé inconnue sous `session_link` est le diagnostic existant des clés inconnues.
-- Tests : chaque cas, message à égalité ; `to: chantier`, `Chantier`, `a_b`, `release notes`, `Fronto-61` acceptés ; un nom vide, `" x"`, `"x "`, `"a\nb"` refusés ; aller-retour sans `session_link` à l'octet près. Mutations : ne pas tester `when` ; retirer chacune des règles de `to` (vide, retour à la ligne, blanc en tête, blanc en fin).
+- [ ] `invalid-session-link` (Erreur) : `to` refusé s'il est vide, contient un retour à la ligne ou un backtick, ou commence ou finit par un blanc (T18a ; le backtick : décision de Dimitri, 2026-11-12, « Refuser le backtick (Recommandé) », exception unique, car T19 met le nom entre backticks ; décision de Dimitri, 2026-11-12 : « Toute chaîne non vide (Recommandé) », « Une seule ligne, sans blanc en tête ni en fin : c'est le contrat réel de Claude Code ») ; `when` vide ou blanc (T18b). Une clé inconnue sous `session_link` est le diagnostic existant des clés inconnues.
+- Tests : chaque cas, message à égalité ; `to: chantier`, `Chantier`, `a_b`, `release notes`, `Fronto-61` acceptés ; un nom vide, `" x"`, `"x "`, `"a\nb"`, ``a`b`` refusés ; aller-retour sans `session_link` à l'octet près. Mutations : ne pas tester `when` ; retirer chacune des règles de `to` (vide, retour à la ligne, backtick, blanc en tête, blanc en fin).
 - Commit : `feat(model): a flow declares a session_link`
 
 **L.2 Consigne de lien compilée** (`adapter-specialist`, après L.1 et J.3)
@@ -415,7 +415,7 @@ Décision de Dimitri (2026-11-12, mot pour mot), sur T1 à T20 : « Validés, aj
   Décision de Dimitri (2026-11-12, mot pour mot) : agent sans Bash, « Ligne approximated (Recommandé) » ; les deux cas limites (coordinateur qui porte `journal:`, `sessions.journal` sans coordinateur), « Traiter les deux (Recommandé) ». Textes T17c et T17d validés tels quels.
 
 **PR 2, lien**
-- **T18a, `invalid-session-link`** : ``session_link.to `‹x›` is not a session name: one line, no blank at either end`` ; indice `name the session as you start it: claude --name <name>`
+- **T18a, `invalid-session-link`** : ``session_link.to `‹x›` is not a session name: one line, no blank at either end, no backtick`` ; indice `name the session as you start it: claude --name <name>`
 - **T18b** : ``session_link.when is empty: say when to write to session `‹to›` ``
 - **T19, section du bloc `CLAUDE.md`** :
   ```
