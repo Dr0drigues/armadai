@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 use armadai_model::{
-    Agent, AgentFront, Cap, Command, Delegation, Flow, NativeValue, Project, Tier, agent_skills,
+    Agent, AgentFront, Cap, Command, Delegation, Flow, JournalAccess, NativeValue, Project, Tier,
+    agent_skills,
 };
 use serde_json::{Map, Value};
 
@@ -51,6 +52,14 @@ impl Compiler for ClaudeCompiler {
             });
             plan.report
                 .push(T, format!("agent {id}"), Status::Compiled, None);
+            if agent.front.journal.is_some() {
+                plan.report.push(
+                    T,
+                    format!("agent {id} journal"),
+                    Status::Compiled,
+                    Some(&format!("instructions in .claude/agents/{id}.md")),
+                );
+            }
         }
 
         for id in project.skills.keys() {
@@ -202,6 +211,14 @@ impl Compiler for ClaudeCompiler {
                     Status::Compiled,
                     Some("coordinator, rendered into CLAUDE.md"),
                 );
+                if project.manifest.sessions.journal {
+                    plan.report.push(
+                        T,
+                        "journal",
+                        Status::Compiled,
+                        Some("instructions in CLAUDE.md (armadai journal)"),
+                    );
+                }
                 let existing = std::fs::read_to_string(root.join("CLAUDE.md")).ok();
                 if existing.is_some_and(|t| !t.contains(BLOCK_BEGIN)) {
                     plan.report.push(
@@ -428,6 +445,9 @@ fn agent_file(
     let yaml = armadai_model::yaml::to_string(&NativeValue(Value::Object(m)))
         .context("subagent frontmatter")?;
     let mut out = format!("---\n{yaml}---\n{}", agent.body);
+    if let Some(access) = f.journal {
+        out = format!("{}{}", out.trim_end(), agent_journal_section(id, access));
+    }
     if let Some(v) = super::verdict_instruction(project, id) {
         out = format!("{}{v}", out.trim_end());
     }
@@ -494,6 +514,9 @@ fn claude_md(coordinator: &str, lead: &Agent, project: &Project) -> String {
         out.push_str(OPTIONAL_SENTENCE);
         out.push('\n');
     }
+    if project.manifest.sessions.journal {
+        out.push_str(&coordinator_journal_section(coordinator));
+    }
     if !project.flows.is_empty() {
         out.push_str(MARKING_SECTION);
         if strict {
@@ -501,6 +524,25 @@ fn claude_md(coordinator: &str, lead: &Agent, project: &Project) -> String {
         }
         out.push('\n');
     }
+    out
+}
+
+/// T15: the coordinator's journal section (`sessions.journal`), `--by` is its id.
+fn coordinator_journal_section(coordinator: &str) -> String {
+    format!(
+        "\n### Journal\n\nBefore a decision, read `armadai journal show --lot <lot> --last 20`; check a premise about another lot there (`--lot <other>`), not from memory. After a decision, record it: `armadai journal add --lot <lot> --kind decision --by {coordinator} \"<one line>\"`. A decision that holds for every lot goes without `--lot`.\n"
+    )
+}
+
+/// T16 (and T16w for `write`): the end of the body of an agent that declares `journal`.
+fn agent_journal_section(id: &str, access: JournalAccess) -> String {
+    let mut out = "\n\n## Journal\n\nBefore you judge, read `armadai journal show --lot <lot> --last 20`, where <lot> is the lot your brief names; check a premise about another lot with `--lot <other>`, not from memory.".to_string();
+    if access == JournalAccess::Write {
+        out.push_str(&format!(
+            " Record a decision you take: armadai journal add --lot <lot> --kind decision --by {id} \"<one line>\"."
+        ));
+    }
+    out.push('\n');
     out
 }
 
@@ -1524,5 +1566,115 @@ mod tests {
         let plan = compile(&team()).unwrap();
         assert!(!plan.artifacts.is_empty());
         assert!(plan.artifacts.iter().all(|a| !a.content.is_empty()));
+    }
+
+    const T15: &str = "\n### Journal\n\nBefore a decision, read `armadai journal show --lot <lot> --last 20`; check a premise about another lot there (`--lot <other>`), not from memory. After a decision, record it: `armadai journal add --lot <lot> --kind decision --by lead \"<one line>\"`. A decision that holds for every lot goes without `--lot`.\n";
+    const T16: &str = "\n\n## Journal\n\nBefore you judge, read `armadai journal show --lot <lot> --last 20`, where <lot> is the lot your brief names; check a premise about another lot with `--lot <other>`, not from memory.";
+
+    fn with_manifest(manifest: &'static [u8]) -> Vec<(&'static str, &'static [u8])> {
+        let mut files = team();
+        files[0] = (".armadai/project.yaml", manifest);
+        files
+    }
+
+    #[test]
+    fn sessions_journal_adds_the_coordinator_section_between_the_flows_and_the_marking() {
+        let plan = compile(&with_manifest(
+            b"schema_version: 1\ncoordinator: lead\nsessions:\n  journal: true\n",
+        ))
+        .unwrap();
+        let block = &plan.blocks[0].1;
+        assert!(block.ends_with(&format!("{T15}{MARKING}\n")), "{block}");
+        assert_eq!(block.matches("### Journal").count(), 1);
+        let l = line(&plan, "journal");
+        assert_eq!(
+            (l.status, l.reason.as_deref()),
+            (
+                Status::Compiled,
+                Some("instructions in CLAUDE.md (armadai journal)")
+            )
+        );
+    }
+
+    #[test]
+    fn without_the_key_the_block_and_the_report_have_no_journal() {
+        let plan = compile(&team()).unwrap();
+        assert!(
+            !plan.blocks[0].1.contains("Journal"),
+            "{}",
+            plan.blocks[0].1
+        );
+        assert!(
+            plan.report
+                .lines
+                .iter()
+                .all(|l| !l.element.contains("journal"))
+        );
+        assert!(!text(&plan, "agents/dev.md").contains("Journal"));
+    }
+
+    fn journal_team(access: &str) -> Vec<(&'static str, Vec<u8>)> {
+        vec![
+            (
+                ".armadai/project.yaml",
+                b"schema_version: 1\ncoordinator: lead\n".to_vec(),
+            ),
+            (
+                ".armadai/agents/lead.md",
+                b"---\ndescription: Leads\n---\nYou lead.\n".to_vec(),
+            ),
+            (
+                ".armadai/agents/rev.md",
+                format!("---\ndescription: Reviews\njournal: {access}\n---\nYou review.\n")
+                    .into_bytes(),
+            ),
+            (
+                ".armadai/flows/ship.yaml",
+                b"steps:\n  check: { agent: rev, states: [approved, rejected] }\nlinks: []\n"
+                    .to_vec(),
+            ),
+        ]
+    }
+
+    fn compile_owned(files: &[(&str, Vec<u8>)]) -> Plan {
+        let refs: Vec<(&str, &[u8])> = files.iter().map(|(p, c)| (*p, c.as_slice())).collect();
+        compile(&refs).unwrap()
+    }
+
+    #[test]
+    fn an_agent_with_journal_read_gets_the_section_before_its_verdict_without_any_project_key() {
+        let plan = compile_owned(&journal_team("read"));
+        let t = text(&plan, "agents/rev.md");
+        let (_, body, _) = armadai_model::split_frontmatter(&t).unwrap();
+        assert_eq!(
+            body,
+            format!(
+                "You review.{T16}\n\n## Verdict\n\nEnd your reply with exactly one line `STATE: <state>`, where <state> is one of: approved, rejected.\n"
+            )
+        );
+        // the coordinator's block has no journal section: the key is on the agent only
+        assert!(!plan.blocks[0].1.contains("### Journal"));
+        let l = line(&plan, "agent rev journal");
+        assert_eq!(
+            (l.status, l.reason.as_deref()),
+            (
+                Status::Compiled,
+                Some("instructions in .claude/agents/rev.md")
+            )
+        );
+        assert!(plan.report.lines.iter().all(|l| l.element != "journal"));
+    }
+
+    #[test]
+    fn journal_write_adds_the_recording_sentence_with_the_agent_id() {
+        let plan = compile_owned(&journal_team("write"));
+        let t = text(&plan, "agents/rev.md");
+        let (_, body, _) = armadai_model::split_frontmatter(&t).unwrap();
+        assert!(
+            body.starts_with(&format!(
+                "You review.{T16} Record a decision you take: armadai journal add --lot <lot> --kind decision --by rev \"<one line>\".\n\n## Verdict"
+            )),
+            "{body}"
+        );
     }
 }

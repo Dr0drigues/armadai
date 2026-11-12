@@ -275,6 +275,7 @@ fn compile_with(
             Some(super::report::UI_CLAUDE_ONLY),
         );
     }
+    super::journal_not_compiled(&mut plan.report, T, project);
     if project.manifest.ui.status_line {
         plan.report.push(
             T,
@@ -1679,5 +1680,40 @@ mod tests {
             line(&plan, "agent dev slot security"),
             (Status::NotCompiled, Some("no skill fills it".into()))
         );
+    }
+
+    #[test]
+    fn the_journal_is_not_compiled_for_opencode() {
+        let plan = compile(&[
+            (
+                ".armadai/project.yaml",
+                b"schema_version: 1\nsessions:\n  journal: true\n",
+            ),
+            (
+                ".armadai/agents/dev.md",
+                b"---\ndescription: d\njournal: read\n---\nB\n",
+            ),
+            (".armadai/agents/qa.md", b"---\ndescription: d\n---\nB\n"),
+        ])
+        .unwrap();
+        let why = Some("Claude Code only".to_string());
+        assert_eq!(line(&plan, "journal"), (Status::NotCompiled, why.clone()));
+        assert_eq!(line(&plan, "agent dev journal"), (Status::NotCompiled, why));
+        assert!(
+            plan.report
+                .lines
+                .iter()
+                .all(|l| l.element != "agent qa journal")
+        );
+        let dev = String::from_utf8(
+            plan.artifacts
+                .iter()
+                .find(|a| a.path == Path::new("agents/dev.md"))
+                .unwrap()
+                .content
+                .clone(),
+        )
+        .unwrap();
+        assert!(!dev.contains("Journal"), "{dev}");
     }
 }
