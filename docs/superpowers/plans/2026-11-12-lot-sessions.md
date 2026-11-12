@@ -401,6 +401,10 @@ Décision de Dimitri (2026-11-12, mot pour mot), sur T1 à T20 : « Validés, aj
   ```
   **T16w**, en plus pour `write` : `Record a decision you take: armadai journal add --lot <lot> --kind decision --by ‹id› "<one line>".`
 - **T17a, rapport** `journal` (`compiled`) : `instructions in CLAUDE.md (armadai journal)` ; **T17b** `agent ‹id› journal` (`compiled`) : `instructions in .claude/agents/‹id›.md`. Autres cibles : `not-compiled`, `Claude Code only`.
+- **T17c, agent sans Bash** (rapport Claude, remplace T17b pour cet agent) : `agent ‹id› journal` (`approximated`) : `native tools exclude Bash: the agent cannot run armadai journal`. Cas couverts, dans `claude.rs` : un `native.claude.tools` en liste blanche sans `Bash` (`Bash(...)` compte comme `Bash`), un `native.claude.disallowedTools` qui nomme `Bash`.
+- **T17d, `sessions.journal` sans coordinateur** (rapport Claude) : `journal` (`not-compiled`) : `no coordinator: nothing to carry the instructions`.
+- **Coordinateur qui porte `journal:`** : la section T15 entre dans `CLAUDE.md` avec `--by` = son id, même sans `sessions.journal` (aucun texte nouveau).
+  Décision de Dimitri (2026-11-12, mot pour mot) : agent sans Bash, « Ligne approximated (Recommandé) » ; les deux cas limites (coordinateur qui porte `journal:`, `sessions.journal` sans coordinateur), « Traiter les deux (Recommandé) ». Textes T17c et T17d validés tels quels.
 
 **PR 2, lien**
 - **T18a, `invalid-session-link`** : ``session_link.to `‹x›` is not a session name: lowercase letters, digits and -`` ; indice `name the session as you start it: claude --name <name>`
