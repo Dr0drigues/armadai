@@ -4,6 +4,7 @@ mod grant;
 mod graph;
 pub mod init;
 mod inspect;
+mod journal;
 mod link;
 mod list;
 mod migrate;
@@ -93,6 +94,18 @@ pub enum Command {
     Inspect {
         /// Agent id (its file name under .armadai/agents/)
         agent: String,
+    },
+    /// Keep and read the journal of a lot (decisions and state, shared between worktrees)
+    #[command(
+        long_about = "Keep and read the journal of a lot: decisions and state that every session \
+            of the project can read, including a session in another git worktree. Entries are \
+            appended as JSON lines to .armadai/state/journal-<lot>.jsonl of the main checkout; \
+            an entry without --lot goes to journal.jsonl and shows with every lot. Nothing is \
+            edited or deleted."
+    )]
+    Journal {
+        #[command(subcommand)]
+        what: journal::JournalCommand,
     },
     /// Draw a flow, every flow, or the team (Mermaid, Markdown, DOT, JSON or ASCII)
     #[command(
@@ -536,6 +549,7 @@ pub fn handle(cli: Cli) -> anyhow::Result<()> {
             open,
         } => graph::execute(flow, format, view, open),
         Command::Flow { what } => flow::execute(what),
+        Command::Journal { what } => journal::execute(what),
         Command::Grant {
             level,
             until,
@@ -715,6 +729,7 @@ mod tests {
             "inspect",
             "graph",
             "flow",
+            "journal",
             "grant",
             "revoke",
             "validate",

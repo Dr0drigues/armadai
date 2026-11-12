@@ -3,6 +3,7 @@ mod claude_adapter;
 mod cli;
 mod compile;
 mod flow_status;
+mod journal;
 mod linker;
 mod migrate;
 mod pack;
