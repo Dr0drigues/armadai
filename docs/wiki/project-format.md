@@ -543,7 +543,7 @@ warning on stderr.
 | `ambiguous-entry` | warning | The flow declares no `start` and a step the guess above takes as an entry has an incoming link (of any kind): where the flow begins is only a guess (an entry with no incoming link at all is not warned) | Declare `start: <step>` to say where the flow begins |
 | `optional-start-step` | error | A step marked `optional: true` is an entry step of its flow (the declared `start`, or the one the heuristic finds) | A flow must begin with a step that runs: make another step the start, or drop `optional` |
 | `unreachable-step` | warning | A step cannot be reached from any entry step (every link and `on_failure` counts here) | Link it, or remove it |
-| `invalid-session-link` | error | A flow's `session_link.to` is empty, has a line break, a backtick or a blank at either end, or its `when` is empty or blank | Name the session as you start it (`claude --name <name>`), and say when to write to it |
+| `invalid-session-link` | error | A flow's `session_link.to` is empty, has a line break (`\n` or `\r`), a backtick or a blank at either end, or its `when` is empty or blank | Name the session as you start it (`claude --name <name>`), and say when to write to it |
 | `empty-command` | error | An automation's `run` is empty | Give the command to run |
 | `unknown-template` | error | An agent's `from` names no template of `templates/` | Use an existing template id (the hint suggests a close one) |
 | `missing-template-var` | error | The template uses `{{x}}` and the instance's `vars` does not set `x` | Add `x` to `vars` |

@@ -992,7 +992,7 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
     for (id, f) in &project.flows {
         let at = (Kind::Flow, id.as_str());
         if let Some(l) = &f.session_link {
-            if l.to.is_empty() || l.to.contains(['\n', '`']) || l.to.trim() != l.to {
+            if l.to.is_empty() || l.to.contains(['\n', '\r', '`']) || l.to.trim() != l.to {
                 o.err(
                     at,
                     "invalid-session-link",
