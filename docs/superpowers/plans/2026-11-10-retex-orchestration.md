@@ -578,12 +578,12 @@ Sources, mot pour mot :
 - [ ] Nouveau code `grant-broad-rule` (Warning), un par règle large d'un niveau. Le texte est T21, en choix par défaut.
 - [ ] Est large une règle `Bash` qui remplit l'une de ces conditions. Le premier mot est normalisé selon le choix « graphies » de §6 (P2.4).
   - `Bash(*)` ou `Bash(* …)` (spécificateur qui commence par `*`). `Bash` seul n'en est pas : `grant-unsupported-rule` le couvre déjà (§6, P2.4).
-  - Un spécificateur dont le premier mot est un interpréteur ou un lanceur : `python`, `python3`, `node`, `ruby`, `perl`, `sh`, `bash`, `zsh`, `env`, `xargs`, `eval`, `exec`, `sudo`, `npx`, `timeout`, `nice`, `nohup`.
+  - Un spécificateur dont le premier mot est un interpréteur ou un lanceur : `python` (`python3`, `python3.13t` and the like normalize to it), `node`, `ruby`, `perl`, `sh`, `bash`, `zsh`, `env`, `xargs`, `eval`, `exec`, `sudo`, `npx`, `timeout`, `nice`, `nohup`.
   - Un spécificateur dont le premier mot est un outil de copie ou de déplacement et qui contient un `*` : `cp`, `mv`, `rsync`, `ln`, `tar`.
 - [ ] Limite connue, à écrire dans le wiki (`project-format.md`) : `make`, `npm run`, `cargo run` et `git` ne sont pas dans la liste (§6, P2.4).
 - [ ] La liste est une constante commentée « incomplète par construction : un avertissement, pas une frontière (D16) ».
 - Tests :
-  - un cas par forme (`Bash(*)`, `Bash(* --x)`, `Bash(python3 x.py)`, `Bash(xargs rm)`, `Bash(cp * /tmp)`), message entier à égalité ;
+  - un cas par forme (`Bash(*)`, `Bash(* --x)`, `Bash(python3 x.py)`, `Bash(python3.13t x.py)`, `Bash(xargs rm)`, `Bash(cp * /tmp)`), message entier à égalité ;
   - un cas par graphie normalisée (`Bash(FOO=1 python x)`, `Bash(/usr/bin/python3.12 x)`, `Bash(Python x)`, `Bash(sudo:*)`) ;
   - aucun avertissement pour `Bash(git push origin feature/*)`, ni pour `Bash(cp a b)`, ni pour `Bash` seul (qui reste à `grant-unsupported-rule`).
   - Mutations : retirer un mot de la liste (son cas rougit) ; supprimer la condition « contient `*` » pour les outils de copie (le cas `cp a b` rougit) ; retirer une étape de normalisation (le cas de cette graphie rougit).
