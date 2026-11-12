@@ -77,6 +77,25 @@ run (`armadai pack update` or `armadai pack sync`). See [Starter packs](starter-
 | `ui.subagent_status_line: true` | the plugin `armadai-ui` in `.armadai/plugins/armadai-ui/` (`.claude-plugin/marketplace.json`, `.claude-plugin/plugin.json`, and a `settings.json` whose `subagentStatusLine` runs `armadai __claude-subagent-statusline`), and two entries in `.claude/settings.json`: `extraKnownMarketplaces.armadai-ui` (a `directory` source, `./.armadai/plugins/armadai-ui`) and `enabledPlugins.armadai-ui@armadai-ui: true`. Claude Code loads the plugin once you trust the folder. The plugin is versioned with the project. If you already set one of those two entries to another value, `link` writes no plugin and reports `ui.subagent_status_line` as `not-compiled`, naming the key. `native.claude` may not hold `enabledPlugins` or `extraKnownMarketplaces` with this key (error). The other targets report `not-compiled (Claude Code only)` |
 | `ui.panel: true` | the mod of the plugin `armadai-ui`: `hooks/hooks.json`, `hooks/register.js` (embedded in the binary, written as is) and `panel.json` (`ui.documents`, default `["docs"]`), plus the plugin and its two `.claude/settings.json` entries when `ui.subagent_status_line` has not already written them (the plugin's own `settings.json` stays that key's). Reported `approximated`: it runs JavaScript and the `armadai` command with your permissions and needs Claude Code 2.1.318 or later. The same rules as for `ui.subagent_status_line` apply to a user value on a plugin key, to a plugin you already have and to `native.claude`. The other targets report `not-compiled (Claude Code only)`. See [Flow status](flow-status.md#panel-mod) |
 
+<a id="the-chained-status-line"></a>
+**The chained status line.** `ui.status_line: true` writes the `statusLine` of the project
+(`armadai __claude-statusline`) with `refreshInterval: 5`: the refresh interval of your own status
+line is replaced by ours, 5 seconds, since only one `statusLine` runs. That command first runs your
+user `statusLine` (`$CLAUDE_CONFIG_DIR/settings.json`, else `~/.claude/settings.json`; a command of
+the `command` type, not ours) with `sh -c`, the same JSON on stdin and a limit of 1 second, then
+prints its output and the flow line on the next row. Failing (non-zero), absent or too slow, your
+bar shows nothing and the flow line shows alone; the exit code is always 0. Only a bar that goes
+over the 1 second has its whole process group killed, so no child of it lingers; a bar that ends in
+time, even one that fails, is left alone, and so is anything it detached. The chain sets
+`ARMADAI_STATUSLINE_CHAINED=1` for your command, so a user bar that is ours does not call itself.
+Unix only (Windows shows the flow line alone). The report line is `chained after your user status
+line when there is one`.
+
+Cost, measured on 2026-11-12 with the development binary, `{}` on stdin, an isolated `HOME`, 20
+runs each: without a user bar a median of 11 ms (the first, cold run 699 ms); with a bar that prints
+`bar` a median of 25 ms, about 14 ms more; with a bar that sleeps 5 s a median of 1016 ms, the 1
+second limit plus about 16 ms, never the 5 s. A real bar such as ccstatusline was not measured.
+
 **Commands use `.claude/commands/`**, the format Claude Code documents as merged into skills
 whose files "keep working" (skills page, read on 2026-10-21): a legacy format that may be
 removed one day; the fallback would be a skill with `disable-model-invocation: true`. A skill and

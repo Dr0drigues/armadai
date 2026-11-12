@@ -190,7 +190,9 @@ fails, and a pack that lists none says so (`pack <name> declares no test (tests:
 Only `pack test` runs a pack's scripts: `link`, `init` and `pack sync` never do.
 
 `pack test` runs the pack's scripts with your permissions, in an isolated copy and with a temporary
-`HOME`; it does not isolate the network. A script can reach whatever your account can reach, so run
+`HOME`; it does not isolate the network. Only those three variables are replaced: every other
+variable of the caller passes through as it is (`PATH`, `XDG_CONFIG_HOME`, tokens in the
+environment), so a script sees them. A script can reach whatever your account can reach, so run
 the tests of a pack you have read. A path in `tests:` is used as written (no `~` or `$HOME`
 expansion, no trimming); an absolute path, a `..` component, an empty one or one holding a NUL byte
 is the validation error `pack-test-path-escapes`, and a symbolic link anywhere in the pack is
