@@ -1,4 +1,4 @@
-//! `armadai pack sync`, `status`, `add` and `update`.
+//! `armadai pack sync`, `status`, `add`, `update`, `pin` and `unpin`.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -36,6 +36,10 @@ pub enum PackCommand {
         /// An exact version instead of the range's best
         version: Option<String>,
     },
+    /// Keep this checkout on the pack version it locks now, even when .armadai/pack.lock moves
+    Pin,
+    /// Follow .armadai/pack.lock again
+    Unpin,
     /// Run the scripts a pack lists under tests: in an isolated copy (no network isolation)
     #[command(
         long_about = "Run the scripts a pack lists under tests: in pack.yaml, with bash, in a copy of the pack \
@@ -140,6 +144,27 @@ pub fn execute(what: PackCommand) -> anyhow::Result<()> {
                 &env,
             )?;
             finish(&root, done)
+        }
+        PackCommand::Pin => {
+            let pin = lock::pin(&root?)?;
+            println!(
+                "pinned pack {} {} for this checkout; pack update is refused here until armadai pack unpin",
+                pin.pack, pin.resolved.version
+            );
+            Ok(())
+        }
+        PackCommand::Unpin => {
+            let root = root?;
+            let Some(old) = lock::unpin(&root)? else {
+                anyhow::bail!("this checkout pins no pack");
+            };
+            let now =
+                lock::read_committed(&root)?.map_or("missing".to_string(), |l| l.resolved.version);
+            println!(
+                "unpinned pack {} (was {}); this checkout follows .armadai/pack.lock ({now}) again",
+                old.pack, old.resolved.version
+            );
+            Ok(())
         }
         PackCommand::New { .. } | PackCommand::Test { .. } => unreachable!("handled above"),
         PackCommand::Status => {

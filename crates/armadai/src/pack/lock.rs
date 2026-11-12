@@ -45,24 +45,70 @@ fn path(root: &Path) -> PathBuf {
     root.join(LOCK)
 }
 
-/// `None` when the lock is absent.
-pub fn read(root: &Path) -> anyhow::Result<Option<PackLock>> {
-    let p = path(root);
-    let text = match std::fs::read_to_string(&p) {
+/// Where this checkout's pin lives: `<git dir>/armadai/pack.lock`; `None` outside git.
+/// Git never lists that folder, and `git worktree remove` takes it with the worktree.
+pub fn pin_path(root: &Path) -> Option<PathBuf> {
+    crate::worktree::git_dir_of(root).map(|g| g.join("armadai/pack.lock"))
+}
+
+fn read_file(p: &Path, shown: &str) -> anyhow::Result<Option<PackLock>> {
+    let text = match std::fs::read_to_string(p) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => anyhow::bail!("{}: {e}", p.display()),
     };
     armadai_model::yaml::from_str(&text)
         .map(Some)
-        .map_err(|e| anyhow::anyhow!("{LOCK}: {e}"))
+        .map_err(|e| anyhow::anyhow!("{shown}: {e}"))
+}
+
+/// The pin of this checkout, if any. A symbolic link (on the file or on `armadai/`) is
+/// refused, not read through.
+pub fn read_pin(root: &Path) -> anyhow::Result<Option<PackLock>> {
+    let Some(p) = pin_path(root) else {
+        return Ok(None);
+    };
+    for f in [Some(&*p), p.parent()].into_iter().flatten() {
+        if std::fs::symlink_metadata(f).is_ok_and(|m| m.file_type().is_symlink()) {
+            anyhow::bail!("{} is a symbolic link; it is not read through", f.display());
+        }
+    }
+    read_file(&p, "the pack pin of this checkout")
+}
+
+/// `.armadai/pack.lock` only; `None` when it is absent.
+pub fn read_committed(root: &Path) -> anyhow::Result<Option<PackLock>> {
+    read_file(&path(root), LOCK)
+}
+
+/// The lock this checkout uses: its pin when it has one, else `.armadai/pack.lock`.
+pub fn read(root: &Path) -> anyhow::Result<Option<PackLock>> {
+    match read_pin(root)? {
+        Some(pin) => Ok(Some(pin)),
+        None => read_committed(root),
+    }
+}
+
+/// T7: what `pack update` and `pack add` say when the checkout is pinned.
+pub fn pinned_refusal(pin: &PackLock) -> String {
+    format!(
+        "refused: this checkout pins pack {} {} (armadai pack pin); run armadai pack unpin first",
+        pin.pack, pin.resolved.version
+    )
+}
+
+/// Refused while this checkout pins its pack (T7): the lock a pin masks is not rewritten.
+pub fn write(root: &Path, lock: &PackLock) -> anyhow::Result<()> {
+    if let Some(pin) = read_pin(root)? {
+        anyhow::bail!("{}", pinned_refusal(&pin));
+    }
+    write_file(&path(root), lock)
 }
 
 /// Written whole (`.tmp` then rename), never through a symbolic link.
-pub fn write(root: &Path, lock: &PackLock) -> anyhow::Result<()> {
-    let p = path(root);
+fn write_file(p: &Path, lock: &PackLock) -> anyhow::Result<()> {
     let tmp = p.with_extension("lock.tmp");
-    for f in [&p, &tmp] {
+    for f in [p, &tmp] {
         if std::fs::symlink_metadata(f).is_ok_and(|m| m.file_type().is_symlink()) {
             anyhow::bail!(
                 "{} is a symbolic link; it is not written through",
@@ -75,8 +121,46 @@ pub fn write(root: &Path, lock: &PackLock) -> anyhow::Result<()> {
         std::fs::create_dir_all(dir)?;
     }
     std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, &p)?;
+    std::fs::rename(&tmp, p)?;
     Ok(())
+}
+
+/// `pack pin`: copies `.armadai/pack.lock` to this checkout's pin (T1 to T4).
+pub fn pin(root: &Path) -> anyhow::Result<PackLock> {
+    let Some((name, _)) = super::effective::pack_ref(root) else {
+        anyhow::bail!(
+            "this project references no pack (pack: in .armadai/project.yaml); a pack installed by copy is already in the checkout and needs no pin"
+        );
+    };
+    let Some(p) = pin_path(root) else {
+        anyhow::bail!(
+            "pack pin needs a git checkout: the pin is kept in its git directory, and there is no .git above {}",
+            root.display()
+        );
+    };
+    if let Some(old) = read_pin(root)? {
+        anyhow::bail!(
+            "this checkout already pins pack {} {}; run armadai pack unpin first",
+            old.pack,
+            old.resolved.version
+        );
+    }
+    let Some(lock) = read_committed(root)? else {
+        anyhow::bail!("{}", super::effective::lock_missing(&name));
+    };
+    write_file(&p, &lock)?;
+    Ok(lock)
+}
+
+/// `pack unpin`: removes the pin (the folder around it stays); the pin it held, if any.
+pub fn unpin(root: &Path) -> anyhow::Result<Option<PackLock>> {
+    let Some(old) = read_pin(root)? else {
+        return Ok(None);
+    };
+    if let Some(p) = pin_path(root) {
+        std::fs::remove_file(p)?;
+    }
+    Ok(Some(old))
 }
 
 /// What became of the lock's tag in the clone.
@@ -366,5 +450,162 @@ mod tests {
             )
         );
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
+    }
+
+    // ---- the worktree pin ----
+
+    /// A main checkout `m` (a `.git` folder) and a linked worktree `wt` of it, both
+    /// referencing pack `demo`; returns (main, worktree).
+    fn checkouts(t: &Path) -> (PathBuf, PathBuf) {
+        let (m, wt) = (t.join("m"), t.join("wt"));
+        let gd = m.join(".git/worktrees/wt");
+        std::fs::create_dir_all(&gd).unwrap();
+        std::fs::write(wt_dot_git(&wt), format!("gitdir: {}\n", gd.display())).unwrap();
+        for r in [&m, &wt] {
+            std::fs::create_dir_all(r.join(".armadai")).unwrap();
+            std::fs::write(
+                r.join(".armadai/project.yaml"),
+                "schema_version: 1\npack: { name: demo, source: 'https://example.com/packs.git', version: latest }\n",
+            )
+            .unwrap();
+        }
+        (m, wt)
+    }
+
+    fn wt_dot_git(wt: &Path) -> PathBuf {
+        std::fs::create_dir_all(wt).unwrap();
+        wt.join(".git")
+    }
+
+    fn at(version: &str, commit: char) -> PackLock {
+        let mut l = sample();
+        l.resolved.version = version.into();
+        l.resolved.tag = Some(format!("demo-v{version}"));
+        l.resolved.commit = Some(commit.to_string().repeat(40));
+        l
+    }
+
+    #[test]
+    fn a_pin_wins_over_the_committed_lock_and_lives_in_the_worktree_git_dir() {
+        let t = tempfile::tempdir().unwrap();
+        let (m, wt) = checkouts(t.path());
+        write(&wt, &at("1.3.0", '3')).unwrap();
+        assert_eq!(pin(&wt).unwrap(), at("1.3.0", '3'));
+        assert_eq!(
+            pin_path(&wt),
+            Some(m.join(".git/worktrees/wt/armadai/pack.lock"))
+        );
+        // the main checkout has no pin of its own
+        assert_eq!(read_pin(&m).unwrap(), None);
+        // the committed lock moves on, as a `pack update` of the main checkout would
+        write_file(&path(&wt), &at("1.4.0", '4')).unwrap();
+        assert_eq!(read(&wt).unwrap(), Some(at("1.3.0", '3')));
+        assert_eq!(read_pin(&wt).unwrap(), Some(at("1.3.0", '3')));
+        assert_eq!(read_committed(&wt).unwrap(), Some(at("1.4.0", '4')));
+        assert_eq!(unpin(&wt).unwrap(), Some(at("1.3.0", '3')));
+        assert_eq!(read(&wt).unwrap(), Some(at("1.4.0", '4')));
+    }
+
+    #[test]
+    fn write_is_refused_under_a_pin_and_leaves_the_committed_lock() {
+        let t = tempfile::tempdir().unwrap();
+        let (_, wt) = checkouts(t.path());
+        write(&wt, &at("1.3.0", '3')).unwrap();
+        pin(&wt).unwrap();
+        let err = write(&wt, &at("1.4.0", '4')).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "refused: this checkout pins pack demo 1.3.0 (armadai pack pin); run armadai pack unpin first"
+        );
+        assert_eq!(read_committed(&wt).unwrap(), Some(at("1.3.0", '3')));
+    }
+
+    #[test]
+    fn pin_refusals_are_the_planned_texts() {
+        let t = tempfile::tempdir().unwrap();
+        let (m, wt) = checkouts(t.path());
+        // a lock is missing
+        assert_eq!(
+            pin(&wt).unwrap_err().to_string(),
+            ".armadai/project.yaml references pack demo but .armadai/pack.lock is missing: run `armadai pack update`"
+        );
+        write(&wt, &at("1.3.0", '3')).unwrap();
+        pin(&wt).unwrap();
+        assert_eq!(
+            pin(&wt).unwrap_err().to_string(),
+            "this checkout already pins pack demo 1.3.0; run armadai pack unpin first"
+        );
+        // a copy-mode project
+        std::fs::write(m.join(".armadai/project.yaml"), "schema_version: 1\n").unwrap();
+        assert_eq!(
+            pin(&m).unwrap_err().to_string(),
+            "this project references no pack (pack: in .armadai/project.yaml); a pack installed by copy is already in the checkout and needs no pin"
+        );
+        assert_eq!(unpin(&m).unwrap(), None);
+    }
+
+    #[test]
+    fn a_pin_outside_git_is_refused_by_name() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join("plain");
+        std::fs::create_dir_all(root.join(".armadai")).unwrap();
+        std::fs::write(
+            root.join(".armadai/project.yaml"),
+            "schema_version: 1\npack: { name: demo, source: 'https://example.com/packs.git', version: latest }\n",
+        )
+        .unwrap();
+        if pin_path(&root).is_some() {
+            return; // the temporary folder sits inside a repository on this machine
+        }
+        assert_eq!(read(&root).unwrap(), None);
+        assert_eq!(
+            pin(&root).unwrap_err().to_string(),
+            format!(
+                "pack pin needs a git checkout: the pin is kept in its git directory, and there is no .git above {}",
+                root.display()
+            )
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_pin_that_is_a_link_is_refused_not_read_through() {
+        let t = tempfile::tempdir().unwrap();
+        let (_, wt) = checkouts(t.path());
+        let real = t.path().join("elsewhere");
+        std::fs::write(&real, "format: 1\n").unwrap();
+        let p = pin_path(&wt).unwrap();
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&real, &p).unwrap();
+        let want = format!("{} is a symbolic link; it is not read through", p.display());
+        assert_eq!(read_pin(&wt).unwrap_err().to_string(), want);
+        assert_eq!(read(&wt).unwrap_err().to_string(), want);
+        assert_eq!(unpin(&wt).unwrap_err().to_string(), want);
+        // the folder around the pin as a link
+        std::fs::remove_file(&p).unwrap();
+        let dir = p.parent().unwrap().to_path_buf();
+        std::fs::remove_dir(&dir).unwrap();
+        let other = t.path().join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        std::os::unix::fs::symlink(&other, &dir).unwrap();
+        write_file(&path(&wt), &sample()).unwrap();
+        let want = format!(
+            "{} is a symbolic link; it is not read through",
+            dir.display()
+        );
+        assert_eq!(pin(&wt).unwrap_err().to_string(), want);
+        assert!(!other.join("pack.lock").exists());
+    }
+
+    #[test]
+    fn a_lock_written_before_the_pin_existed_still_reads() {
+        let t = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(t.path().join(".armadai")).unwrap();
+        std::fs::write(
+            t.path().join(LOCK),
+            "format: 1\npack: demo\nsource: 'https://example.com/packs.git'\nresolved:\n  version: 1.3.2\n  tag: demo-v1.3.2\n  commit: 0123456789abcdef0123456789abcdef01234567\n",
+        )
+        .unwrap();
+        assert_eq!(read(t.path()).unwrap(), Some(sample()));
     }
 }
