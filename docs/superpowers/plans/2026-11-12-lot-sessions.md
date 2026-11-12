@@ -435,6 +435,13 @@ Et sur la spec (2026-11-12) : verrou de worktree ; `pack pin` explicite + `updat
 
 ## 7. Résultats des mesures (rempli en tâche)
 
-- K.0 : à faire.
+- K.0 : mesuré le 2026-11-12, `git version 2.56.0` (macOS), dépôt jetable, `GIT_CONFIG_GLOBAL`/`SYSTEM` vides, aucun réseau. Critère d'arrêt non atteint.
+  - (a) checkout principal : `.git` est un dossier ; `--absolute-git-dir` = `<main>/.git` (aussi depuis un sous-dossier) ; `--git-common-dir` = `.git` (relatif) à la racine, `../.git` depuis `sub/`.
+  - (b) `git worktree add ../wt` : `.git` est un fichier `gitdir: <abs main>/.git/worktrees/wt` (chemin absolu) ; `--absolute-git-dir` = ce chemin, aussi depuis un sous-dossier ; `--git-common-dir` = `<main>/.git`.
+  - (c) `-c worktree.useRelativePaths=true` : accepté par cette version ; `.git` = `gitdir: ../main/.git/worktrees/wt-rel` (**relatif**), `--absolute-git-dir` = `<main>/.git/worktrees/wt-rel`, et `<git dir>/gitdir` contient alors `../../../../wt-rel/.git`. Le cas relatif existe donc ; la règle de K.1 (résoudre contre le dossier du fichier `.git`, puis retirer les `..`) retrouve le même chemin.
+  - (d) `git worktree move ../wt ../wt2` : le `.git` du worktree déplacé reste identique (`gitdir:` absolu vers `.git/worktrees/wt`) ; git dir inchangé. Un worktree relatif déplacé garde son `.git` relatif inchangé (`../main/.git/worktrees/wt-rel`) alors que le dossier est devenu `wt-rel2`, voisin de `main` : la résolution reste juste ici parce que le déplacement garde le même parent.
+  - (e) sous-module : `.git` est un fichier `gitdir: ../.git/modules/msub` (relatif) ; `--absolute-git-dir` = `<main>/.git/modules/msub`, que la règle retrouve ; il ne contient pas `/.git/worktrees/`, donc `main_checkout_of` rend `None` (l'ancien code rendait le super-projet : écart signalé en K.1).
+  - (f) hors dépôt : `fatal: not a git repository` ; `git_dir_of` rend `None`.
+  - `<git dir>/armadai/pack.lock` dans le worktree (b, déplacé en `wt2`) : `git status --porcelain` vide (dans le worktree), `git worktree list` sans plainte, `git fsck` code 0 sans sortie ; `git worktree remove ../wt2` code 0, efface le dossier du worktree **et** son git dir `.git/worktrees/wt` (donc le verrou avec lui).
 - E : à faire (version de Claude Code de Dimitri, aller-retour entre deux sessions nommées, messages tenus).
 
