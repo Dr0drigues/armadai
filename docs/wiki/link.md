@@ -68,9 +68,9 @@ link refused: .armadai is a symbolic link to <target>, outside this checkout, an
 ```
 
 (`unlink refused: …` for `unlink`; exit code 1.) Without a pin, a `.armadai` leading out gets a
-note on stderr and `link` goes on: `note: .armadai is a symbolic link to <target>, outside this
-checkout; link writes through it`. A `.claude` leading out is refused with or without a pin
-(`.claude resolves outside the project`). A link that stays inside the checkout is never reported.
+note on stderr and `link` goes on (`unlink` writes no note): `note: .armadai is a symbolic link to <target>, outside this
+checkout; link writes through it`. `link` refuses a `.claude` leading out with or without a pin
+(`.claude resolves outside the project`); without a pin, `unlink` deletes through that link. A link that stays inside the checkout is never reported.
 
 ## Claude Code
 

@@ -139,7 +139,7 @@ unpinned pack demo (was 1.3.0); this checkout follows .armadai/pack.lock (1.3.0)
 checkout (`.git/worktrees/<name>/` for a linked worktree, `.git/` for the main one). Git never
 lists that folder, so `git status` stays clean, it is not shared with another checkout, and
 `git worktree remove` deletes it with the worktree. From then on every command that reads the lock
-(`link`, `list`, `inspect`, `graph`, `validate`, `flow`, `pack status`, `pack test`, the policy
+(`link`, `list`, `inspect`, `graph`, `validate`, `flow`, `pack test`, the policy
 gate and the `grant` hook) reads the pin instead, whatever `.armadai/pack.lock` says. The pin is
 never set by another command, and `pack unpin` removes only that file.
 
