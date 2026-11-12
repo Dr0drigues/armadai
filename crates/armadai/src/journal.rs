@@ -100,8 +100,8 @@ pub fn add(
     add_with(root, lot, kind, by, text, now, |_| {})
 }
 
-/// `add`, calling `between(path)` after the last-byte check and before the write, both under
-/// the lock (a test looks at the lock there).
+/// `add`, calling `between(path)` twice under the lock (a test looks at the lock there): right
+/// after it is taken, then after the last-byte check and before the write.
 fn add_with(
     root: &Path,
     lot: Option<&str>,
@@ -109,7 +109,7 @@ fn add_with(
     by: Option<&str>,
     text: &str,
     now: u64,
-    between: impl FnOnce(&Path),
+    mut between: impl FnMut(&Path),
 ) -> anyhow::Result<()> {
     use std::io::{Read, Seek, SeekFrom, Write};
     let name = file_name(lot)?;
@@ -167,6 +167,7 @@ fn add_with(
     // line can be seen half written (Linux updates the size page by page), which would
     // read as a torn line and add a blank one.
     crate::file_lock::lock_exclusive(&f)?;
+    between(&path);
     let mut out = Vec::with_capacity(line.len() + 1);
     // a torn last line (no `\n`) must not swallow this entry
     if f.metadata()?.len() > 0 {
@@ -208,6 +209,15 @@ fn files_to_read(dir: &Path, lot: Option<&str>) -> anyhow::Result<Vec<String>> {
 
 /// The file's bytes, `None` when absent; a symbolic link (the folder or the file) is refused.
 fn read_unlinked(dir: &Path, name: &str) -> anyhow::Result<Option<Vec<u8>>> {
+    read_unlinked_with(dir, name, |_| {})
+}
+
+/// `read_unlinked`, calling `during(path)` while the shared lock is held, before the read.
+fn read_unlinked_with(
+    dir: &Path,
+    name: &str,
+    during: impl FnOnce(&Path),
+) -> anyhow::Result<Option<Vec<u8>>> {
     use std::io::Read;
     let path = dir.join(name);
     for at in [dir, path.as_path()] {
@@ -228,6 +238,9 @@ fn read_unlinked(dir: &Path, name: &str) -> anyhow::Result<Option<Vec<u8>>> {
     }
     match o.open(&path) {
         Ok(mut f) => {
+            // wait for a writer in the middle of a line
+            crate::file_lock::lock_shared(&f)?;
+            during(&path);
             let mut v = Vec::new();
             f.read_to_end(&mut v)?;
             Ok(Some(v))
@@ -595,14 +608,31 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn the_file_is_locked_from_the_check_to_the_write() {
+    fn the_file_is_locked_from_its_opening_to_the_write() {
         let t = project();
-        let mut seen = None;
+        let mut seen = vec![];
         add_with(t.path(), None, Kind::Note, None, "x", 1, |path| {
             let other = fs::OpenOptions::new().append(true).open(path).unwrap();
+            seen.push(crate::file_lock::is_locked_elsewhere(&other));
+        })
+        .unwrap();
+        // right after the lock, and again just before the write
+        assert_eq!(seen, [true, true]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_read_holds_a_shared_lock() {
+        let t = project();
+        put(t.path(), None, "x", 1);
+        let dir = t.path().join(".armadai/state");
+        let mut seen = None;
+        let got = read_unlinked_with(&dir, "journal.jsonl", |path| {
+            let other = fs::OpenOptions::new().read(true).open(path).unwrap();
             seen = Some(crate::file_lock::is_locked_elsewhere(&other));
         })
         .unwrap();
+        assert!(got.is_some());
         assert_eq!(seen, Some(true));
     }
 }

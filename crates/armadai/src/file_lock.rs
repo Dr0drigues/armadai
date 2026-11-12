@@ -3,15 +3,15 @@
 //! append that follows, between processes (it does not guard against a process that ignores
 //! the lock).
 
-/// Blocks until this process holds `flock(LOCK_EX)` on `f`; the lock goes with the open file
-/// description, so it is released when `f` (and any duplicate) is dropped.
+/// Blocks until this process holds `flock` on `f`, exclusive or shared; the lock goes with
+/// the open file description, so it is released when `f` (and any duplicate) is dropped.
 #[cfg(unix)]
-pub(crate) fn lock_exclusive(f: &std::fs::File) -> std::io::Result<()> {
+fn flock_blocking(f: &std::fs::File, op: libc::c_int) -> std::io::Result<()> {
     use std::os::fd::AsRawFd;
     loop {
         // SAFETY: `flock` takes a file descriptor and an integer and touches no memory; the
         // descriptor is open for as long as `f` is borrowed.
-        let rc = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) };
+        let rc = unsafe { libc::flock(f.as_raw_fd(), op) };
         if rc == 0 {
             return Ok(());
         }
@@ -22,6 +22,17 @@ pub(crate) fn lock_exclusive(f: &std::fs::File) -> std::io::Result<()> {
     }
 }
 
+#[cfg(unix)]
+pub(crate) fn lock_exclusive(f: &std::fs::File) -> std::io::Result<()> {
+    flock_blocking(f, libc::LOCK_EX)
+}
+
+/// A reader's lock: it waits for a writer's exclusive lock, so it never sees a half-written line.
+#[cfg(unix)]
+pub(crate) fn lock_shared(f: &std::fs::File) -> std::io::Result<()> {
+    flock_blocking(f, libc::LOCK_SH)
+}
+
 /// shortcut: no lock off Unix, a torn-line check may then race a concurrent append; revisit
 /// when the journal is used on Windows.
 #[cfg(not(unix))]
@@ -29,8 +40,14 @@ pub(crate) fn lock_exclusive(_f: &std::fs::File) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Whether another open file description could take the lock right now (it takes it, and the
-/// answer is dropped with `f`). For tests.
+#[cfg(not(unix))]
+pub(crate) fn lock_shared(_f: &std::fs::File) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// Whether the file is locked by another open file description, so that an exclusive lock
+/// cannot be taken now (`true`). When it is free this takes the lock, kept until `f` is
+/// dropped, and returns `false`. For tests.
 #[cfg(all(test, unix))]
 pub(crate) fn is_locked_elsewhere(f: &std::fs::File) -> bool {
     use std::os::fd::AsRawFd;
