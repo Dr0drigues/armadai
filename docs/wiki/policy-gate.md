@@ -145,7 +145,7 @@ whose merged project has errors is still "no opinion" (the invalid-project case 
 
 The gate finds the project from the session's directory upwards (without crossing a `.git`
 boundary), and from a git worktree falls back to the main checkout when the worktree has no
-`.armadai/` of its own.
+`.armadai/` of its own. Inside a git submodule there is no such fallback to the superproject.
 
 ## Limits
 

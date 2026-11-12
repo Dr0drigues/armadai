@@ -2,8 +2,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
-/// Lexical `..`/`.` removal: the path may not exist, and canonicalizing would
-/// rewrite symlinked prefixes (`/var` vs `/private/var`).
+/// Lexical `..`/`.` removal, for a path whose base is already canonical (or absolute).
 fn clean(p: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for c in p.components() {
@@ -31,7 +30,14 @@ pub(crate) fn git_dir_of(dir: &Path) -> Option<PathBuf> {
         if dot_git.is_file() {
             let raw = std::fs::read_to_string(&dot_git).ok()?;
             let gitdir = raw.lines().next()?.strip_prefix("gitdir:")?.trim();
-            return Some(clean(&d.join(gitdir)));
+            // A relative value is relative to the real folder: reached through a symbolic
+            // link, a lexical `..` would climb the link's parent instead.
+            let base = if Path::new(gitdir).is_absolute() {
+                d.to_path_buf()
+            } else {
+                std::fs::canonicalize(d).ok()?
+            };
+            return Some(clean(&base.join(gitdir)));
         }
     }
     None
@@ -85,18 +91,38 @@ mod tests {
     #[test]
     fn a_relative_gitdir_is_resolved_against_the_dir_of_the_dot_git_file() {
         let t = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(t.path()).unwrap();
         dotgit(
-            &t.path().join("wt-rel"),
+            &root.join("wt-rel"),
             "gitdir: ../main/.git/worktrees/wt-rel\n",
         );
         assert_eq!(
-            git_dir_of(&t.path().join("wt-rel")),
-            Some(t.path().join("main/.git/worktrees/wt-rel"))
+            git_dir_of(&root.join("wt-rel")),
+            Some(root.join("main/.git/worktrees/wt-rel"))
         );
         assert_eq!(
-            main_checkout_of(&t.path().join("wt-rel")),
-            Some(t.path().join("main"))
+            main_checkout_of(&root.join("wt-rel")),
+            Some(root.join("main"))
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_relative_gitdir_is_resolved_from_the_real_folder_not_the_link() {
+        let t = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(t.path()).unwrap();
+        dotgit(
+            &root.join("real/x/wt-rel"),
+            "gitdir: ../main/.git/worktrees/wt-rel\n",
+        );
+        fs::create_dir_all(root.join("other")).unwrap();
+        std::os::unix::fs::symlink(root.join("real/x/wt-rel"), root.join("other/wt-link")).unwrap();
+        let via_link = root.join("other/wt-link");
+        assert_eq!(
+            git_dir_of(&via_link),
+            Some(root.join("real/x/main/.git/worktrees/wt-rel"))
+        );
+        assert_eq!(main_checkout_of(&via_link), Some(root.join("real/x/main")));
     }
 
     #[test]
@@ -113,23 +139,20 @@ mod tests {
     #[test]
     fn outside_git_there_is_nothing() {
         let t = tempfile::tempdir().unwrap();
-        // a temp dir may sit under a repo on some machines; use a name no `.git` can match
-        if git_dir_of(t.path()).is_none() {
-            assert_eq!(main_checkout_of(t.path()), None);
-        }
+        assert!(t.path().ancestors().all(|a| !a.join(".git").exists()));
+        assert_eq!(git_dir_of(t.path()), None);
+        assert_eq!(main_checkout_of(t.path()), None);
     }
 
     #[test]
     fn a_submodule_is_not_a_worktree() {
         let t = tempfile::tempdir().unwrap();
-        dotgit(
-            &t.path().join("main/msub"),
-            "gitdir: ../.git/modules/msub\n",
-        );
+        let root = fs::canonicalize(t.path()).unwrap();
+        dotgit(&root.join("main/msub"), "gitdir: ../.git/modules/msub\n");
         assert_eq!(
-            git_dir_of(&t.path().join("main/msub")),
-            Some(t.path().join("main/.git/modules/msub"))
+            git_dir_of(&root.join("main/msub")),
+            Some(root.join("main/.git/modules/msub"))
         );
-        assert_eq!(main_checkout_of(&t.path().join("main/msub")), None);
+        assert_eq!(main_checkout_of(&root.join("main/msub")), None);
     }
 }
