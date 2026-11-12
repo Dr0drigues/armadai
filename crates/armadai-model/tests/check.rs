@@ -1732,10 +1732,10 @@ fn invalid_session_link_names_the_faulty_key() {
             .filter(|d| d.code == "invalid-session-link")
             .count()
     };
-    for ok in ["chantier", "Chantier", "a_b", "release notes", "Fronto-61"] {
+    for ok in ["chantier", "Chantier", "a_b", "release notes", "Release-61"] {
         assert_eq!(code(&link(ok, "scope question")), 0, "{ok}");
     }
-    for bad in ["", " x", "x ", "a\nb", "\tx", "a`b"] {
+    for bad in ["", " x", "x ", "a\nb", "a\rb", "\tx", "a`b"] {
         let ds = link(bad, "scope question");
         let d = err(&ds, "invalid-session-link", (4, 3));
         assert_eq!(
