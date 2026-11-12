@@ -727,7 +727,8 @@ Code, messages et sorties en anglais. `‹…›` marque une valeur.
 
 **Étape facultative, bloc coordinateur de `CLAUDE.md`** (décision de Dimitri, 2026-11-12, après l'essai réel où le lead hésitait à sauter une étape `optional` : « Oui, dans cette PR (Recommandé) »)
 - Phrase, mot pour mot : `An optional step may be skipped: delegate the step after it directly.` Elle est ajoutée au bloc compilé par `link`, dans son propre paragraphe après les sections de flow et avant « Marking delegations », seulement si un flow a au moins une étape `optional` (aucun autre projet ne change).
-- OpenCode : pas d'équivalent. `.opencode/armadai-team.md` est neutre, lu par tous les agents, et ne donne aucune consigne ; il ne porte que le `, optional` de la ligne de l'étape.
+- OpenCode : un équivalent existe (correction d'une ligne inexacte de cette entrée) : les consignes de délégation du coordinateur vont dans son propre fichier d'agent, section `## Delegation` (`opencode.rs`). Décision de Dimitri, 2026-11-12, à « Faut-il aussi dire au coordinateur OpenCode qu'une étape `optional` peut être sautée ? » : « Oui, dans cette PR (Recommandé) ». La même phrase, mot pour mot, termine donc cette section dans le fichier du seul coordinateur, avec la même condition. `.opencode/armadai-team.md` reste neutre (lu par tous les agents) : il ne porte que le `, optional` de la ligne de l'étape.
+- Mesure faite avant d'écrire la phrase (2026-11-12, `link --target opencode`, `policy.delegation: strict`, flow design → build → check `optional` → review, agent coordinateur `lead` hors flow) : le fichier `agents/lead.md` porte `permission.task` `{"*": "deny", chk: allow, des: allow, dev: allow, rev: allow}` ; le coordinateur peut donc déléguer à l'agent de `review` sans passer par `check`. Même règle pour `agent.build` et `agent.plan` dans `opencode.json`. Aucun essai `opencode` réel.
 
 ## 6. Choix par défaut (mandat du 2026-11-10, à confirmer par Dimitri)
 
