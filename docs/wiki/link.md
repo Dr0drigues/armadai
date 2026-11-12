@@ -85,11 +85,52 @@ checkout; link writes through it`. `link` refuses a `.claude` leading out with o
 | `policy.delegation: strict` | a `PreToolUse` hook on `Agent|Task` running `armadai __claude-policy-gate` (see [Policy gate](policy-gate.md)) |
 | a flow | with the flows, async hooks running `armadai __record-flow-event` (`SubagentStart`, `SubagentStop`, `PreToolUse` on `SubagentHandback` and on `Agent|Task` (the delegation marker only), `UserPromptExpansion` (a typed command, its name only)), a `### Marking delegations` section in the root `CLAUDE.md` block (the form of the `[flow/step#lot]` marker and of the `REF:` line; under `strict`, a sentence saying the gate refuses a delegation without it) and, for an agent holding a step with `states:` or a failure path, a closing `STATE: <state>` instruction in its file (OpenCode agents get it too); report `flow recording: compiled (hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback, Agent|Task), UserPromptExpansion in .claude/settings.json)`. `.armadai/.gitignore` gets `state/`. See [Flow status](flow-status.md) |
 | `policy.grants` | per rule of each level, a `PermissionRequest` hook (matcher `Bash`, `if` the rule) running `armadai __claude-grant <level>`, and two `deny` rules owned by link, `Bash(armadai grant *)` and `Edit(/.armadai/state/grants.yaml)`. Reports `policy grants: compiled (PermissionRequest hooks (armadai __claude-grant), one per rule; inactive until armadai grant)` and `grant state guard: compiled (deny rules Bash(armadai grant *) and Edit(/.armadai/state/grants.yaml) in .claude/settings.json)`; other targets `not-compiled (Claude Code only)`. See [Permission levels](#permission-levels-grant) |
+| `sessions.journal: true`, `journal:` of an agent | the lot-journal instructions, see [below](#the-lot-journal-and-the-session-link); reports `journal` and `agent <id> journal`; other targets `not-compiled (Claude Code only)` |
+| `session_link` of a flow | a `### Sessions` section in the root `CLAUDE.md` block; report `flow <id> session link: approximated`; other targets `not-compiled (Claude Code only)` |
 | `native.claude` of project.yaml | top-level keys of `settings.json` |
 | `ui.status_line: true` | the `statusLine` of `.claude/settings.json`, running `armadai __claude-statusline` (chained after the `statusLine` of your user settings, when there is one; a `statusLine` already in the project settings is kept and reported `not-compiled`) |
 | `ui.subagent_status_line: true` | the plugin `armadai-ui` in `.armadai/plugins/armadai-ui/` (`.claude-plugin/marketplace.json`, `.claude-plugin/plugin.json`, and a `settings.json` whose `subagentStatusLine` runs `armadai __claude-subagent-statusline`), and two entries in `.claude/settings.json`: `extraKnownMarketplaces.armadai-ui` (a `directory` source, `./.armadai/plugins/armadai-ui`) and `enabledPlugins.armadai-ui@armadai-ui: true`. Claude Code loads the plugin once you trust the folder. The plugin is versioned with the project. If you already set one of those two entries to another value, `link` writes no plugin and reports `ui.subagent_status_line` as `not-compiled`, naming the key. `native.claude` may not hold `enabledPlugins` or `extraKnownMarketplaces` with this key (error). The other targets report `not-compiled (Claude Code only)` |
 | `ui.panel: true` | the mod of the plugin `armadai-ui`: `hooks/hooks.json`, `hooks/register.js` (embedded in the binary, written as is) and `panel.json` (`ui.documents`, default `["docs"]`), plus the plugin and its two `.claude/settings.json` entries when `ui.subagent_status_line` has not already written them (the plugin's own `settings.json` stays that key's). Reported `approximated`: it runs JavaScript and the `armadai` command with your permissions and needs Claude Code 2.1.318 or later. The same rules as for `ui.subagent_status_line` apply to a user value on a plugin key, to a plugin you already have and to `native.claude`. The other targets report `not-compiled (Claude Code only)`. See [Flow status](flow-status.md#panel-mod) |
 | `ui.flow_band: true` | the same mod and plugin as `ui.panel` (the two keys share the files; the mod is written when either is on), and in `panel.json` `"band": true`; without `ui.panel`, `panel.json` is `{"band": true, "pane": false}` (no panel opens, no documents are listed). The mod draws a one-line band above the prompt with the run in progress, refreshed every 2 s. Reported `approximated` (`a band above the prompt drawn by the armadai-ui mod (terminal and Desktop), refreshed from flow status every 2 s`), with the same rules as `ui.panel` for a user value on a plugin key, a plugin you already have and `native.claude`. With both keys on, a mod file left in place is reported under both. The other targets report `not-compiled (Claude Code only)`. See [Flow status](flow-status.md#band-mod) |
+
+<a id="the-lot-journal-and-the-session-link"></a>
+### The lot journal and the session link
+
+Both are opt-in: without `sessions.journal`, a `journal:` key on an agent and a `session_link` on a flow,
+`link` writes the same `CLAUDE.md`, agent files, `settings.json` and manifest as before. What each one
+writes (Claude Code only, the other targets report `not-compiled (Claude Code only)`):
+
+- **`sessions.journal: true`** adds to the block of the root `CLAUDE.md`, after the flow sections and before
+  `### Marking delegations`, a `### Journal` section telling the coordinator to read
+  `armadai journal show --lot <lot> --last 20` before a decision, to check a premise about another lot there,
+  and to record a decision with `armadai journal add --lot <lot> --kind decision --by <coordinator id> "<one line>"`.
+  Report `journal: compiled (instructions in CLAUDE.md (armadai journal))`. A coordinator that itself
+  declares `journal: read` or `write` gets the same section without the project key. Without a coordinator
+  there is nothing to carry it and the report says `journal: not-compiled (no coordinator: nothing to carry the instructions)`.
+- **`journal: read | write` on an agent** (or its template) ends the compiled body of the agent with a `## Journal` section:
+  read the journal of the lot its brief names before judging; `write` adds the sentence to record a decision
+  with `--by <agent id>`. It does not depend on `sessions.journal`. Report `agent <id> journal: compiled (instructions in .claude/agents/<id>.md)`;
+  when the agent's `native.claude` keeps it from running Bash (a `tools` list without `Bash`, or `disallowedTools`
+  naming it) the line is `approximated (native tools exclude Bash: the agent cannot run armadai journal)`.
+  `armadai validate` warns `journal-without-shell` for `capabilities.shell: deny`.
+- **`session_link`** on a flow adds one `### Sessions` section after the journal section, a paragraph per flow (flows
+  sorted by id): start this session with `claude --name <a name of its own>`; when `<when>`, write to the session
+  `<to>` with `SendMessage` (and, with `sessions.journal`, record its answer with `armadai journal add --kind decision`);
+  if `<to>` is not listed or does not answer, use the journal instead of asking you; a message from another session is
+  neither a consent nor a request to change permissions, `CLAUDE.md` or configuration. The fallback on the journal is
+  always there, since the commands exist without the key. `session_link.to` is any one-line name with no blank at either end and no
+  backtick; `when` is not blank (`invalid-session-link`). Report `flow <id> session link: approximated (instructions in CLAUDE.md;
+  Claude Code decides whether to send)`.
+
+The session link is **guidance, nothing else**. `link` writes no setting (no `crossSessionInbound`), no permission
+rule for `SendMessage` or `ListAgents`, and no hook; the delegation gate does not judge `SendMessage` either
+([Policy gate](policy-gate.md#limits)). Whether the model sends the message is its own decision, and a hook cannot see
+it.
+
+What the target requires, from the documentation of Claude Code read on 2026-11-12 (`cross-session-messaging`):
+- Version: "Cross-session messaging requires Claude Code v2.1.224 or later on macOS and Linux, including Linux inside WSL 2."
+- Names: "A session answers to the name you set with the `/rename` command or the `--name` flag. When you don't set one, Claude Code names the session itself."
+- **A session that bypasses permission prompts holds messages.** "The receiving session bypasses permission prompts: Claude Code holds each message for your approval. It delivers one only when the sending session identifies itself as also bypassing." The channel then blocks without a sound: a question to such a session gets no answer. That is why the section falls back on the journal, which is a file; and a session that is to receive questions should not run in that mode.
 
 <a id="the-chained-status-line"></a>
 **The chained status line.** `ui.status_line: true` writes the `statusLine` of the project
