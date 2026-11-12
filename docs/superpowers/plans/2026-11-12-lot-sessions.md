@@ -358,6 +358,9 @@ Décision de Dimitri (2026-11-12, mot pour mot), sur T1 à T20 : « Validés, aj
 - **T8, pin qui ne correspond plus au projet** : `the pack pin of this checkout is for pack ‹a› from ‹src›, but .armadai/project.yaml references ‹b› from ‹src2›: run armadai pack unpin`
 - **T9, `link` refusé** : `link refused: ‹.claude› is a symbolic link to ‹target›, outside this checkout, and this checkout pins its pack; give the worktree its own ‹.claude›/ or run armadai pack unpin`
 - **T10, note sans pin** (stderr) : `note: ‹.claude› is a symbolic link to ‹target›, outside this checkout; link writes through it`
+- **T8b, `pack sync` sous verrou** (Dimitri, 2026-11-12, « Nommer le verrou (Recommandé) » ; sans verrou, les lignes existantes restent inchangées) :
+  - `  warn: tag ‹t› of pack ‹p› now points to ‹id›, the pack pin of this checkout says ‹id›: the pin is kept (link uses its commit)`
+  - `  warn: tag ‹t› of pack ‹p› no longer exists, the pack pin of this checkout keeps ‹id›`
 - Snapshot absent : message existant, inchangé (`pack ‹name› ‹v› (‹id›) is not in the local cache: run `armadai pack sync``).
 - Aide : `pin` = `Keep this checkout on the pack version it locks now, even when .armadai/pack.lock moves` ; `unpin` = `Follow .armadai/pack.lock again`.
 
