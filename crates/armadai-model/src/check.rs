@@ -999,7 +999,7 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
                     Some(("to", true)),
                     format!(
                         "session_link.to `{}` is not a session name: one line, no blank at either end, no backtick",
-                        l.to
+                        l.to.escape_debug()
                     ),
                     Some("name the session as you start it: claude --name <name>".into()),
                 );
