@@ -97,7 +97,7 @@ impl Compiler for ClaudeCompiler {
         // the plugin sits under `.armadai/plugins/`, outside the output folder; whether
         // it is written (the user may hold its keys) is decided by `link`
         let ui = &project.manifest.ui;
-        if ui.subagent_status_line || ui.panel {
+        if ui.subagent_status_line || ui.panel || ui.flow_band {
             for (path, text) in claude_settings::plugin_files(ui) {
                 plan.artifacts.push(Artifact {
                     produced_by: ProducedBy::plugin(path.display().to_string()),
@@ -515,6 +515,9 @@ pub(super) fn flow_section(fid: &str, flow: &Flow) -> String {
     out.push_str("Steps:\n\n");
     for (sid, s) in &flow.steps {
         let mut detail = format!("agent `{}`", s.agent);
+        if s.optional {
+            detail.push_str(", optional");
+        }
         if !s.states.is_empty() {
             detail.push_str(&format!(", states: {}", s.states.join(", ")));
         }
@@ -1008,6 +1011,28 @@ mod tests {
             )),
             "{}",
             plan.blocks[0].1
+        );
+    }
+
+    #[test]
+    fn an_optional_step_says_so_in_its_detail_line() {
+        let mut files = team();
+        files[4] = (
+            ".armadai/flows/ship.yaml",
+            b"steps:\n  plan: { agent: lead }\n  build: { agent: dev }\n  review: { agent: rev, optional: true, states: [changes] }\nlinks:\n  - { from: plan, to: build }\n  - { from: build, to: review }\n",
+        );
+        let block = compile(&files).unwrap().blocks[0].1.clone();
+        let steps: Vec<&str> = block
+            .lines()
+            .filter(|l| l.starts_with("- `") && l.contains("` (agent `"))
+            .collect();
+        assert_eq!(
+            steps,
+            [
+                "- `build` (agent `dev`)",
+                "- `plan` (agent `lead`)",
+                "- `review` (agent `rev`, optional, states: changes)",
+            ]
         );
     }
 

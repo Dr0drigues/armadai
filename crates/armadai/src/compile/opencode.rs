@@ -299,6 +299,14 @@ fn compile_with(
             Some(super::report::UI_CLAUDE_ONLY),
         );
     }
+    if project.manifest.ui.flow_band {
+        plan.report.push(
+            T,
+            "ui.flow_band",
+            Status::NotCompiled,
+            Some(super::report::UI_CLAUDE_ONLY),
+        );
+    }
     if strict {
         plan.report.push(
             T,

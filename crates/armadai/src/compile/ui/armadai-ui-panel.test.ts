@@ -1,6 +1,6 @@
 // Not shipped: run with `claude plugin test` from a folder `armadai link` wrote for
-// `ui.panel: true` (copy this file next to hooks/). CI has no Claude Code, so the
-// validator runs it at the real trial.
+// `ui.panel: true` or `ui.flow_band: true` (copy this file next to hooks/). CI has no
+// Claude Code, so the validator runs it at the real trial.
 import { expect, mock, test } from 'claude-code/testing'
 
 const PANE = {
@@ -17,6 +17,54 @@ const PANE = {
     view: {},
   },
 } as const
+
+const BAND = (columns: number) =>
+  ({
+    plugin: 'armadai-ui',
+    component: 'AbovePrompt',
+    requestId: 'band',
+    surface: 'terminal',
+    viewport: { columns, rows: 30 },
+    props: {
+      hasSurvey: false,
+      isWorking: false,
+      maxRows: 17,
+      bodyColumns: columns,
+      scroll: { offset: 0, bodyRows: 17 },
+      view: {},
+    },
+  }) as const
+
+const MARK_SIGN: any = { done: '✓', running: '●', pending: '○', skipped: '⤼', coordinator: '~' }
+// a run in progress; `steps` are [name, mark]
+const BAND_STATUS = (steps: [string, string][], status = 'in-progress', lot: string | null = 'menu') => async () => ({
+  value: {
+    exitCode: 0,
+    stderr: '',
+    stdout: JSON.stringify({
+      schema: 'armadai.flow-status/1',
+      session: { id: 's1', started_at: null, last_event_at: null },
+      runs: [
+        {
+          flow: 'deliver',
+          lot,
+          status,
+          steps: steps.map(([step, mark]) => ({ step, mark, sign: MARK_SIGN[mark], state: null, note: null })),
+          loops: [],
+          transitions: [],
+        },
+      ],
+    }),
+  },
+})
+const FIVE: [string, string][] = [
+  ['frame', 'coordinator'],
+  ['design', 'done'],
+  ['build', 'done'],
+  ['guard', 'running'],
+  ['validate', 'pending'],
+  ['test', 'skipped'],
+]
 
 const STATUS = (schema: string) =>
   JSON.stringify({
@@ -46,12 +94,19 @@ async function start(
   documents: string[] | null,
   run: any = null,
   isCommandTaken = false,
+  panelJson: any = undefined,
+  opened: string[] = [],
 ) {
   const clock = mock.clock(on)
   on('command.register', () => (isCommandTaken ? { deny: 'taken' } : { value: undefined }))
   // the project root is not the folder Claude Code was started in
   on('session.root', () => ({ value: '/p' }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.open', (_: any, e: any) => {
+    opened.push(e.id)
+    return { value: { isPlaced: true } }
+  })
+  // what Claude Code draws in the band when the mod passes with next(e)
+  on('ui.render', () => ({ type: 'Text', props: {}, children: ['drawn by Claude Code'] }))
   on('session.start', (_: any, e: any) => ({ cwd: e.cwd }))
   on('process.run', async (_: any, e: any) => {
     expect(e.argv).toEqual(['armadai', 'flow', 'status', '--json'])
@@ -60,6 +115,7 @@ async function start(
     return { value: { exitCode: 0, stdout: STATUS(schema), stderr: '' } }
   })
   on('fs.read', (_: any, e: any) => {
+    if (panelJson !== undefined) return { value: JSON.stringify(panelJson) }
     if (documents === null) return { deny: 'no panel.json' }
     return { value: JSON.stringify({ documents }) }
   })
@@ -78,6 +134,27 @@ async function start(
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/p' })
   await clock.advance(10)
   return await $.ui.mount(PANE)
+}
+
+// the band alone (`ui.flow_band` without `ui.panel`), drawn at `columns`
+async function band($: any, on: any, steps: [string, string][], columns: number, panelJson: any, status = 'in-progress') {
+  const opened: string[] = []
+  const clock = mock.clock(on)
+  on('command.register', () => ({ value: undefined }))
+  on('session.root', () => ({ value: '/p' }))
+  on('ui.open', (_: any, e: any) => {
+    opened.push(e.id)
+    return { value: { isPlaced: true } }
+  })
+  on('ui.render', () => ({ type: 'Text', props: {}, children: ['drawn by Claude Code'] }))
+  on('session.start', (_: any, e: any) => ({ cwd: e.cwd }))
+  on('process.run', BAND_STATUS(steps, status))
+  on('fs.read', () => ({ value: JSON.stringify(panelJson) }))
+  on('fs.list', () => ({ value: [] }))
+  on('session.usage', () => ({ value: { startedAt: SINCE, context: {}, rateLimits: [], cost: {} } }))
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/p' })
+  await clock.advance(10)
+  return { ui: await $.ui.mount(BAND(columns)), opened }
 }
 
 test('a run is listed with its steps and the documents of ui.documents, newest first', async ($, on) => {
@@ -158,5 +235,62 @@ test('a taken command name does not stop the panel or the timer', async ($, on) 
   expect(await ui.find({ type: 'Text', text: 'deliver (in-progress)' })).toBeDefined()
   await time.advance(2000)
   expect(calls).toBeGreaterThan(1)
+  await ui.unmount()
+})
+
+const LINE = 'deliver #menu  ✓ design  ✓ build  ■ guard  □ validate  ⤼ test'
+
+test('the band alone draws the open run on one line and opens no pane', async ($, on) => {
+  const { ui, opened } = await band($, on, FIVE, 100, { band: true, pane: false })
+  expect(await ui.find({ type: 'Text', text: LINE })).toBeDefined()
+  // Claude Code's own drawing for the band stays under ours
+  expect(await ui.find({ type: 'Text', text: 'drawn by Claude Code' })).toBeDefined()
+  expect(opened).toEqual([])
+  await ui.unmount()
+})
+
+const LONG: [string, string][] = [
+  ...['analysis', 'design', 'build', 'review', 'verify'].map((s): [string, string] => [s, 'done']),
+  ['guard', 'running'],
+  ['validate', 'pending'],
+  ['test', 'skipped'],
+]
+
+for (const columns of [80, 50]) {
+  test(`at ${columns} columns a band that does not fit folds the steps done and stays inside`, async ($, on) => {
+    const { ui } = await band($, on, LONG, columns, { band: true, pane: false })
+    const text = (await ui.find({ type: 'Text', text: /■ guard/ }))?.children[0] as string
+    expect(text.length).toBeLessThanOrEqual(columns - 4)
+    expect(text.startsWith('deliver #menu  …  ')).toBe(true)
+    expect(text.endsWith('■ guard  □ validate  ⤼ test')).toBe(true)
+    await ui.unmount()
+  })
+}
+
+test('a band narrower than its open steps is cut with an ellipsis', async ($, on) => {
+  const { ui } = await band($, on, FIVE, 20, { band: true, pane: false })
+  expect((await ui.find({ type: 'Text', text: /^deliver/ }))?.children[0]).toBe('deliver #menu  …')
+  await ui.unmount()
+})
+
+test('without a run in progress, or without band in panel.json, nothing of ours is drawn', async ($, on) => {
+  const done = await band($, on, FIVE, 100, { band: true, pane: false }, 'finished')
+  expect(await done.ui.find({ type: 'Text', text: /deliver/ })).toBeUndefined()
+  expect(await done.ui.find({ type: 'Text', text: 'drawn by Claude Code' })).toBeDefined()
+  await done.ui.unmount()
+})
+
+test('a panel without band in panel.json draws no band', async ($, on) => {
+  const { ui, opened } = await band($, on, FIVE, 100, { documents: ['docs'] })
+  expect(await ui.find({ type: 'Text', text: /deliver/ })).toBeUndefined()
+  // the pane opens as before
+  expect(opened).toEqual(['armadai-flows'])
+  await ui.unmount()
+})
+
+test('the panel shows a skipped step with its glyph', async ($, on) => {
+  const opened: string[] = []
+  const ui = await start($, on, 'armadai.flow-status/1', ['docs'], BAND_STATUS(FIVE), false, undefined, opened)
+  expect(await ui.find({ type: 'Text', text: '⤼ test' })).toBeDefined()
   await ui.unmount()
 })
