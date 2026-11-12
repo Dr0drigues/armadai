@@ -711,6 +711,16 @@ Code, messages et sorties en anglais. `‹…›` marque une valeur.
 - `cli/flow.rs:212` : `no call of flow <flow> in this session`, et avec `--all` `no call of flow <flow> in these sessions`, code 0. Validé par Dimitri : « ça me va », puis « Oui, ce texte (Recommandé) ».
 - `flow_status/render.rs:266`, note sous la table : `states count each verdict rendered, a resumed agent can render several`. Choix par défaut.
 
+**P5.2** (`pack test`, `cli/pack_test.rs`, textes pris sous mandat, à challenger par Dimitri)
+- Projet sans référence de pack et sans argument : `this project references no pack: give a pack folder, armadai pack test <dir>`.
+- En-tête avec un dossier : `pack test  <dir tel que tapé>`, sans `./` ajouté (T20 donnait `./‹dir›` sans trancher).
+- Délai : `FAIL  <path>  timed out after <limite>`, la limite en secondes entières (`60s`), sinon avec une décimale.
+- Test tué par un signal : `FAIL  <path>  signal  <durée>`, à la place de `exit N`.
+- Lock absent : le message existant de `pack add` (`.armadai/project.yaml references pack <name> but .armadai/pack.lock is missing: run `armadai pack update``).
+- Lien symbolique dans le pack : le message existant de `native_pack::files`, repris par `copy_tree` : `the pack holds a symbolic link, refused: <path>`.
+- Statut de sortie perdu (`waitid` échoue, `Finish::Lost`) : la ligne est `FAIL  <path>  signal  <durée>`, suivie de `  | the exit status of the test was lost`.
+- Aide : `about` = `Run the scripts a pack lists under tests: in an isolated copy (no network isolation)` ; `long_about` = « Run the scripts a pack lists under tests: in pack.yaml, with bash, in a copy of the pack and with HOME, CLAUDE_CONFIG_DIR and ARMADAI_CONFIG_DIR pointing at temporary folders. Without a folder, the snapshot the project locks (from the local cache, never the network); with one, that folder. Each test may run 60 seconds; the exit code is 1 when one fails. », puis « The scripts run with your permissions and see your network: the copy and the three variables are the only isolation. » ; exemples de `pack --help` : `armadai pack test` et `armadai pack test ./my-pack`.
+
 ## 6. Choix par défaut (mandat du 2026-11-10, à confirmer par Dimitri)
 
 Dimitri est absent ; son mandat : « continue en autonomie » et « Prends les recommandations pour les questions en me remontant les éléments choisis (je challengerai à mon retour si besoin) ». Les sept choix ci-dessous sont donc des **choix par défaut de lead**, pris sur la recommandation de l'architecte. Ce ne sont pas des réponses de Dimitri, et il peut les contester. Les tâches qu'ils touchent sont débloquées.
@@ -747,6 +757,11 @@ Dimitri est absent ; son mandat : « continue en autonomie » et « Prends les r
 
 **P4.3**
 - Garde de récursion par la variable `ARMADAI_STATUSLINE_CHAINED`, posée sur la commande enfant : un ajout de l'auteur, adopté par défaut.
+
+**P4.3 et P5.2 (processus enfants, `crates/armadai/src/process.rs`)**
+- Choix du 2026-11-12, par lead sous mandat : la barre enchaînée ne tue le groupe de processus de la commande de l'utilisateur qu'au dépassement du délai d'1 s ; une barre qui finit à temps, même en échec, est laissée, avec ce qu'elle a détaché.
+- `pack test` tue le groupe aussi après une fin normale du test, quand le chef du groupe est vu terminé (`waitid` avec `WNOWAIT`, qui ne le récolte pas : son pid, identifiant du groupe, ne peut pas avoir été réattribué).
+- Ni l'une ni l'autre ne tue le groupe quand `waitid` échoue : un groupe qu'on ne sait pas être le nôtre n'est pas signalé.
 
 **P1**
 - Une `mark` qui désigne une étape que l'agent ne tient pas est ignorée.
