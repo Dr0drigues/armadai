@@ -1,5 +1,6 @@
 //! `link` and a `.claude/` or `.armadai/` that is a symbolic link leaving the checkout:
 //! refused under a pack pin (the other checkout is left untouched), a note otherwise.
+#![cfg(unix)]
 
 use std::path::{Path, PathBuf};
 
@@ -30,6 +31,8 @@ impl Env {
             "schema_version: 1\n",
         );
         put(&env.chantier().join(".armadai/agents/lead.md"), AGENT);
+        // a committed lock, so that "has a pin" and "has a lock" differ in every case
+        put(&env.chantier().join(".armadai/pack.lock"), PIN);
         if pinned {
             put(&env.wt().join(".git/armadai/pack.lock"), PIN);
         }
@@ -94,6 +97,7 @@ impl Env {
             "schema_version: 1\n",
         );
         put(&self.wt().join(".armadai/agents/lead.md"), AGENT);
+        put(&self.wt().join(".armadai/pack.lock"), PIN);
     }
 
     fn link_to(&self, name: &str, target: &Path) {
