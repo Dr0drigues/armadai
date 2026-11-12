@@ -718,7 +718,7 @@ Code, messages et sorties en anglais. `‹…›` marque une valeur.
 - Test tué par un signal : `FAIL  <path>  signal  <durée>`, à la place de `exit N`.
 - Lock absent : le message existant de `pack add` (`.armadai/project.yaml references pack <name> but .armadai/pack.lock is missing: run `armadai pack update``).
 - Lien symbolique dans le pack : le message existant de `native_pack::files`, repris par `copy_tree` : `the pack holds a symbolic link, refused: <path>`.
-- Statut de sortie perdu (`waitid` échoue, `Finish::Lost`) : la ligne est `FAIL  <path>  signal  <durée>`, suivie de `  | the exit status of the test was lost`.
+- Statut de sortie perdu (`waitid` échoue, `Finish::Lost`) : `FAIL  <path>  exit status lost  <durée>`, sans le mot `signal` et sans ligne de sortie ; le groupe n'est pas tué et les lecteurs ne sont attendus que jusqu'au délai. Choix par défaut.
 - Aide : `about` = `Run the scripts a pack lists under tests: in an isolated copy (no network isolation)` ; `long_about` = « Run the scripts a pack lists under tests: in pack.yaml, with bash, in a copy of the pack and with HOME, CLAUDE_CONFIG_DIR and ARMADAI_CONFIG_DIR pointing at temporary folders. Without a folder, the snapshot the project locks (from the local cache, never the network); with one, that folder. Each test may run 60 seconds; the exit code is 1 when one fails. », puis « The scripts run with your permissions and see your network: the copy and the three variables are the only isolation. » ; exemples de `pack --help` : `armadai pack test` et `armadai pack test ./my-pack`.
 
 ## 6. Choix par défaut (mandat du 2026-11-10, à confirmer par Dimitri)
