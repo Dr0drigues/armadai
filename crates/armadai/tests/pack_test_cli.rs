@@ -188,3 +188,58 @@ fn pack_test_refuses_a_folder_that_is_no_pack_and_an_escaping_path() {
         "{err}"
     );
 }
+
+const URL: &str = "https://example.com/packs.git";
+const COMMIT: &str = "1111111111111111111111111111111111111111";
+
+/// A project referencing `demo`, locked at 1.4.0, with that snapshot in the cache.
+fn locked_project(env: &Env, snapshot: bool) {
+    env.put(
+        ".armadai/project.yaml",
+        &format!("pack: {{ name: demo, source: '{URL}', version: latest }}\n"),
+    );
+    env.put(
+        ".armadai/pack.lock",
+        &format!(
+            "format: 1\npack: demo\nsource: '{URL}'\nresolved:\n  version: 1.4.0\n  commit: {COMMIT}\n"
+        ),
+    );
+    if snapshot {
+        let dir = format!(
+            "config/registry/packs/{}/demo/{COMMIT}",
+            armadai_core::registries::cache_key(URL)
+        );
+        env.put(
+            &format!("{dir}/pack.yaml"),
+            "name: demo\ndescription: d\ntests:\n  - tests/ok.sh\n",
+        );
+        env.put(&format!("{dir}/tests/ok.sh"), "exit 0\n");
+    }
+}
+
+#[test]
+fn pack_test_without_an_argument_runs_the_locked_snapshot_of_the_cache() {
+    let env = Env::new();
+    locked_project(&env, true);
+    let (code, out, err) = env.run(&["pack", "test"]);
+    assert_eq!(
+        (code, untimed(&out).as_str(), err.as_str()),
+        (
+            Some(0),
+            "pack test  demo 1.4.0 (locked snapshot)\nok    tests/ok.sh  X.Xs\n1 passed, 0 failed\n",
+            ""
+        )
+    );
+    // not in the cache: the way forward, code 1, nothing run
+    let env = Env::new();
+    locked_project(&env, false);
+    let (code, out, err) = env.run(&["pack", "test"]);
+    assert_eq!(
+        (code, out.as_str(), err.as_str()),
+        (
+            Some(1),
+            "",
+            "Error: the locked snapshot of demo 1.4.0 is not in the cache; run armadai pack sync\n"
+        )
+    );
+}

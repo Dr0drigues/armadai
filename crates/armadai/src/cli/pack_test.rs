@@ -346,6 +346,23 @@ mod tests {
         );
     }
 
+    /// A script ended by a signal has no exit code: the line says `signal`.
+    #[test]
+    fn a_test_ended_by_a_signal_says_signal() {
+        let report = Report {
+            name: "p".into(),
+            runs: vec![TestRun {
+                path: "tests/k.sh".into(),
+                verdict: Verdict::Failed(None, "partial\n".into()),
+                took: Duration::from_millis(1500),
+            }],
+        };
+        assert_eq!(
+            render("h", &report, LIMIT),
+            "h\nFAIL  tests/k.sh  signal  1.5s\n  | partial\n0 passed, 1 failed\n"
+        );
+    }
+
     #[test]
     fn a_pack_without_a_test_says_so() {
         let dir = pack(&[], &[]);
