@@ -39,7 +39,7 @@ const MAX_OUTPUT: u64 = 64 * 1024;
 
 /// Run `sh -c <command>` with `stdin`, at most `limit`: its first 64 KiB of stdout when it
 /// exits 0 in time, `None` otherwise. The command runs in its own process group, which is
-/// killed as a whole on timeout and once the shell is done, so no grandchild lingers.
+/// killed as a whole on timeout; after a normal end the group is left alone.
 #[cfg(unix)]
 pub fn run_user(command: &str, stdin: &[u8], limit: Duration) -> Option<String> {
     use std::os::unix::process::CommandExt;
@@ -68,35 +68,69 @@ pub fn run_user(command: &str, stdin: &[u8], limit: Duration) -> Option<String> 
         let _ = std::io::copy(&mut output, &mut std::io::sink());
         let _ = tx.send(raw);
     });
-    let group = child.id() as libc::pid_t;
     let start = Instant::now();
+    // The leader is never reaped before the group is killed (`exited` does not reap), so
+    // its pid, which is the group id, cannot have been given to another process.
     let answer = loop {
-        match child.try_wait() {
-            // the output only counts once the shell is gone and the pipe closes in time
-            Ok(Some(status)) if status.success() => {
-                kill_group(group);
-                let left = limit.saturating_sub(start.elapsed());
-                break rx.recv_timeout(left).ok();
-            }
-            Ok(Some(_)) | Err(_) => break None,
-            Ok(None) if start.elapsed() >= limit => break None,
-            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+        if exited(&mut child) {
+            // a clean end: whatever the command left running (a refresher it detached) is
+            // none of ours to kill; the output counts once the pipe closes in time
+            let ok = child.wait().is_ok_and(|s| s.success());
+            let left = limit.saturating_sub(start.elapsed());
+            break if ok { rx.recv_timeout(left).ok() } else { None };
         }
+        if start.elapsed() >= limit {
+            kill_group(&mut child);
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(10));
     };
-    kill_group(group);
-    let _ = child.wait();
     answer.map(|raw| String::from_utf8_lossy(&raw).into_owned())
 }
 
-/// SIGKILL to every process of the group `pgid` (the child made itself the leader).
+/// Whether `child` has exited, without reaping it: a finished leader stays a zombie, which
+/// keeps its pid, hence the id of its process group, from being reused until `wait`.
 #[cfg(unix)]
-pub(crate) fn kill_group(pgid: libc::pid_t) {
-    // SAFETY: `kill` takes two integers and touches no memory; `-pgid` addresses the group
-    // we created with `process_group(0)`, so no other process of ours is hit, and an
-    // already empty group only makes it return -1 (ESRCH), which we ignore.
+pub(crate) fn exited(child: &mut std::process::Child) -> bool {
+    // SAFETY: `info` is a zeroed `siginfo_t`, a valid value for the C struct, and the only
+    // thing `waitid` writes through the pointer; `child.id()` is a pid we spawned and have
+    // not reaped, and WNOHANG | WNOWAIT make the call neither block nor reap. With nothing
+    // to report `info` stays zeroed; a leader that has exited sets `si_signo` to SIGCHLD.
     unsafe {
-        libc::kill(-pgid, libc::SIGKILL);
+        let mut info: libc::siginfo_t = std::mem::zeroed();
+        let rc = libc::waitid(
+            libc::P_PID,
+            child.id() as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        );
+        // an error (the child is gone already) counts as exited: `wait` has the verdict
+        rc != 0 || info.si_signo == libc::SIGCHLD
     }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn exited(child: &mut std::process::Child) -> bool {
+    child.try_wait().map_or(true, |s| s.is_some())
+}
+
+/// SIGKILL to every process of the group `child` leads (it was spawned with
+/// `process_group(0)`). `child` must not have been waited for yet.
+#[cfg(unix)]
+pub(crate) fn kill_group(child: &mut std::process::Child) {
+    // SAFETY: `kill` takes two integers and touches no memory. The leader is not reaped
+    // (the caller has not waited for it, and `exited` does not), so `-pid` is still the id
+    // of the group we created and no process of anyone else can carry it; a group already
+    // empty makes `kill` return -1 (ESRCH), which we ignore.
+    unsafe {
+        libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn kill_group(child: &mut std::process::Child) {
+    let _ = child.kill();
 }
 
 /// shortcut: no chaining on Windows (no `sh`): the flow line alone; upgrade with `cmd /C`.
@@ -240,6 +274,56 @@ mod tests {
             let _ = Command::new("kill").args(["-9", &pid]).status();
         }
         assert!(gone, "the grandchild {pid} was still alive after 3 s");
+    }
+
+    #[cfg(unix)]
+    fn pid_alive_for_2s(pid: &str) -> bool {
+        // `kill -0` also succeeds on a zombie until init reaps it: allow 2 s
+        (0..200).all(|_| {
+            let a = alive(pid);
+            if a {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            a
+        })
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exited_does_not_reap_the_leader_so_its_group_id_stays_ours() {
+        use std::os::unix::process::CommandExt;
+        let mut child = Command::new("sh")
+            .args(["-c", "exit 0"])
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let start = Instant::now();
+        while !exited(&mut child) {
+            assert!(start.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // a reaped leader would be ESRCH here: a zombie still holds the pid and the group id
+        assert!(alive(&child.id().to_string()), "the leader was reaped");
+        kill_group(&mut child);
+        assert!(child.wait().unwrap().success());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_grandchild_detached_by_a_bar_that_succeeded_is_left_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("pid");
+        // the refresher has its output redirected: the pipe closes with the shell
+        let command = format!(
+            "sleep 30 >/dev/null 2>&1 & echo $! > {}; printf bar",
+            file.display()
+        );
+        let out = run_user(&command, b"", Duration::from_secs(2));
+        let pid = std::fs::read_to_string(&file).unwrap().trim().to_string();
+        let still = pid_alive_for_2s(&pid);
+        let _ = Command::new("kill").args(["-9", &pid]).status();
+        assert_eq!(out.as_deref(), Some("bar"));
+        assert!(still, "the group was killed after a clean end");
     }
 
     #[cfg(unix)]

@@ -133,21 +133,20 @@ fn run_one(
         })
     })
     .collect();
-    #[cfg(unix)]
-    let group = child.id() as libc::pid_t;
-    let status = loop {
-        match child.try_wait()? {
-            Some(s) => break Some(s),
-            None if start.elapsed() >= limit => break None,
-            None => std::thread::sleep(Duration::from_millis(10)),
+    let exited = loop {
+        if crate::claude_adapter::statusline_chain::exited(&mut child) {
+            break true;
         }
+        if start.elapsed() >= limit {
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
     };
-    // the whole group, also after a normal end: no grandchild outlives its test
-    #[cfg(unix)]
-    crate::claude_adapter::statusline_chain::kill_group(group);
-    #[cfg(not(unix))]
-    let _ = child.kill();
-    let _ = child.wait();
+    // the whole group, also after a normal end: no grandchild outlives its test; the
+    // leader is not reaped yet, so its pid still names the group
+    crate::claude_adapter::statusline_chain::kill_group(&mut child);
+    let waited = child.wait();
+    let status = if exited { waited.ok() } else { None };
     let output: Vec<u8> = readers
         .into_iter()
         .flat_map(|r| r.join().unwrap_or_default())
@@ -494,6 +493,46 @@ mod tests {
             let alive = !gone;
             assert!(!alive, "the grandchild {pid} is still alive");
         }
+    }
+
+    /// A script that ends normally but leaves a 30 s grandchild: the group is killed after
+    /// the normal end too. A group left alone holds the pipes, and the run, for 30 s.
+    #[cfg(unix)]
+    #[test]
+    fn a_grandchild_left_by_a_test_that_passed_is_killed() {
+        let marks = tempfile::tempdir().unwrap();
+        let pidfile = marks.path().join("pid");
+        let script = format!("sleep 30 &\necho $! > {}\nexit 0\n", pidfile.display());
+        let dir = pack(&["tests/ok.sh"], &[("tests/ok.sh", &script)]);
+        let start = Instant::now();
+        let r = run_pack(dir.path(), Duration::from_secs(10)).unwrap();
+        assert!(
+            start.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            start.elapsed()
+        );
+        assert_eq!(verdicts(&r), [("tests/ok.sh", &Verdict::Ok)]);
+        let pid = std::fs::read_to_string(&pidfile).unwrap();
+        // `kill -0` also succeeds on a zombie until init reaps it: allow 2 s (the sleep lasts 30)
+        let alive = |pid: &str| {
+            Command::new("kill")
+                .args(["-0", pid])
+                .stderr(Stdio::null())
+                .status()
+                .unwrap()
+                .success()
+        };
+        let gone = (0..200).any(|_| {
+            let a = alive(pid.trim());
+            if a {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            !a
+        });
+        if !gone {
+            let _ = Command::new("kill").args(["-9", pid.trim()]).status();
+        }
+        assert!(gone, "the grandchild {pid} is still alive");
     }
 
     // ---- the locked snapshot ----

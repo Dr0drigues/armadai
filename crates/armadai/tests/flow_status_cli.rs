@@ -898,11 +898,8 @@ fn statusline_does_not_wait_for_a_stdin_that_stays_open() {
     let env = Env::new();
     env.three_logs();
     for pass in 0..5 {
-        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_armadai"))
-            .arg("__claude-statusline")
-            .current_dir(env.root())
-            .env("ARMADAI_CONFIG_DIR", env.dir.path().join("config"))
-            .env("HOME", env.dir.path())
+        let mut child = env
+            .statusline_command(&env.root())
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
