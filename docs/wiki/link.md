@@ -59,6 +59,19 @@ names `armadai pack update`. If the lock is missing, belongs to another pack or 
 at a snapshot the cache does not hold, `link` stops with the message that says which command to
 run (`armadai pack update` or `armadai pack sync`). See [Starter packs](starter-packs.md).
 
+A checkout can [pin](starter-packs.md#pinning-a-pack-per-checkout) the lock it uses. Under a pin,
+`link` and `unlink` refuse, before writing or deleting anything, a `.claude` or `.armadai` that is
+a symbolic link leading out of the checkout (they would act on another checkout's files):
+
+```
+link refused: .armadai is a symbolic link to <target>, outside this checkout, and this checkout pins its pack; give the worktree its own .armadai/ or run armadai pack unpin
+```
+
+(`unlink refused: …` for `unlink`; exit code 1.) Without a pin, a `.armadai` leading out gets a
+note on stderr and `link` goes on: `note: .armadai is a symbolic link to <target>, outside this
+checkout; link writes through it`. A `.claude` leading out is refused with or without a pin
+(`.claude resolves outside the project`). A link that stays inside the checkout is never reported.
+
 ## Claude Code
 
 | Declared | Produced |
