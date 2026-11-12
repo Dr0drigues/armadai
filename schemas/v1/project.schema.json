@@ -80,6 +80,17 @@
       },
       "type": "object"
     },
+    "Sessions": {
+      "additionalProperties": false,
+      "description": "Opt-in keys about the sessions of a team: absent or `false`, `link` writes nothing for them.",
+      "properties": {
+        "journal": {
+          "description": "Compile the journal instructions for the coordinator (`armadai journal`).",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "Ui": {
       "additionalProperties": false,
       "description": "Opt-in interface keys: absent or `false`, `link` writes nothing for them.",
@@ -156,6 +167,9 @@
       "format": "uint32",
       "minimum": 0,
       "type": "integer"
+    },
+    "sessions": {
+      "$ref": "#/$defs/Sessions"
     },
     "targets": {
       "description": "Default link targets: claude, codex, copilot, opencode",

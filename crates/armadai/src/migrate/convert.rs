@@ -95,6 +95,7 @@ pub fn convert(old: &OldProject) -> (Project, Vec<SkillCopy>, Report) {
         policy: Policy::default(),
         native: Default::default(),
         ui: Default::default(),
+        sessions: Default::default(),
     };
     convert_link(old, &resolve, &mut manifest, &mut r);
     let mut flows = BTreeMap::new();
@@ -266,6 +267,7 @@ fn convert_agent(id: &str, a: &OldAgent, old: &OldProject, r: &mut Report) -> (A
         skills: Vec::new(),
         slots: Vec::new(),
         capabilities: Default::default(),
+        journal: None,
         native: Default::default(),
         from: None,
         vars: BTreeMap::new(),

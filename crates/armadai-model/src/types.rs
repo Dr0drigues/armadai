@@ -112,6 +112,40 @@ pub struct Manifest {
     pub native: Native,
     #[serde(default, skip_serializing_if = "Ui::is_default")]
     pub ui: Ui,
+    #[serde(default, skip_serializing_if = "Sessions::is_default")]
+    pub sessions: Sessions,
+}
+
+/// Opt-in keys about the sessions of a team: absent or `false`, `link` writes nothing for them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Sessions {
+    /// Compile the journal instructions for the coordinator (`armadai journal`).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub journal: bool,
+}
+
+impl Sessions {
+    fn is_default(&self) -> bool {
+        *self == Sessions::default()
+    }
+}
+
+/// What an agent does with the lot journal; `write` includes reading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum JournalAccess {
+    Read,
+    Write,
+}
+
+impl JournalAccess {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            JournalAccess::Read => "read",
+            JournalAccess::Write => "write",
+        }
+    }
 }
 
 /// Opt-in interface keys: absent or `false`, `link` writes nothing for them.
@@ -248,6 +282,9 @@ pub struct AgentFront {
     pub slots: Vec<String>,
     #[serde(default, skip_serializing_if = "Capabilities::is_empty")]
     pub capabilities: Capabilities,
+    /// Access to the lot journal (`armadai journal`): `read`, or `write` (which includes reading).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub journal: Option<JournalAccess>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[schemars(with = "BTreeMap<String, serde_json::Value>")]
     pub native: Native,
@@ -302,6 +339,9 @@ pub struct TemplateFront {
     pub slots: Vec<String>,
     #[serde(default, skip_serializing_if = "Capabilities::is_empty")]
     pub capabilities: Capabilities,
+    /// Access to the lot journal (`armadai journal`): `read`, or `write` (which includes reading).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub journal: Option<JournalAccess>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[schemars(with = "BTreeMap<String, serde_json::Value>")]
     pub native: Native,

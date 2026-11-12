@@ -1650,3 +1650,71 @@ fn a_broad_grant_rule_is_a_warning() {
         .collect();
     assert_eq!(codes, ["grant-unsupported-rule"], "{ds:?}");
 }
+
+#[test]
+fn journal_without_shell_warns_only_for_shell_deny() {
+    let agent = |extra: &str| format!("---\ndescription: d\n{extra}---\n");
+    let run = |extra: &str| diags(&[M, (".armadai/agents/dev.md", &agent(extra))]);
+    let d = only(
+        &run("journal: read\ncapabilities: { shell: deny }\n"),
+        "journal-without-shell",
+    );
+    assert_eq!(d.severity, Severity::Warning);
+    assert_eq!(
+        d.message,
+        "agent `dev` declares journal: read but shell: deny, so it cannot run armadai journal"
+    );
+    assert_eq!(
+        d.hint.as_deref(),
+        Some("allow shell (ask or allow), or drop journal")
+    );
+    assert_eq!((d.line, d.column), (Some(3), Some(1)));
+    let w = only(
+        &run("journal: write\ncapabilities: { shell: deny }\n"),
+        "journal-without-shell",
+    );
+    assert!(w.message.contains("journal: write"));
+    for quiet in [
+        "journal: read\ncapabilities: { shell: ask }\n",
+        "journal: read\ncapabilities: { shell: allow }\n",
+        "journal: read\n",
+        "capabilities: { shell: deny }\n",
+    ] {
+        let ds = run(quiet);
+        assert!(
+            ds.iter().all(|d| d.code != "journal-without-shell"),
+            "{quiet}: {ds:?}"
+        );
+    }
+}
+
+#[test]
+fn journal_comes_through_a_template_and_an_instance() {
+    let inst = (".armadai/agents/g.md", "---\nfrom: t\n---\n");
+    let tpl =
+        |extra: &str| format!("---\ndescription: d\ncapabilities: {{ shell: deny }}\n{extra}---\n");
+    // a template that sets it passes it to its instance, which is warned on the template's line
+    let t = tpl("journal: write\n");
+    let ds = diags(&[M, (".armadai/templates/t.md", &t), inst]);
+    let d = only(&ds, "journal-without-shell");
+    assert!(d.message.contains("agent `g`") && d.message.contains("journal: write"));
+    assert_eq!(d.line, Some(4));
+    // an instance that sets it itself keeps it after rendering
+    let t = tpl("");
+    let ds = diags(&[
+        M,
+        (".armadai/templates/t.md", &t),
+        (".armadai/agents/g.md", "---\nfrom: t\njournal: read\n---\n"),
+    ]);
+    assert!(
+        only(&ds, "journal-without-shell")
+            .message
+            .contains("journal: read")
+    );
+    // neither sets it: no warning
+    let ds = diags(&[M, (".armadai/templates/t.md", &t), inst]);
+    assert!(
+        ds.iter().all(|d| d.code != "journal-without-shell"),
+        "{ds:?}"
+    );
+}

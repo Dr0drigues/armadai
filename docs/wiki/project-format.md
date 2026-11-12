@@ -54,6 +54,8 @@ ui:                          # optional, opt-in interface keys
   panel: true                # Claude Code only: a panel mod beside the chat (default false)
   flow_band: true            # Claude Code only: a band above the prompt with the open run (default false)
   documents: [docs]          # folders whose recent .md files the panel lists (default [docs])
+sessions:                    # optional, opt-in session keys
+  journal: true              # compile the lot-journal instructions for the coordinator (default false)
 ```
 
 With `pack:`, the project is built on a pack by reference: its files are the pack's, plus yours at
@@ -78,6 +80,12 @@ when several flows hold it: `unknown-step`, `grant-ambiguous-until`). A level is
 writes, and what a level does not guarantee, is in [Link](link.md#permission-levels-grant). With
 `pack:`, the levels of the pack and of the project merge by key, and a level of the project replaces
 the pack's level of the same key as a whole.
+
+`sessions.journal` (a boolean, default `false`; any other key under `sessions` is `invalid-yaml`) asks
+`link` for the journal instructions of the coordinator; absent or `false`, `link` writes nothing for
+it. An agent (or template) may also declare `journal: read` or `journal: write` (`write` includes
+reading) in its frontmatter; that key compiles the agent's own instructions even without
+`sessions.journal`.
 
 `ui` holds opt-in interface keys: absent or `false`, `link` writes nothing for them. `ui.status_line`
 (a boolean; any other value, and any other key under `ui`, is `invalid-yaml`) asks `link --target claude`
@@ -546,6 +554,7 @@ warning on stderr.
 | `command-target-variable` | error | The body holds a `${CLAUDE_…}` substitution, replaced by Claude Code only | Only `$ARGUMENTS` is portable: remove it, or put it in a native file |
 | `command-shadows-skill` | error | A command has the id of a skill | Rename one of them (Claude Code would run the skill and ignore the command) |
 | `command-shadows-builtin` | warning | A command has the name of a built-in command of Claude Code or OpenCode | Pick another name: one of them hides the other |
+| `journal-without-shell` | warning | An agent declares `journal` and `capabilities.shell: deny`, so it cannot run `armadai journal` (`shell` absent, `ask` or `allow` is not reported) | Allow shell (`ask` or `allow`), or drop `journal` |
 | `pack-empty-source` | error | `pack.source` is empty | Give the URL of the pack's source, as in `registries.yaml` |
 | `pack-empty-version` | error | `pack.version` is empty | Write `latest`, a version such as `1.2.3`, or a range such as `^1.3` |
 
