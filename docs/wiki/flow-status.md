@@ -444,9 +444,12 @@ line per entry (date and time, lot or `(all)`, kind, author or `-`, text), the l
 value, oldest first, merged by `ts` and then by lot.
 
 **Limits.** The text is one line of at most 2000 characters, and the written line, newline included, at
-most 4096 bytes (3-byte characters can reach it before 2000). One `write_all` in append mode writes
-a whole line, so two processes adding to one file do not mix their lines (measured: two processes
-of 50 entries, five times). When the last line of a file was cut (no final newline), the next `add`
+most 4096 bytes (3-byte characters can reach it before 2000). A line is written with one `write_all` in
+append mode, and `add` holds an exclusive lock on the file from the moment it opens it until the
+write is done, so two processes adding to one file do not mix their lines (measured: two processes
+of 50 entries, five times). `show` takes a shared lock while it reads a file, so it waits for an `add`
+in the middle of a line rather than seeing half of it. The lock is advisory (`flock`): it only
+holds against processes that take it, which `armadai journal` does, and nothing takes it off Unix. When the last line of a file was cut (no final newline), the next `add`
 starts on a new line, so the new entry is not lost. `show` skips a line it cannot read and one whose
 `schema` is not `armadai.journal/1` (a version to come), and counts them on stderr (`journal.jsonl: 2 unreadable lines
 skipped`). Neither `add` nor `show` goes through a symbolic link, on `state/` or on a journal file.
