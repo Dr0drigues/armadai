@@ -1,6 +1,6 @@
 //! Pure merge of a project onto the pack it references (reference mode).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
@@ -11,6 +11,8 @@ use crate::types::NativeValue;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Layer {
     Pack,
+    /// The `i`-th pack of `standards:`.
+    Standards(usize),
     Project,
     Merged,
 }
@@ -21,6 +23,25 @@ pub enum OverlayError {
     InvalidYaml { layer: Layer, message: String },
     /// The pack's own `project.yaml` has a `pack:` key.
     NestedPack,
+    /// The pack's own `project.yaml` has a `standards:` key.
+    NestedStandards,
+}
+
+/// A skill id brought by two pack sources (`None` = the team pack, `Some(i)` = `standards[i]`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillClash {
+    pub skill: String,
+    pub first: Option<usize>,
+    pub second: usize,
+}
+
+/// The layered view: files plus what the caller must report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stacked {
+    pub files: BTreeMap<PathBuf, (Layer, Vec<u8>)>,
+    pub clashes: Vec<SkillClash>,
+    /// `(index of the standards layer, relative path)` of a file outside `skills/<id>/`.
+    pub foreign: Vec<(usize, PathBuf)>,
 }
 
 /// Two `project.yaml` values merged: maps key by key (recursively), lists completed
@@ -95,20 +116,88 @@ pub fn overlay(
     pack: &BTreeMap<PathBuf, Vec<u8>>,
     project: &BTreeMap<PathBuf, Vec<u8>>,
 ) -> Result<BTreeMap<PathBuf, (Layer, Vec<u8>)>, OverlayError> {
+    Ok(overlay_standards(Some(pack), &[], project)?.files)
+}
+
+/// The id of the skill a path belongs to (`skills/<id>/…`).
+fn skill_id(path: &Path) -> Option<&str> {
+    let mut c = path.components();
+    let (first, id, _file) = (c.next()?, c.next()?, c.next()?);
+    (first.as_os_str() == "skills")
+        .then(|| id.as_os_str().to_str())
+        .flatten()
+}
+
+/// `overlay` over N layers: the team pack (if any), then each standards pack in order, then
+/// the project. A standards pack contributes `skills/<id>/…` only; any other file goes to
+/// `foreign`. An id held by two pack sources is a clash (the later folder is left out)
+/// unless the project has `skills/<id>/`, which then replaces the standards folder whole.
+pub fn overlay_standards(
+    team: Option<&BTreeMap<PathBuf, Vec<u8>>>,
+    standards: &[&BTreeMap<PathBuf, Vec<u8>>],
+    project: &BTreeMap<PathBuf, Vec<u8>>,
+) -> Result<Stacked, OverlayError> {
     let mut out: BTreeMap<PathBuf, (Layer, Vec<u8>)> = BTreeMap::new();
-    for (p, b) in pack {
+    let mut owners: BTreeMap<String, Option<usize>> = BTreeMap::new();
+    for (p, b) in team.into_iter().flatten() {
+        if let Some(id) = skill_id(p) {
+            owners.entry(id.to_string()).or_insert(None);
+        }
         out.insert(p.clone(), (Layer::Pack, b.clone()));
+    }
+    let project_skills: BTreeSet<&str> = project.keys().filter_map(|p| skill_id(p)).collect();
+    let (mut clashes, mut foreign) = (Vec::new(), Vec::new());
+    for (i, layer) in standards.iter().enumerate() {
+        let mut clashed = BTreeSet::new();
+        let mut taken = BTreeSet::new();
+        for (p, b) in *layer {
+            let Some(id) = skill_id(p) else {
+                foreign.push((i, p.clone()));
+                continue;
+            };
+            if project_skills.contains(id) {
+                continue;
+            }
+            match owners.get(id) {
+                Some(&first) => {
+                    if clashed.insert(id) {
+                        clashes.push(SkillClash {
+                            skill: id.to_string(),
+                            first,
+                            second: i,
+                        });
+                    }
+                }
+                _ => {
+                    taken.insert(id);
+                    out.insert(p.clone(), (Layer::Standards(i), b.clone()));
+                }
+            }
+        }
+        for id in taken {
+            owners.insert(id.to_string(), Some(i));
+        }
     }
     for (p, b) in project {
         out.insert(p.clone(), (Layer::Project, b.clone()));
     }
 
-    let pack_value = pack
-        .get(manifest_path())
+    let finish = |files| Stacked {
+        files,
+        clashes: clashes.clone(),
+        foreign: foreign.clone(),
+    };
+    let pack_value = team
+        .and_then(|t| t.get(manifest_path()))
         .map(|b| read(Layer::Pack, b))
         .transpose()?;
-    if pack_value.as_ref().is_some_and(|v| v.get("pack").is_some()) {
-        return Err(OverlayError::NestedPack);
+    if let Some(v) = &pack_value {
+        if v.get("pack").is_some() {
+            return Err(OverlayError::NestedPack);
+        }
+        if v.get("standards").is_some() {
+            return Err(OverlayError::NestedStandards);
+        }
     }
     let project_value = project
         .get(manifest_path())
@@ -116,8 +205,8 @@ pub fn overlay(
         .transpose()?;
 
     let merged = match (pack_value, project_value) {
-        (None, None) => return Ok(out),
-        (Some(_), None) => return Ok(out), // already Layer::Pack
+        (None, None) => return Ok(finish(out)),
+        (Some(_), None) => return Ok(finish(out)), // already Layer::Pack
         (None, Some(mut p)) => {
             p.as_object_mut().map(|m| m.remove("pack"));
             p
@@ -133,7 +222,7 @@ pub fn overlay(
             message: e.to_string(),
         })?;
     out.insert(manifest_path().into(), (Layer::Merged, text.into_bytes()));
-    Ok(out)
+    Ok(finish(out))
 }
 
 #[cfg(test)]
@@ -333,6 +422,132 @@ mod tests {
         assert_eq!(
             text,
             "schema_version: 1\nname: \"1.10\"\ntargets:\n- \"2.50\"\nnative:\n  claude:\n    ratio: 1.5\ncoordinator: \"3.0\"\nextra: \"1e3\"\n"
+        );
+    }
+
+    fn tree(files: &[(&str, &str)]) -> BTreeMap<PathBuf, Vec<u8>> {
+        files
+            .iter()
+            .map(|(p, b)| (PathBuf::from(p), b.as_bytes().to_vec()))
+            .collect()
+    }
+
+    #[test]
+    fn two_standards_layers_add_their_skills() {
+        let a = tree(&[("skills/a-std/SKILL.md", "A")]);
+        let b = tree(&[("skills/b-std/SKILL.md", "B")]);
+        let st = overlay_standards(None, &[&a, &b], &BTreeMap::new()).unwrap();
+        assert_eq!(
+            st.files,
+            BTreeMap::from([
+                (
+                    PathBuf::from("skills/a-std/SKILL.md"),
+                    (Layer::Standards(0), b"A".to_vec())
+                ),
+                (
+                    PathBuf::from("skills/b-std/SKILL.md"),
+                    (Layer::Standards(1), b"B".to_vec())
+                ),
+            ])
+        );
+        assert!(st.clashes.is_empty() && st.foreign.is_empty());
+    }
+
+    #[test]
+    fn a_skill_in_two_standards_is_a_clash() {
+        let a = tree(&[("skills/s/SKILL.md", "A"), ("skills/s/x.sh", "AX")]);
+        let b = tree(&[("skills/s/SKILL.md", "B"), ("skills/s/y.sh", "BY")]);
+        let st = overlay_standards(None, &[&a, &b], &BTreeMap::new()).unwrap();
+        assert_eq!(
+            st.clashes,
+            [SkillClash {
+                skill: "s".into(),
+                first: Some(0),
+                second: 1
+            }]
+        );
+        // the later folder stays out, whole
+        assert!(!st.files.contains_key(Path::new("skills/s/y.sh")));
+        assert_eq!(st.files[Path::new("skills/s/SKILL.md")].1, b"A");
+    }
+
+    #[test]
+    fn a_skill_in_the_team_pack_and_a_standards_is_a_clash() {
+        let team = tree(&[("skills/s/SKILL.md", "T")]);
+        let a = tree(&[("skills/s/SKILL.md", "A")]);
+        let st = overlay_standards(Some(&team), &[&a], &BTreeMap::new()).unwrap();
+        assert_eq!(
+            st.clashes,
+            [SkillClash {
+                skill: "s".into(),
+                first: None,
+                second: 0
+            }]
+        );
+        assert_eq!(st.files[Path::new("skills/s/SKILL.md")].0, Layer::Pack);
+    }
+
+    #[test]
+    fn the_project_skill_lifts_the_clash_and_takes_the_whole_folder() {
+        let a = tree(&[("skills/s/SKILL.md", "A"), ("skills/s/scripts/x.sh", "AX")]);
+        let b = tree(&[("skills/s/SKILL.md", "B")]);
+        let project = tree(&[("skills/s/SKILL.md", "P")]);
+        let st = overlay_standards(None, &[&a, &b], &project).unwrap();
+        assert!(st.clashes.is_empty());
+        assert_eq!(
+            st.files,
+            BTreeMap::from([(
+                PathBuf::from("skills/s/SKILL.md"),
+                (Layer::Project, b"P".to_vec())
+            )])
+        );
+    }
+
+    #[test]
+    fn a_standards_layer_keeps_only_skills() {
+        let a = tree(&[
+            ("agents/a.md", "AG"),
+            ("project.yaml", "coordinator: x\n"),
+            ("skills/s/SKILL.md", "S"),
+        ]);
+        let st = overlay_standards(None, &[&a], &BTreeMap::new()).unwrap();
+        assert_eq!(
+            st.foreign,
+            [
+                (0, PathBuf::from("agents/a.md")),
+                (0, PathBuf::from("project.yaml"))
+            ]
+        );
+        assert_eq!(
+            st.files.keys().collect::<Vec<_>>(),
+            [Path::new("skills/s/SKILL.md")]
+        );
+    }
+
+    #[test]
+    fn a_team_pack_with_standards_is_refused() {
+        let team = tree(&[(
+            "project.yaml",
+            "standards:\n- {name: x, source: s, version: '1'}\n",
+        )]);
+        assert_eq!(
+            overlay_standards(Some(&team), &[], &BTreeMap::new()),
+            Err(OverlayError::NestedStandards)
+        );
+    }
+
+    #[test]
+    fn the_merged_manifest_keeps_standards_and_drops_pack() {
+        let project = tree(&[(
+            "project.yaml",
+            "pack: {name: t, source: s1, version: '1'}\nstandards:\n- {name: x, source: s2, version: '2'}\n",
+        )]);
+        let st = overlay_standards(None, &[], &project).unwrap();
+        let (layer, bytes) = &st.files[Path::new("project.yaml")];
+        assert_eq!(*layer, Layer::Merged);
+        assert_eq!(
+            y(std::str::from_utf8(bytes).unwrap()),
+            json!({"standards": [{"name": "x", "source": "s2", "version": "2"}]})
         );
     }
 }

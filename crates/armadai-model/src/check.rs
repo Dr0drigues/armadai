@@ -449,6 +449,12 @@ impl<'a> Out<'a> {
         });
     }
 
+    fn set_last_path(&mut self, path: String) {
+        if let Some(d) = self.ds.last_mut() {
+            d.path = path;
+        }
+    }
+
     fn err(
         &mut self,
         at: (Kind, &str),
@@ -808,6 +814,53 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
                     format!("`pack.{key}` is empty"),
                     Some(hint.into()),
                 );
+            }
+        }
+    }
+    for (i, p) in m.standards.iter().enumerate() {
+        // positioned on the i-th `key:` after `standards:` (every entry has all three keys)
+        let at = |o: &Out, key: &str| {
+            o.text(man)
+                .and_then(|t| nth_key_after(t, "standards", key, i))
+                .map_or((None, None), |(t, idx)| line_col(t, idx))
+        };
+        if !is_valid_id(&p.name) {
+            let pos = at(&o, "name");
+            o.emit_pos(
+                man,
+                Severity::Error,
+                "bad-id",
+                pos,
+                format!("`{}` is not a valid id", p.name),
+                Some("ids match [a-z0-9][a-z0-9-]{0,63}".into()),
+            );
+            o.set_last_path(format!("standards[{i}].name"));
+        }
+        for (key, value, code, hint) in [
+            (
+                "source",
+                &p.source,
+                "standards-empty-source",
+                "the URL of the pack's source, as in registries.yaml",
+            ),
+            (
+                "version",
+                &p.version,
+                "standards-empty-version",
+                "latest, a version such as 1.2.3, or a range such as ^1.3",
+            ),
+        ] {
+            if value.trim().is_empty() {
+                let pos = at(&o, key);
+                o.emit_pos(
+                    man,
+                    Severity::Error,
+                    code,
+                    pos,
+                    format!("`standards[{i}].{key}` is empty"),
+                    Some(hint.into()),
+                );
+                o.set_last_path(format!("standards[{i}].{key}"));
             }
         }
     }
@@ -1422,4 +1475,13 @@ fn check_command(o: &mut Out, id: &str, c: &crate::load::Command, skills: &BTree
             Some("one of them hides the other: pick another name".into()),
         );
     }
+}
+
+/// Byte offset of the `n`-th (0-based) `key:` after the `block:` key, with the text.
+fn nth_key_after<'a>(t: &'a str, block: &str, key: &str, n: usize) -> Option<(&'a str, usize)> {
+    let mut at = key_end(t, block)?;
+    for _ in 0..n {
+        at = key_start(t, at, key)? + key.len();
+    }
+    Some((t, key_start(t, at, key)?))
 }

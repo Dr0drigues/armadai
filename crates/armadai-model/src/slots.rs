@@ -4,7 +4,7 @@
 use crate::load::{Project, Skill};
 
 /// The slot names a skill fills (`armadai-slot`, split on `,`, trimmed).
-pub(crate) fn filled_by(skill: &Skill) -> Vec<&str> {
+pub fn filled_by(skill: &Skill) -> Vec<&str> {
     (skill.front.metadata.as_ref())
         .and_then(|m| m.get("armadai-slot"))
         .map_or_else(Vec::new, |v| v.split(',').map(str::trim).collect())

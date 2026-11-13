@@ -98,6 +98,9 @@ pub struct Manifest {
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pack: Option<PackRef>,
+    /// Standards packs: skills only, layered after `pack:` and before the project's own files.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub standards: Vec<PackRef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(description = "Default link targets: claude, codex, copilot, opencode")]
     pub targets: Vec<String>,

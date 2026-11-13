@@ -1392,6 +1392,43 @@ fn pack_ref_diagnostics() {
     }
 }
 
+#[test]
+fn standards_entries_are_checked() {
+    let yaml = "schema_version: 1\nname: other\nstandards:\n  - name: Bad Name\n    source: s0\n    version: '1'\n  - name: ok-one\n    source: ''\n    version: '2'\n  - name: ok-two\n    source: s2\n    version: ' '\n";
+    let ds = manifest_diags(yaml);
+    let got: Vec<(String, String)> = ds
+        .iter()
+        .map(|d| {
+            (
+                d.render().replace(
+                    &format!("{}/", d.file.parent().unwrap().parent().unwrap().display()),
+                    "",
+                ),
+                d.path.clone(),
+            )
+        })
+        .collect();
+    let want = [
+        (
+            ".armadai/project.yaml:4:5: error[bad-id]: `Bad Name` is not a valid id\n  hint: ids match [a-z0-9][a-z0-9-]{0,63}",
+            "standards[0].name",
+        ),
+        (
+            ".armadai/project.yaml:8:5: error[standards-empty-source]: `standards[1].source` is empty\n  hint: the URL of the pack's source, as in registries.yaml",
+            "standards[1].source",
+        ),
+        (
+            ".armadai/project.yaml:12:5: error[standards-empty-version]: `standards[2].version` is empty\n  hint: latest, a version such as 1.2.3, or a range such as ^1.3",
+            "standards[2].version",
+        ),
+    ];
+    let want: Vec<(String, String)> = want
+        .iter()
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .collect();
+    assert_eq!(got, want);
+}
+
 // ---- policy.grants ----
 
 fn grants(extra: &str, flows: &[(&str, &str)]) -> Vec<Diagnostic> {

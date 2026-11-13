@@ -215,6 +215,10 @@ fn build(
                 "pack {}: its own project.yaml references a pack (pack:), which is not supported",
                 lock.pack
             ),
+            OverlayError::NestedStandards => anyhow::anyhow!(
+                "pack {}: its own project.yaml references standards packs (standards:), which is not supported",
+                lock.pack
+            ),
             OverlayError::InvalidYaml { layer, message } => {
                 let file = match layer {
                     Layer::Pack => snap.join("project.yaml"),
@@ -274,7 +278,7 @@ fn build(
         if match layer {
             Layer::Pack => exec_pack.contains(rel),
             Layer::Project => exec_project.contains(rel),
-            Layer::Merged => false,
+            Layer::Standards(_) | Layer::Merged => false,
         } {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&at, std::fs::Permissions::from_mode(0o755))?;

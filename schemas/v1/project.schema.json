@@ -178,6 +178,13 @@
     "sessions": {
       "$ref": "#/$defs/Sessions"
     },
+    "standards": {
+      "description": "Standards packs: skills only, layered after `pack:` and before the project's own files.",
+      "items": {
+        "$ref": "#/$defs/PackRef"
+      },
+      "type": "array"
+    },
     "targets": {
       "description": "Default link targets: claude, codex, copilot, opencode",
       "items": {
