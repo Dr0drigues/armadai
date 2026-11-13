@@ -22,7 +22,7 @@ Légende : **V** = relu au code par l'architecte ou par `Explore` (fichier:ligne
 - **Règles du dépôt.** La skill `armadai-rules` s'applique. En particulier : barrière complète avant chaque push ; mutation vue rouge pour chaque test, `touch` après restauration ; `cargo build` avant tout essai au binaire ; `HOME` et `ARMADAI_CONFIG_DIR` isolés pour tout essai, `CARGO_TARGET_DIR` privé au worktree ; copies jetables par `scratch.sh` ; jamais `stash`, aucune tâche en arrière-plan ; `/usr/bin/grep`, `/bin/ls`, `/bin/ps`.
 - **Un seul commiteur à la fois** dans le worktree. `lead` ne commite pas pendant qu'un spécialiste construit.
 - **Crates.** `armadai-model` reste pur : `Sessions`, `JournalAccess` et `SessionLink` y sont des types serde, sans E/S. Tout le reste (git, verrou, journal) est dans `crates/armadai`. Toute tâche qui touche `types.rs` régénère les schémas (`cargo run -p armadai-model --example gen_schemas`) sans diff résiduel. `frozen/armadai-audit` : `cargo check --all-targets && cargo test` si `armadai-core` ou `armadai-model` change (J.1, L.1).
-- **Dépendances.** Aucun paquet nouveau. Lecture de `.git` à la main (pas de `git` lancé, pas de `git2`) ; heure locale du journal par `chrono`, déjà déclaré ; aucun verrou de fichier (`flock`) : l'ajout en une écriture suffit (décision 5, §6).
+- **Dépendances.** Aucun paquet nouveau. Lecture de `.git` à la main (pas de `git` lancé, pas de `git2`) ; heure locale du journal par `chrono`, déjà déclaré ; verrou de fichier du journal par `libc::flock`, `libc` déjà déclaré par `crates/armadai` (`Cargo.toml:56`), `Cargo.lock` inchangé (choix C9, §6). Amendé le 2026-11-13 : la version précédente disait « aucun verrou de fichier : l'ajout en une écriture suffit », ce que la CI ubuntu a infirmé (§7, J.2).
 - **Opt-in, diff nul.** Sans `pack pin`, toutes les sorties sont identiques octet pour octet à `b05b585` : les golden existants ne changent pas (critère 4). Sans `sessions.journal`, sans `journal:` d'agent, sans `session_link` : `CLAUDE.md`, fichiers d'agents, `settings.json` et manifeste identiques (critères 8, 9, 10).
 - **Sorties versionnées.** `pack.lock` reste `format: 1` ; le verrou de worktree est un `PackLock` de même format, sans champ nouveau. Le manifeste de `link` n'est pas touché. Le journal naît `armadai.journal/1` (chaque ligne et `--json`) ; une ligne figée en fixture dès J.2 sert de « document précédent ».
 - **Textes.** Tout texte nouveau est celui de §5, validé par Dimitri le 2026-11-12 ; un texte retouché en tâche repasse par lui dans la PR. Les golden suivent, relus ligne à ligne.
@@ -113,9 +113,10 @@ sequenceDiagram
     A->>G: root du worktree
     G-->>A: chantier (le .git du worktree pointe vers chantier/.git/worktrees/wt-menu)
     A->>A: is_valid_lot("Menu") et 1er caractère alnum ; texte ≤ 2000, ligne ≤ 4096 o
-    A->>F: open(append) puis un seul write_all de la ligne {"schema":"armadai.journal/1",…,"lot":"Menu"}
+    A->>F: open(append), flock(LOCK_EX), lit le dernier octet
+    A->>F: un seul write_all ([\n] + ligne {"schema":"armadai.journal/1",…,"lot":"Menu"}), puis fermeture (verrou rendu)
     C->>A: journal show --lot Menu --last 20
-    A->>F: lit journal-menu.jsonl (+ journal.jsonl)
+    A->>F: open(O_NOFOLLOW), flock(LOCK_SH) (attend un écrivain), lit journal-menu.jsonl (+ journal.jsonl)
     A-->>C: lignes dont lot == "Menu" exactement, et celles de journal.jsonl
 ```
 
@@ -123,6 +124,7 @@ Ce qu'il faut regarder :
 - Le fichier est choisi par le **checkout principal**, même quand le worktree a son propre `.armadai/` ; hors worktree, c'est le projet lui-même.
 - Le nom de fichier est le lot en minuscules ; le filtre de `show --lot` porte sur le champ `lot`, à la casse exacte (décision 3).
 - Aucun hook, aucun gate : le journal est un fichier et deux commandes.
+- Sous Unix, l'écrivain tient un verrou exclusif (`flock`) de l'ouverture à l'écriture, et le lecteur un verrou partagé. Ainsi, le contrôle du dernier octet et l'ajout qui le suit ne s'entrelacent pas avec un autre `add`, et `show` ne voit jamais une ligne à moitié écrite (C9). Le verrou est consultatif : un processus qui ne le prend pas n'est pas arrêté.
 
 ### 3.3 La consigne de lien et son repli (PR 2)
 
@@ -273,7 +275,7 @@ Chaque tâche finit barrière verte. Les mutations citées sont le minimum ; le 
 - Commit : `feat(model): sessions.journal and the journal key of an agent`
 
 **J.2 Le journal et `armadai journal add|show`** (`cli-specialist`, après K.1)
-- Fichiers : `crates/armadai/src/journal.rs` (nouveau), `cli/journal.rs` (nouveau), `cli/mod.rs` (`Command::Journal`, aide), `tests/journal.rs` (nouveau), `tests/fixtures/journal/v1.jsonl`.
+- Fichiers : `crates/armadai/src/journal.rs` (nouveau), `crates/armadai/src/file_lock.rs` (nouveau, amendement du 2026-11-13), `main.rs` (`mod file_lock;`), `cli/journal.rs` (nouveau), `cli/mod.rs` (`Command::Journal`, aide), `tests/journal.rs` (nouveau), `tests/fixtures/journal/v1.jsonl`.
 - Interfaces :
   ```rust
   pub const SCHEMA: &str = "armadai.journal/1";
@@ -293,19 +295,31 @@ Chaque tâche finit barrière verte. Les mutations citées sont le minimum ; le 
   pub fn file_name(lot: Option<&str>) -> anyhow::Result<String>;
   pub fn add(root: &Path, lot: Option<&str>, kind: Kind, by: Option<&str>, text: &str, now: u64) -> anyhow::Result<()>;
   pub fn show(root: &Path, lot: Option<&str>, kind: Option<&str>, last: usize) -> anyhow::Result<Vec<Entry>>;
+  // test hooks: `between(path)` runs twice under the exclusive lock (right after it is taken,
+  // then after the last-byte check, before the write); `during(path)` under the shared lock
+  fn add_with(root: &Path, lot: Option<&str>, kind: Kind, by: Option<&str>, text: &str, now: u64, between: impl FnMut(&Path)) -> anyhow::Result<()>;
+  fn read_unlinked_with(dir: &Path, name: &str, during: impl FnOnce(&Path)) -> anyhow::Result<Option<Vec<u8>>>;
+  // file_lock.rs: the only `unsafe` of the journal, one SAFETY comment per block
+  pub(crate) fn lock_exclusive(f: &std::fs::File) -> std::io::Result<()>; // flock(LOCK_EX), retried on EINTR
+  pub(crate) fn lock_shared(f: &std::fs::File) -> std::io::Result<()>;    // flock(LOCK_SH)
+  // off Unix: both return Ok(()), marked `shortcut:` (revisit when the journal runs on Windows)
   ```
 - [ ] Nom de lot : `crate::flow_status::marker::is_valid_lot(lot)` **et** premier caractère alphanumérique ; sinon T11a, rien n'est écrit (ni dossier créé).
 - [ ] `by` : 1 à 64 caractères parmi lettres ASCII, chiffres, `._-` (T11e) ; absent sans `--by`.
 - [ ] Texte : non vide, sans `\n` ni `\r` (T11c), au plus `MAX_TEXT` caractères (T11b) ; ligne sérialisée au plus `MAX_LINE` octets (T11d).
-- [ ] Écriture : refus si `state/` ou le fichier est un lien symbolique (T11f), même motif que `flow_status/record.rs:280-289` ; `create_dir_all`, puis `OpenOptions::new().create(true).append(true)` et **un seul** `write_all` de la ligne complète, `\n` compris (`record.rs:290-297`). Aucune édition, aucune suppression.
-- [ ] Lecture : `--lot X` lit `file_name(Some(X))` (filtre `lot == X` à la casse exacte) et `journal.jsonl` ; sans `--lot`, `journal.jsonl` et chaque `journal-<n>.jsonl` dont `<n>` est un nom valide en minuscules ; tout autre fichier est ignoré. Fusion triée par `(ts, lot, ordre dans le fichier)`, `None` avant tout lot ; puis `--kind`, puis les `--last` dernières (20 par défaut, risque 5). Une ligne illisible est sautée, et une note T12c par fichier va sur stderr. Un genre inconnu est montré tel quel. Une ligne dont le `schema` n'est pas `armadai.journal/1` est sautée et comptée dans la note T12c, comme une ligne illisible. Aucune lecture à travers un lien symbolique (`state/` ou fichier : T11g ; le fichier est ouvert avec `O_NOFOLLOW`). À l'écriture, si le fichier est non vide et ne finit pas par `\n`, un `\n` est préfixé dans le même et unique `write_all` (la borne de 4096 octets se vérifie avant).
+- [ ] Écriture : refus si `state/` ou le fichier est un lien symbolique (T11f), même motif que `flow_status/record.rs:280-289` ; `create_dir_all`, puis `OpenOptions::new().create(true).read(true).append(true)`, `file_lock::lock_exclusive` aussitôt après l'ouverture, contrôle du dernier octet, et **un seul** `write_all` de la ligne complète, `\n` compris (`record.rs:290-297`) ; le verrou est rendu à la fermeture du fichier, après l'écriture. Aucune édition, aucune suppression.
+- [ ] Lecture : `--lot X` lit `file_name(Some(X))` (filtre `lot == X` à la casse exacte) et `journal.jsonl` ; sans `--lot`, `journal.jsonl` et chaque `journal-<n>.jsonl` dont `<n>` est un nom valide en minuscules ; tout autre fichier est ignoré. Fusion triée par `(ts, lot, ordre dans le fichier)`, `None` avant tout lot ; puis `--kind`, puis les `--last` dernières (20 par défaut, risque 5). Une ligne illisible est sautée, et une note T12c par fichier va sur stderr. Un genre inconnu est montré tel quel. Une ligne dont le `schema` n'est pas `armadai.journal/1` est sautée et comptée dans la note T12c, comme une ligne illisible. Aucune lecture à travers un lien symbolique (`state/` ou fichier : T11g ; le fichier est ouvert avec `O_NOFOLLOW`), puis `file_lock::lock_shared` avant la lecture : un lecteur attend l'écrivain en cours. À l'écriture, si le fichier est non vide et ne finit pas par `\n`, un `\n` est préfixé dans le même et unique `write_all` (la borne de 4096 octets se vérifie avant).
 - [ ] Sorties : texte T12a, JSON T12b, journal vide ou absent : rien, code 0 ; `add` imprime T13.
 - [ ] `every_kept_command_has_a_help_description` gagne `journal`.
 - Tests :
   - Unitaires : chaque nom refusé du critère 7 (`.`, `..`, `.x`, `a_b`, `a+b`, 41 caractères) avec T11a à égalité et aucun fichier ni dossier créé ; `Menu-2.1` → `journal-menu-2.1.jsonl` ; `show --lot Menu-2.1` ne rend pas une entrée `menu-2.1` du même fichier ; `a` et `b` fusionnés par `ts` avec égalité de `ts` départagée par le lot ; `--lot a` ne rend rien de `b` ; `journal.jsonl` rendu avec `--lot a` ; 2000 caractères acceptés, 2001 refusés ; un texte de 2000 caractères de 3 octets (6000 o) refusé par T11d ; saut de ligne refusé ; lien symbolique sur `state/` et sur le fichier.
   - `state_dir` : worktree à `.git` fichier vers un checkout principal qui a `project.yaml` → le `state/` principal ; projet en sous-dossier : le même chemin relatif dans le principal ; principal sans `project.yaml` à ce chemin → celui du worktree ; hors git → celui de `root`.
   - Binaire (`tests/journal.rs`) : `add` dans le worktree puis `show --lot menu` dans le principal (critère 5), sortie entière à égalité (le test lit `ts` dans le fichier écrit et en déduit la ligne attendue, sans variable d'environnement de test) ; `--json` à égalité avec `schema` ; `--kind other` refusé par clap avec la liste ; journal vide, code 0, stdout vide.
-  - Concurrence (critère 6) : deux processus `armadai journal add` en boucle de 50 chacun, lancés ensemble ; 100 lignes, chacune un JSON valide ; 5 passes. Mutation : deux `write_all` (préfixe puis reste) au lieu d'un, le test rougit sur au moins une des 5 passes ; sinon le rapport le dit et la mutation est remplacée par une écriture sans `append`.
+  - Verrou (amendement du 2026-11-13, tests déterministes, `#[cfg(unix)]`, dans `journal.rs`) :
+    - `the_file_is_locked_from_its_opening_to_the_write` : par `add_with`, un second descripteur tente `LOCK_EX | LOCK_NB` aux deux points du crochet ; attendu `[true, true]`. Mutation faite : retirer `lock_exclusive`. Mutation proposée, non rejouée : prendre le verrou après le contrôle du dernier octet, le premier crochet restant à sa place (le premier point devrait rougir).
+    - `a_read_holds_a_shared_lock` : par `read_unlinked_with`, la même tentative pendant la lecture ; attendu `Some(true)`. Mutation : retirer `lock_shared`. Limite : la tentative exclusive prouve qu'un verrou est tenu, pas qu'il est partagé ; une mutation `LOCK_SH` → `LOCK_EX` reste verte (à dire en revue, pas bloquant).
+    - Ces deux tests portent la protection : ils rougissent sous macOS comme sous Linux.
+  - Concurrence (critère 6) : deux processus `armadai journal add` en boucle de 50 chacun, lancés ensemble ; 100 lignes, chacune un JSON valide ; 5 passes ; texte de `"€".repeat(1300)` (environ 3,9 Ko par ligne, sous 4096 o, pour qu'une ligne franchisse une page du cache). Ce test ne rougit que sous Linux : sous macOS, il reste vert sans verrou (mesuré par le guardian). Il reste le test du critère 6, pas la garde du verrou. L'ancienne mutation (deux `write_all` au lieu d'un) ne vaut plus pour lui : sous le verrou, deux écritures ne s'entrelacent pas.
   - Rétrocompatibilité : `tests/fixtures/journal/v1.jsonl` (lignes figées, noms génériques) se relit à égalité.
   - Rien de privé : test qui parcourt `tests/fixtures/journal/` et refuse `/Users/` et `/home/`. Mutation : glisser `/Users/x` dans la fixture.
   - Mutations : copie locale de la règle de lot au lieu de `is_valid_lot` (introduire `_` dans l'alphabet copié, le cas `a_b` rougit — à faire en revue) ; nom de fichier sans minuscules (`Menu-2.1` rougit) ; tri sans départage (rougit) ; `--last` appliqué avant la fusion (rougit).
@@ -349,7 +363,7 @@ Chaque tâche finit barrière verte. Les mutations citées sont le minimum ; le 
 - Commit : `feat(link): compile the session link of a flow for Claude Code`
 
 **D2 Documentation de la PR 2** (`cli-specialist`)
-- Fichiers : `docs/wiki/flow-status.md` (journal : fichiers, format `armadai.journal/1`, bornes, casse, `journal.jsonl`, rien de privé, risque 6), `docs/wiki/link.md` (T15, T16, T19, `not-compiled`), `docs/wiki/project-format.md` (si J.1/L.1 n'ont pas tout mis), `docs/wiki/policy-gate.md` (le gate ne juge pas `SendMessage`, la messagerie n'est pas observable), messagerie : M1, M4, M7 cités avec leur date, et la condition des messages tenus (risque 3) ; `CLAUDE.md` (commande `journal` ; « Where things live » : `journal.rs`).
+- Fichiers : `docs/wiki/flow-status.md` (journal : fichiers, format `armadai.journal/1`, bornes, casse, `journal.jsonl`, rien de privé, risque 6 ; amendement du 2026-11-13 : `:447-450` attribue l'intégrité des lignes au seul `write_all` en ajout, à remplacer par le verrou C9 : écrivain exclusif, lecteur partagé, consultatif, absent hors Unix), `docs/wiki/link.md` (T15, T16, T19, `not-compiled`), `docs/wiki/project-format.md` (si J.1/L.1 n'ont pas tout mis), `docs/wiki/policy-gate.md` (le gate ne juge pas `SendMessage`, la messagerie n'est pas observable), messagerie : M1, M4, M7 cités avec leur date, et la condition des messages tenus (risque 3) ; `CLAUDE.md` (commande `journal` ; « Where things live » : `journal.rs`).
 - Commit : `docs: document the lot journal and the session link`
 
 **E Essai réel de Dimitri** (fin de la PR 2 ; préparé par `validator`)
@@ -463,6 +477,11 @@ Et sur la spec (2026-11-12) : verrou de worktree ; `pack pin` explicite + `updat
 - **C6, racine du journal** : le projet du checkout principal au même chemin relatif que celui du worktree, s'il a un `project.yaml`, sinon le projet lui-même (un principal sans `.armadai/` ne doit pas recevoir un `state/` orphelin).
 - **C7, `show` par défaut** : les 20 dernières entrées (risque 5 de la spec), `--last N` pour plus.
 - **C8, `ts`** : secondes Unix (`u64`), affichées en heure locale par `chrono`.
+- **C9, intégrité d'une ligne du journal** (amendement du 2026-11-13, après l'échec de la CI ubuntu, §7). La version précédente du plan s'en remettait à un seul `write_all` en ajout. Elle attribuait ce choix, à tort, à la décision 5, qui ne porte que sur la borne de 4096 octets. Le défaut : le préfixe `\n` après une ligne tronquée se décide en lisant le dernier octet, puis on écrit. Sous Linux, un autre processus peut lire une écriture concurrente à moitié faite, croire la ligne tronquée et ajouter une ligne de plus (101 au lieu de 100). Cette cause est déduite du code et du chemin d'écriture de Linux ; elle n'a pas été reproduite sous macOS.
+  - (a) `flock` consultatif : exclusif de l'ouverture à l'écriture, partagé à la lecture. Un module `file_lock.rs`, seul `unsafe` du journal, sans paquet nouveau (`libc` déjà déclaré). Coût : un `unsafe` de plus dans le crate (la règle `unsafe` de `armadai-rules` est respectée) ; aucune protection hors Unix (`shortcut:`) ; aucune protection contre un processus qui ignore le verrou.
+  - (b) Retirer le préfixe `\n` (ne plus réparer une ligne tronquée) : aucun verrou. Mais une entrée écrite après une ligne coupée se colle à elle et devient illisible, et `show` pourrait encore lire une ligne à moitié écrite.
+  - (c) Un fichier de verrou à côté (`.lock` créé en `O_EXCL`) : portable, mais un verrou orphelin après un crash bloque le journal, et le code est plus long.
+  - **Retenu : (a)**, livré par `d2fc8b6`, `32d7272`, `66f172e` et `9d89328`. Risque restant : Windows n'a pas de verrou ; à rouvrir si le journal y sert.
 
 ## 7. Résultats des mesures (rempli en tâche)
 
@@ -474,5 +493,9 @@ Et sur la spec (2026-11-12) : verrou de worktree ; `pack pin` explicite + `updat
   - (e) sous-module : `.git` est un fichier `gitdir: ../.git/modules/msub` (relatif) ; `--absolute-git-dir` = `<main>/.git/modules/msub`, que la règle retrouve ; il ne contient pas `/.git/worktrees/`, donc `main_checkout_of` rend `None` (l'ancien code rendait le super-projet : écart signalé en K.1).
   - (f) hors dépôt : `fatal: not a git repository` ; `git_dir_of` rend `None`.
   - `<git dir>/armadai/pack.lock` dans le worktree (b, déplacé en `wt2`) : `git status --porcelain` vide (dans le worktree), `git worktree list` sans plainte, `git fsck` code 0 sans sortie ; `git worktree remove ../wt2` code 0, efface le dossier du worktree **et** son git dir `.git/worktrees/wt` (donc le verrou avec lui).
+- J.2, concurrence (PR #569) : la CI ubuntu a échoué sur `two_processes_appending_leave_every_line_whole` (101 lignes au lieu de 100). La cause est déduite du code et du chemin d'écriture de Linux, sans reproduction sous macOS : le contrôle du dernier octet voit une écriture concurrente à moitié faite et préfixe un `\n` de trop. Correctif C9 (`d2fc8b6`, `32d7272`, `66f172e`, `9d89328`) ; CI Linux verte à `66f172e`.
+  - Le test de concurrence ne rougit que sous Linux : sous macOS, il reste vert sans verrou (mesuré par le guardian). Il ne garde donc pas le verrou sur la machine des spécialistes.
+  - La protection déterministe repose sur `the_file_is_locked_from_its_opening_to_the_write` et `a_read_holds_a_shared_lock` (`journal.rs:611`, `:625`), tous deux mutés (retrait du verrou → rouge).
+  - Le test de lecture ne distingue pas un verrou partagé d'un exclusif (§4, J.2). Le commentaire SAFETY du bloc de test (`file_lock.rs:54`) renvoie à `lock_exclusive`, alors que le texte est sur `flock_blocking` (`:12`) : détail pour la revue.
 - E : à faire (version de Claude Code de Dimitri, aller-retour entre deux sessions nommées, messages tenus).
 
