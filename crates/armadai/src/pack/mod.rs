@@ -326,7 +326,12 @@ pub fn update_in(
     }
     cache::ensure_snapshot_in(registry, &source, &d.name, &path, &best)?;
     let new = lock_of(&d.name, &d.source, &best);
-    let old = lock::read_committed(root)?;
+    let old_file = lock::read_committed(root)?;
+    let standards = old_file
+        .as_ref()
+        .map(|l| l.standards.clone())
+        .unwrap_or_default();
+    let old = old_file.and_then(|l| l.team);
     let id12 = status::id12(&best.id()).to_string();
     if old.as_ref().is_some_and(|l| {
         l.pack == new.pack && l.source == new.source && l.resolved.id() == best.id()
@@ -354,7 +359,13 @@ pub fn update_in(
         &best.version,
         &[root.join(lock::LOCK), referents::path_in(config)],
     )?;
-    lock::write(root, &new)?;
+    lock::write(
+        root,
+        &lock::LockFile {
+            team: Some(new.clone()),
+            standards,
+        },
+    )?;
     record(config, root, &new)?;
     let was = old.map_or("(none)".to_string(), |l| l.resolved.version);
     let mut lines = vec![format!(
@@ -504,7 +515,18 @@ pub fn add_in(
         ],
     )?;
     // the lock first: a lock without the key is ignored, the key without a lock is not
-    lock::write(root, &new)?;
+    let standards = lock::read_committed(root)
+        .ok()
+        .flatten()
+        .map(|l| l.standards)
+        .unwrap_or_default();
+    lock::write(
+        root,
+        &lock::LockFile {
+            team: Some(new.clone()),
+            standards,
+        },
+    )?;
     write_project_yaml(root, &with_pack(text.as_deref(), name, &shown, &range))?;
     record(config, root, &new)?;
     Ok(Done {

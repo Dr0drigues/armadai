@@ -61,7 +61,7 @@ pub fn newer(root: &Path, registry: &Path) -> Option<Newer> {
         if lock::read_pin(root).map_or(true, |p| p.is_some()) {
             return None;
         }
-        let lock = lock::read_committed(root).ok()??;
+        let lock = lock::read_committed(root).ok()??.team?;
         let range = resolve::parse_range(&d.version).ok()?;
         let all = cached(registry, &source::real_url(&d.source).ok()?, &d.name);
         let best = resolve::best(&range, &all)?;
@@ -119,7 +119,7 @@ fn at_of(r: &lock::Resolved) -> String {
 pub fn report(root: &Path, registry: &Path, config: &Path) -> anyhow::Result<String> {
     let mut blocks = Vec::new();
     if let Some(d) = declared(root) {
-        let Some(lock) = lock::read_committed(root)? else {
+        let Some(lock) = lock::read_committed(root)?.and_then(|l| l.team) else {
             return Err(anyhow!(super::effective::lock_missing(&d.name)));
         };
         let all = cached(registry, &source::real_url(&d.source)?, &d.name);
@@ -134,7 +134,7 @@ pub fn report(root: &Path, registry: &Path, config: &Path) -> anyhow::Result<Str
         };
         let r = &lock.resolved;
         let at = at_of(r);
-        let pinned = match lock::read_pin(root)? {
+        let pinned = match lock::read_pin(root)?.and_then(|p| p.team) {
             None => String::new(),
             Some(pin) => {
                 let r = &pin.resolved;

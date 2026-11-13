@@ -259,7 +259,7 @@ pub(crate) fn locked_snapshot_of(
     let Some((name, _)) = crate::pack::effective::pack_ref(root) else {
         bail!("this project references no pack: give a pack folder, armadai pack test <dir>");
     };
-    let Some(lock) = crate::pack::lock::read(root)? else {
+    let Some(lock) = crate::pack::lock::read(root)?.and_then(|l| l.team) else {
         bail!("{}", crate::pack::effective::lock_missing(&name));
     };
     let (dir, _) = crate::pack::effective::snapshot_path(root, &lock, registry)?;
@@ -689,6 +689,26 @@ mod tests {
         assert_eq!(
             e,
             "this project references no pack: give a pack folder, armadai pack test <dir>"
+        );
+    }
+
+    #[test]
+    fn pack_test_reads_the_team_entry_of_a_lock_with_standards() {
+        let registry = tempfile::tempdir().unwrap();
+        let root = project(true, false);
+        put(
+            root.path(),
+            ".armadai/pack.lock",
+            &format!(
+                "format: 1\npack: demo\nsource: '{URL}'\nresolved:\n  version: 1.4.0\n  commit: {C1}\nstandards:\n- pack: rust-std\n  source: '{URL}'\n  resolved:\n    version: 9.9.0\n    commit: {C2}\n"
+            ),
+        );
+        let snap = crate::pack::cache::snapshot_dir_in(registry.path(), URL, "demo", C1);
+        put(&snap, "pack.yaml", "name: demo\ndescription: d\n");
+        let (dir, name, version) = locked_snapshot_of(root.path(), registry.path()).unwrap();
+        assert_eq!(
+            (dir, name.as_str(), version.as_str()),
+            (snap, "demo", "1.4.0")
         );
     }
 }

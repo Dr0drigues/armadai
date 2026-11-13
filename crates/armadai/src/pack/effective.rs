@@ -68,7 +68,7 @@ pub fn open_in(root: &Path, vars: Vars, registry: &Path) -> anyhow::Result<Effec
     let Some((name, _)) = pack_ref(root) else {
         return build(root, None, vars, registry);
     };
-    let Some(lock) = lock::read(root)? else {
+    let Some(lock) = lock::read(root)?.and_then(|l| l.team) else {
         bail!("{}", lock_missing(&name));
     };
     build(root, Some(&lock), vars, registry)
@@ -124,7 +124,7 @@ pub(crate) fn snapshot_path(
     if let Some((name, source)) = pack_ref(root)
         && (name != lock.pack || source != lock.source)
     {
-        if lock::read_pin(root)?.as_ref() == Some(lock) {
+        if lock::read_pin(root)?.and_then(|p| p.team).as_ref() == Some(lock) {
             bail!(
                 "the pack pin of this checkout is for pack {} from {}, but .armadai/project.yaml \
                  references {name} from {source}: run armadai pack unpin",
@@ -407,7 +407,7 @@ mod tests {
                 root: tempfile::tempdir().unwrap(),
             };
             put(fx.root.path(), ".armadai/project.yaml", REF);
-            lock::write(fx.root.path(), &lock(C1)).unwrap();
+            lock::write(fx.root.path(), &lock(C1).into()).unwrap();
             fx
         }
         fn snapshot(&self, commit: &str, files: &[(&str, &str)]) -> PathBuf {
@@ -514,7 +514,7 @@ mod tests {
             &[("project.yaml", MANIFEST), ("agents/two.md", AGENT_A)],
         );
         assert_eq!(agents(&fx.open(Vars::Literal).unwrap()), ["one"]);
-        lock::write(fx.root.path(), &lock(C2)).unwrap();
+        lock::write(fx.root.path(), &lock(C2).into()).unwrap();
         assert_eq!(agents(&fx.open(Vars::Literal).unwrap()), ["two"]);
         // a lock given by the caller wins over the file
         let e = open_with_lock_in(fx.root.path(), &lock(C1), Vars::Literal, fx.registry.path())
@@ -550,7 +550,7 @@ mod tests {
         let mut other = lock(C1);
         other.pack = "other".into();
         other.source = "https://example.com/else.git".into();
-        lock::write(fx.root.path(), &other).unwrap();
+        lock::write(fx.root.path(), &other.into()).unwrap();
         assert_eq!(
             fx.err(),
             ".armadai/pack.lock is for pack other from https://example.com/else.git, but \
@@ -565,7 +565,7 @@ mod tests {
         );
         let mut bad = lock("../../etc");
         bad.pack = "demo".into();
-        lock::write(fx.root.path(), &bad).unwrap();
+        lock::write(fx.root.path(), &bad.into()).unwrap();
         assert_eq!(
             fx.err(),
             "pack demo has an invalid name or version id: ../../etc"

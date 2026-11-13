@@ -147,6 +147,7 @@ pub fn execute(what: PackCommand) -> anyhow::Result<()> {
         }
         PackCommand::Pin => {
             let pin = lock::pin(&root?)?;
+            let pin = pin.first().expect("a pin holds an entry");
             println!(
                 "pinned pack {} {} for this checkout; pack update is refused here until armadai pack unpin",
                 pin.pack, pin.resolved.version
@@ -158,11 +159,14 @@ pub fn execute(what: PackCommand) -> anyhow::Result<()> {
             let Some(old) = lock::unpin(&root)? else {
                 anyhow::bail!("this checkout pins no pack");
             };
-            let now =
-                lock::read_committed(&root)?.map_or("missing".to_string(), |l| l.resolved.version);
+            let now = lock::read_committed(&root)?
+                .and_then(|l| l.team)
+                .map_or("missing".to_string(), |l| l.resolved.version);
+            let old = old.first();
+            let (name, was) = old.map_or(("", ""), |o| (&o.pack, &o.resolved.version));
             println!(
                 "unpinned pack {} (was {}); this checkout follows .armadai/pack.lock ({now}) again",
-                old.pack, old.resolved.version
+                name, was
             );
             Ok(())
         }
@@ -310,8 +314,8 @@ fn check_lock(
     synced: &BTreeSet<String>,
 ) -> usize {
     let lock = match lock::read(root) {
-        Ok(Some(l)) => l,
-        Ok(None) => return 0,
+        Ok(Some(lock::LockFile { team: Some(l), .. })) => l,
+        Ok(_) => return 0,
         Err(e) => {
             eprintln!("  warn: {e}");
             return 1;

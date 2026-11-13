@@ -294,7 +294,7 @@ pub(crate) mod pinned_fixture {
             ".armadai/project.yaml",
             "pack: { name: demo, source: 'https://example.com/packs.git', version: latest }\n",
         );
-        lock::write(root.path(), &lock_at("1.3.0", C1)).unwrap();
+        lock::write(root.path(), &lock_at("1.3.0", C1).into()).unwrap();
         lock::pin(root.path()).unwrap();
         std::fs::write(
             root.path().join(lock::LOCK),
