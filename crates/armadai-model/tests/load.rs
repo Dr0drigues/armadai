@@ -705,3 +705,52 @@ fn ui_flow_band_loads() {
     let ui = l.project.unwrap().manifest.ui;
     assert!(ui.flow_band && !ui.panel);
 }
+
+/// serde-saphyr 2.1 refuses a blank or `~` value for a list, a map or a struct, and we keep
+/// that refusal (write `[]` or `{}`, or leave the key out): one `invalid-yaml` error, on the
+/// line of the blank key.
+#[test]
+fn a_blank_list_or_map_is_refused_in_the_manifest() {
+    for (key, line) in [("targets", 2), ("policy", 2), ("native", 2), ("ui", 2)] {
+        let dir = project(&[(
+            ".armadai/project.yaml",
+            &format!("schema_version: 1\n{key}:\ndefaults: {{}}\n"),
+        )]);
+        let l = load_project(dir.path());
+        let d = find(&l, "invalid-yaml");
+        assert_eq!((d.line, d.severity), (Some(line), Severity::Error), "{key}");
+    }
+}
+
+#[test]
+fn a_blank_list_is_refused_in_agent_frontmatter() {
+    for key in ["tags", "skills", "capabilities"] {
+        let dir = project(&[
+            M,
+            (
+                ".armadai/agents/dev.md",
+                &format!("---\ndescription: ok\n{key}:\n---\nBody\n"),
+            ),
+        ]);
+        let l = load_project(dir.path());
+        let d = find(&l, "invalid-yaml");
+        assert_eq!((d.line, d.severity), (Some(3), Severity::Error), "{key}");
+        assert!(d.file.ends_with(".armadai/agents/dev.md"), "{key}");
+    }
+}
+
+#[test]
+fn an_explicit_empty_list_or_map_is_accepted() {
+    let dir = project(&[
+        (
+            ".armadai/project.yaml",
+            "schema_version: 1\ntargets: []\nnative: {}\n",
+        ),
+        (
+            ".armadai/agents/dev.md",
+            "---\ndescription: ok\ntags: []\nskills: []\n---\nBody\n",
+        ),
+    ]);
+    let l = load_project(dir.path());
+    assert!(!has_errors(&l.diagnostics), "{:?}", l.diagnostics);
+}

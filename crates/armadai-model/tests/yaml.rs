@@ -170,8 +170,9 @@ fn kept_text_with_an_apostrophe_reads_unchanged() {
     }
 }
 
-/// A typed number or boolean field reads the kept text as saphyr reads it: `1_000`,
-/// `0X10`, `0b1_0` and `tRuE` are accepted there (the previous reader refused them).
+/// A typed number field reads the kept text as saphyr reads it: `1_000`, `0X10` and
+/// `0b1_0` are accepted there (the previous reader refused them). Since serde-saphyr 2.1 a
+/// boolean accepts only the six YAML 1.2 Core spellings: `tRuE` is refused.
 #[test]
 fn typed_fields_accept_what_saphyr_parses_from_kept_text() {
     #[derive(serde::Deserialize)]
@@ -179,9 +180,10 @@ fn typed_fields_accept_what_saphyr_parses_from_kept_text() {
         n: Vec<u32>,
         b: bool,
     }
-    let t: T = from_str("n: [1_000, 0X10, 0b1_0]\nb: tRuE\n").unwrap();
+    let t: T = from_str("n: [1_000, 0X10, 0b1_0]\nb: TRUE\n").unwrap();
     assert_eq!(t.n, [1000, 16, 2]);
     assert!(t.b);
+    assert!(from_str::<T>("n: []\nb: tRuE\n").is_err());
 }
 
 /// `true`, `True` and `TRUE` (and the same spellings of `false`, `null`) keep their type.

@@ -27,6 +27,9 @@ manifest. An **id** is the file (or folder) name and matches `[a-z0-9][a-z0-9-]{
 only identity of an agent, template, skill, flow, automation or command. The supported targets are `claude`, `codex`,
 `copilot` and `opencode`. JSON Schemas of every file are in `schemas/v1/`.
 
+A key with no value (`tags:`) or `~` where a list, a map or a block is expected is `invalid-yaml`: write
+`[]` or `{}`, or leave the key out.
+
 ## `project.yaml`
 
 ```yaml

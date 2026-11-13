@@ -310,8 +310,25 @@ fn materialize_pack(pack_dir: &Path, pack: &StarterPack, tmp: &Path) -> anyhow::
             config.push_str(&format!("        - {a}\n"));
         }
     }
-    std::fs::write(base.join("config.yaml"), config)?;
+    std::fs::write(base.join("config.yaml"), empty_sections_as_lists(&config))?;
     Ok(())
+}
+
+/// A section that got no item (`prompts:` then the next key) is a null, which the YAML
+/// reader refuses for a list: write it as `key: []`.
+fn empty_sections_as_lists(config: &str) -> String {
+    let lines: Vec<&str> = config.lines().collect();
+    let mut out = String::new();
+    for (i, l) in lines.iter().enumerate() {
+        let blank_key = l.ends_with(':') && !l.starts_with(' ');
+        let empty = lines.get(i + 1).is_none_or(|n| !n.starts_with(' '));
+        out.push_str(l);
+        if blank_key && empty {
+            out.push_str(" []");
+        }
+        out.push('\n');
+    }
+    out
 }
 
 fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {

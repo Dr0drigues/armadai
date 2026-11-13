@@ -541,7 +541,12 @@ mod tests {
                     )
                 })
                 .collect();
-            let yaml = format!("name: p\ndescription: d\ntests:\n{list}");
+            let list = if list.is_empty() {
+                " []\n".into()
+            } else {
+                format!("\n{list}")
+            };
+            let yaml = format!("name: p\ndescription: d\ntests:{list}");
             std::fs::write(dir.path().join("pack.yaml"), yaml).unwrap();
             StarterPack::load(dir.path()).unwrap()
         };
