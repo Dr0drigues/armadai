@@ -55,3 +55,13 @@ pub(crate) fn is_locked_elsewhere(f: &std::fs::File) -> bool {
     let rc = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     rc != 0
 }
+
+/// Whether a shared lock can be taken on the file now (`true`, and it is kept until `f` is
+/// dropped). For tests.
+#[cfg(all(test, unix))]
+pub(crate) fn can_share(f: &std::fs::File) -> bool {
+    use std::os::fd::AsRawFd;
+    // SAFETY: as in `flock_blocking`; LOCK_NB makes the call return at once.
+    let rc = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) };
+    rc == 0
+}

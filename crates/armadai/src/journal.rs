@@ -622,17 +622,23 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_read_holds_a_shared_lock() {
+    fn a_read_holds_a_shared_lock_not_an_exclusive_one() {
         let t = project();
         put(t.path(), None, "x", 1);
         let dir = t.path().join(".armadai/state");
         let mut seen = None;
         let got = read_unlinked_with(&dir, "journal.jsonl", |path| {
-            let other = fs::OpenOptions::new().read(true).open(path).unwrap();
-            seen = Some(crate::file_lock::is_locked_elsewhere(&other));
+            let open = || fs::OpenOptions::new().read(true).open(path).unwrap();
+            // no exclusive lock can be taken (checked first: a lock taken here would
+            // hide the next answer), but a shared one can: the lock is shared
+            let (a, b) = (open(), open());
+            seen = Some((
+                crate::file_lock::is_locked_elsewhere(&a),
+                crate::file_lock::can_share(&b),
+            ));
         })
         .unwrap();
         assert!(got.is_some());
-        assert_eq!(seen, Some(true));
+        assert_eq!(seen, Some((true, true)));
     }
 }
