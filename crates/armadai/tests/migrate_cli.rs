@@ -439,3 +439,22 @@ fn a_duplicated_key_in_agents_yaml_is_reported_plainly() {
     );
     assert!(!err.contains("DuplicateKeyPolicy"), "{err}");
 }
+
+/// A blank list in a legacy `armadai.yaml` stops `migrate` with the way out in the message.
+#[test]
+fn a_blank_list_in_a_legacy_config_says_what_to_write() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("armadai.yaml"),
+        "agents:\n  - name: x\nprompts:\n",
+    )
+    .unwrap();
+    let out = migrate(&dir, &[]).failure();
+    let err = String::from_utf8_lossy(&out.get_output().stderr).into_owned();
+    assert!(
+        err.contains(
+            "expected sequence start (write `[]` for an empty list, or leave the key out)"
+        ),
+        "{err}"
+    );
+}

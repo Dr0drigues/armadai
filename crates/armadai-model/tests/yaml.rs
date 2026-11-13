@@ -206,3 +206,37 @@ fn content_after_the_root_node_is_refused_not_dropped() {
         assert_eq!(e.location().map(|l| l.line()), Some(2), "{src:?}: {e}");
     }
 }
+
+/// A blank, `~` or scalar value where a list or a map is required says how to write an
+/// empty one (serde-saphyr 2.1 refuses it; the position stays at the end).
+#[test]
+fn a_refused_blank_collection_names_the_way_out() {
+    #[derive(Debug, serde::Deserialize)]
+    struct S {
+        #[allow(dead_code)]
+        a: Vec<String>,
+    }
+    #[derive(Debug, serde::Deserialize)]
+    struct M {
+        #[allow(dead_code)]
+        a: BTreeMap<String, String>,
+    }
+    for (src, col) in [("a:\n", 2), ("a: ~\n", 4)] {
+        assert_eq!(
+            from_str::<S>(src).unwrap_err().to_string(),
+            format!(
+                "expected sequence start (write `[]` for an empty list, or leave the key out) at line 1, column {}",
+                col
+            ),
+            "{src:?}"
+        );
+        assert_eq!(
+            from_str::<M>(src).unwrap_err().to_string(),
+            format!(
+                "expected mapping start (write `{{}}` for an empty map, or leave the key out) at line 1, column {}",
+                col
+            ),
+            "{src:?}"
+        );
+    }
+}

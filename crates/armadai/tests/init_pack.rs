@@ -962,3 +962,43 @@ fn init_prints_no_validator_warning_but_the_ignored_file() {
     assert!(ok, "{out}\n{err}");
     assert_eq!(err, format!("{}\n", t8(&pack.join("tests/x"))));
 }
+
+const HINT_SEQ: &str =
+    "expected sequence start (write `[]` for an empty list, or leave the key out)";
+
+/// A legacy pack whose only agent is the coordinator leaves its team empty: the config
+/// `init --pack` builds for `migrate` says `agents: []`, not a blank key the reader refuses.
+#[test]
+fn a_legacy_pack_with_only_a_coordinator_is_converted() {
+    let env = Env::new();
+    let pack = env.pack(
+        "solo",
+        &[
+            ("pack.yaml", "name: solo\ndescription: Solo\nagents: [boss]\n"),
+            (
+                "agents/boss.md",
+                "# Boss\n\n## Metadata\n- provider: anthropic\n- tags: [coordinator]\n\n## System Prompt\n\nYou lead.\n",
+            ),
+        ],
+    );
+    let (ok, out, err) = env.init(&pack, &[]);
+    assert!(ok, "{out}\n{err}");
+    assert!(env.root().join(".armadai/agents/boss.md").is_file());
+    let ds = armadai_model::validate(&env.root());
+    assert!(!armadai_model::has_errors(&ds), "{ds:?}");
+}
+
+#[test]
+fn a_blank_list_in_a_legacy_pack_yaml_says_what_to_write() {
+    let env = Env::new();
+    let pack = env.pack(
+        "blank",
+        &[(
+            "pack.yaml",
+            "name: blank\ndescription: B\nagents: [dev]\nprompts:\n",
+        )],
+    );
+    let (ok, out, err) = env.init(&pack, &[]);
+    assert!(!ok, "{out}");
+    assert!(err.contains(HINT_SEQ), "{err}");
+}

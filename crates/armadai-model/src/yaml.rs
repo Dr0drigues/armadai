@@ -46,7 +46,16 @@ impl fmt::Display for Error {
         let msg = self.0.to_string();
         f.write_str(
             &msg.replace(", set DuplicateKeyPolicy in Options if acceptable", "")
-                .replace("; use Option<String>", ""),
+                .replace("; use Option<String>", "")
+                // a blank or `~` value where a collection is required (serde-saphyr 2.1)
+                .replace(
+                    "expected sequence start",
+                    "expected sequence start (write `[]` for an empty list, or leave the key out)",
+                )
+                .replace(
+                    "expected mapping start",
+                    "expected mapping start (write `{}` for an empty map, or leave the key out)",
+                ),
         )
     }
 }

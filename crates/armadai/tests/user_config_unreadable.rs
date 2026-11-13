@@ -105,3 +105,17 @@ fn an_unreadable_registries_yaml_is_named_once() {
     assert_eq!(warnings.len(), 1, "{stderr}");
     assert!(warnings[0].contains("line 2"), "{stderr}");
 }
+
+/// A blank list in the user's `config.yaml` is reported with the way out.
+#[test]
+fn a_blank_list_in_the_user_config_says_what_to_write() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.yaml"), "starters_dirs:\n").unwrap();
+    let (_, stderr) = run(dir.path(), &["config", "starters-dir", "list"]);
+    assert!(
+        stderr.contains(
+            "expected sequence start (write `[]` for an empty list, or leave the key out)"
+        ),
+        "{stderr}"
+    );
+}

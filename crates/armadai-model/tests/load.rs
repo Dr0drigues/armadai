@@ -719,6 +719,12 @@ fn a_blank_list_or_map_is_refused_in_the_manifest() {
         let l = load_project(dir.path());
         let d = find(&l, "invalid-yaml");
         assert_eq!((d.line, d.severity), (Some(line), Severity::Error), "{key}");
+        let hint = if key == "targets" {
+            "write `[]` for an empty list, or leave the key out"
+        } else {
+            "write `{}` for an empty map, or leave the key out"
+        };
+        assert!(d.message.contains(hint), "{key}: {}", d.message);
     }
 }
 
@@ -736,6 +742,12 @@ fn a_blank_list_is_refused_in_agent_frontmatter() {
         let d = find(&l, "invalid-yaml");
         assert_eq!((d.line, d.severity), (Some(3), Severity::Error), "{key}");
         assert!(d.file.ends_with(".armadai/agents/dev.md"), "{key}");
+        let hint = if key == "capabilities" {
+            "write `{}` for an empty map, or leave the key out"
+        } else {
+            "write `[]` for an empty list, or leave the key out"
+        };
+        assert!(d.message.contains(hint), "{key}: {}", d.message);
     }
 }
 
