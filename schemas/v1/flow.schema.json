@@ -49,6 +49,25 @@
       ],
       "description": "Element of the `sequence` shortcut."
     },
+    "SessionLink": {
+      "additionalProperties": false,
+      "description": "Where a flow's coordinator sends a question that is outside its scope.",
+      "properties": {
+        "to": {
+          "description": "Name of the other session, as started with `claude --name`.",
+          "type": "string"
+        },
+        "when": {
+          "description": "When to write to it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "to",
+        "when"
+      ],
+      "type": "object"
+    },
     "Step": {
       "additionalProperties": false,
       "properties": {
@@ -99,6 +118,17 @@
         "$ref": "#/$defs/SeqItem"
       },
       "type": "array"
+    },
+    "session_link": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SessionLink"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Another session (`claude --name <to>`) this flow's coordinator writes to, and when."
     },
     "start": {
       "description": "The step the flow begins with; needed when every step has an incoming link",

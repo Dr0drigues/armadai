@@ -54,6 +54,8 @@ ui:                          # optional, opt-in interface keys
   panel: true                # Claude Code only: a panel mod beside the chat (default false)
   flow_band: true            # Claude Code only: a band above the prompt with the open run (default false)
   documents: [docs]          # folders whose recent .md files the panel lists (default [docs])
+sessions:                    # optional, opt-in session keys
+  journal: true              # compile the lot-journal instructions for the coordinator (default false)
 ```
 
 With `pack:`, the project is built on a pack by reference: its files are the pack's, plus yours at
@@ -78,6 +80,12 @@ when several flows hold it: `unknown-step`, `grant-ambiguous-until`). A level is
 writes, and what a level does not guarantee, is in [Link](link.md#permission-levels-grant). With
 `pack:`, the levels of the pack and of the project merge by key, and a level of the project replaces
 the pack's level of the same key as a whole.
+
+`sessions.journal` (a boolean, default `false`; any other key under `sessions` is `invalid-yaml`) asks
+`link` for the journal instructions of the coordinator; absent or `false`, `link` writes nothing for
+it. An agent (or template) may also declare `journal: read` or `journal: write` (`write` includes
+reading) in its frontmatter; that key compiles the agent's own instructions even without
+`sessions.journal`.
 
 `ui` holds opt-in interface keys: absent or `false`, `link` writes nothing for them. `ui.status_line`
 (a boolean; any other value, and any other key under `ui`, is `invalid-yaml`) asks `link --target claude`
@@ -107,6 +115,7 @@ tags: [dev]
 skills: [rust-conventions]              # skill ids of the project
 slots: [code-standards]                 # optional: slots other packs fill (see Slots)
 capabilities: { read: allow, write: ask, shell: ask, web: deny, delegate: allow }
+journal: read                           # optional: read | write, the lot-journal instructions (see Link)
 native: { claude: { model: claude-sonnet-4-5 } }
 ---
 You are the developer…
@@ -213,6 +222,9 @@ links:
   - { from: review, to: fixes, when: rejected }
   - { from: fixes, to: review }
   - { from: review, to: delivery, when: approved }
+session_link:                           # optional: another session this flow's coordinator writes to
+  to: chantier                          # its name, as started with `claude --name` (any one-line name)
+  when: a question about the scope      # when to write to it (not blank)
 ```
 
 - **Linear shortcut**: `sequence: [developer, reviewer, deliverer]` (exclusive with
@@ -223,6 +235,7 @@ links:
 - `optional: true` marks a step a run may never reach: it is skipped, not pending, once a later step starts. An optional step cannot be an entry step (`optional-start-step`).
 - `on_failure: <step>` is a `when: failed` link; a step has at most one failure path.
 - Loops are allowed; a link from a step to itself is an error.
+- `session_link: { to, when }` names another session (`to`, any one-line name with no blank at either end and no backtick, as given to `claude --name`; any other key under it is `invalid-yaml`) and when to write to it (`when`, not blank); both are checked by `invalid-session-link`.
 - Only `.yaml` is loaded: a `.yml` file is ignored with a warning.
 - `start: <step>` declares where the flow begins: it is then the only entry step. Without it, an
   **entry step** is one no unconditional link (`when` absent or `done`) leads to; a conditional
@@ -530,6 +543,7 @@ warning on stderr.
 | `ambiguous-entry` | warning | The flow declares no `start` and a step the guess above takes as an entry has an incoming link (of any kind): where the flow begins is only a guess (an entry with no incoming link at all is not warned) | Declare `start: <step>` to say where the flow begins |
 | `optional-start-step` | error | A step marked `optional: true` is an entry step of its flow (the declared `start`, or the one the heuristic finds) | A flow must begin with a step that runs: make another step the start, or drop `optional` |
 | `unreachable-step` | warning | A step cannot be reached from any entry step (every link and `on_failure` counts here) | Link it, or remove it |
+| `invalid-session-link` | error | A flow's `session_link.to` is empty, has a line break (`\n` or `\r`), a backtick or a blank at either end, or its `when` is empty or blank | Name the session as you start it (`claude --name <name>`), and say when to write to it |
 | `empty-command` | error | An automation's `run` is empty | Give the command to run |
 | `unknown-template` | error | An agent's `from` names no template of `templates/` | Use an existing template id (the hint suggests a close one) |
 | `missing-template-var` | error | The template uses `{{x}}` and the instance's `vars` does not set `x` | Add `x` to `vars` |
@@ -546,6 +560,7 @@ warning on stderr.
 | `command-target-variable` | error | The body holds a `${CLAUDE_…}` substitution, replaced by Claude Code only | Only `$ARGUMENTS` is portable: remove it, or put it in a native file |
 | `command-shadows-skill` | error | A command has the id of a skill | Rename one of them (Claude Code would run the skill and ignore the command) |
 | `command-shadows-builtin` | warning | A command has the name of a built-in command of Claude Code or OpenCode | Pick another name: one of them hides the other |
+| `journal-without-shell` | warning | An agent declares `journal` and `capabilities.shell: deny`, so it cannot run `armadai journal` (`shell` absent, `ask` or `allow` is not reported) | Allow shell (`ask` or `allow`), or drop `journal` |
 | `pack-empty-source` | error | `pack.source` is empty | Give the URL of the pack's source, as in `registries.yaml` |
 | `pack-empty-version` | error | `pack.version` is empty | Write `latest`, a version such as `1.2.3`, or a range such as `^1.3` |
 

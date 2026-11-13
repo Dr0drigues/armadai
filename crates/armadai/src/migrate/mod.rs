@@ -136,6 +136,7 @@ mod tests {
         p.flows.insert(
             "bad".into(),
             armadai_model::Flow {
+                session_link: None,
                 description: None,
                 start: None,
                 steps: flow.steps,

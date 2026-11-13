@@ -106,6 +106,38 @@ pub(crate) fn slot_lines(
     }
 }
 
+/// The journal lines of a target that does not compile the journal instructions
+/// (`sessions.journal`, and each agent that declares `journal`): Claude Code only.
+pub(super) fn journal_not_compiled(r: &mut Report, t: &str, project: &Project) {
+    let lines = (project.manifest.sessions.journal).then(|| "journal".to_string());
+    let agents = (project.agents.iter())
+        .filter(|(_, a)| a.front.journal.is_some())
+        .map(|(id, _)| format!("agent {id} journal"));
+    for element in lines.into_iter().chain(agents) {
+        r.push(
+            t,
+            element,
+            Status::NotCompiled,
+            Some(report::UI_CLAUDE_ONLY),
+        );
+    }
+}
+
+/// `flow <id> session link` for each flow that declares one, on a target that does not
+/// compile it: Claude Code only.
+pub(super) fn session_link_not_compiled(r: &mut Report, t: &str, project: &Project) {
+    for (fid, flow) in &project.flows {
+        if flow.session_link.is_some() {
+            r.push(
+                t,
+                format!("flow {fid} session link"),
+                Status::NotCompiled,
+                Some(report::UI_CLAUDE_ONLY),
+            );
+        }
+    }
+}
+
 /// The `## Verdict` section appended to the prompt of an agent holding at least one
 /// flow step with `states` or a failure path (`on_failure`, a `when: failed` link):
 /// the union of those states, plus `failed` for a failure path (and `done` when the

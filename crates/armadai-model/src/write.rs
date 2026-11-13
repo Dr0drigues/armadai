@@ -48,7 +48,7 @@ pub fn render_template(t: &Template) -> String {
 }
 
 /// Top-level keys of an agent frontmatter, in the order the writer puts them.
-const AGENT_KEYS: [&str; 9] = [
+const AGENT_KEYS: [&str; 10] = [
     "description",
     "title",
     "tier",
@@ -57,6 +57,7 @@ const AGENT_KEYS: [&str; 9] = [
     "skills",
     "slots",
     "capabilities",
+    "journal",
     "native",
 ];
 
@@ -100,6 +101,7 @@ pub fn render_flow(f: &Flow) -> String {
         steps: f.steps.clone(),
         links: f.links.clone(),
         sequence: Vec::new(),
+        session_link: f.session_link.clone(),
     })
 }
 

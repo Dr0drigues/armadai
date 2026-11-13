@@ -59,6 +59,7 @@ pub struct Flow {
     pub start: Option<String>,
     pub steps: BTreeMap<String, Step>,
     pub links: Vec<Link>,
+    pub session_link: Option<SessionLink>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -643,6 +644,7 @@ pub fn load_project(root: &Path) -> Loaded {
                 start: raw.start,
                 steps,
                 links,
+                session_link: raw.session_link,
             },
         );
     }

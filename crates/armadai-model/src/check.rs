@@ -9,6 +9,7 @@ use crate::diag::{
     locate_pair,
 };
 use crate::load::{Kind, Origins, Project, load_project};
+use crate::types::Cap;
 
 const MAX_SKILL_DESCRIPTION: usize = 1024;
 
@@ -879,6 +880,20 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
                 None,
             );
         }
+        if let (Some(j), Some(Cap::Deny)) = (a.front.journal, a.front.capabilities.shell) {
+            o.emit(
+                at("journal"),
+                Severity::Warning,
+                "journal-without-shell",
+                Some(("journal", true)),
+                format!(
+                    "agent `{id}` declares journal: {} but shell: deny, so it cannot run \
+                     armadai journal",
+                    j.as_str()
+                ),
+                Some("allow shell (ask or allow), or drop journal".into()),
+            );
+        }
         for s in a
             .front
             .skills
@@ -976,6 +991,32 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
     // flows
     for (id, f) in &project.flows {
         let at = (Kind::Flow, id.as_str());
+        if let Some(l) = &f.session_link {
+            if l.to.is_empty() || l.to.contains(['\n', '\r', '`']) || l.to.trim() != l.to {
+                o.err(
+                    at,
+                    "invalid-session-link",
+                    Some(("to", true)),
+                    format!(
+                        "session_link.to `{}` is not a session name: one line, no blank at either end, no backtick",
+                        l.to.escape_debug()
+                    ),
+                    Some("name the session as you start it: claude --name <name>".into()),
+                );
+            }
+            if l.when.trim().is_empty() {
+                o.err(
+                    at,
+                    "invalid-session-link",
+                    Some(("when", true)),
+                    format!(
+                        "session_link.when is empty: say when to write to session `{}`",
+                        l.to
+                    ),
+                    None,
+                );
+            }
+        }
         if f.steps.is_empty() {
             o.err(at, "empty-flow", None, "flow has no step".into(), None);
             continue;

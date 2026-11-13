@@ -86,6 +86,7 @@ fn template_schema_has_the_agent_keys_all_optional_without_from_nor_vars() {
         [
             "capabilities",
             "description",
+            "journal",
             "native",
             "skills",
             "slots",

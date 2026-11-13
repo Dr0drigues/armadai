@@ -1,0 +1,2 @@
+{"schema":"armadai.journal/1","ts":1763000000,"kind":"decision","lot":"menu","by":"lead","text":"Keep pack 1.3.0 for this lot"}
+{"schema":"armadai.journal/1","ts":1763000600,"kind":"state","text":"pack 1.4.0 published on the main checkout"}

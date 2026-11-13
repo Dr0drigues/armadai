@@ -397,6 +397,69 @@ states count each verdict rendered, a resumed agent can render several
 
 `rejection_rate` is `null` when no verdict can reject; `unmarked_calls` is `0` for `--by agent`; `groups` is `[]` when no call is marked under `--by step|lot`.
 
+## The lot journal
+
+A lot is a batch of work, usually one git worktree. The journal is where the sessions of the
+project, the one of each lot and the one of the main checkout, leave decisions and state for each
+other, instead of you copying them by hand. It is two commands and a file: no hook, no gate, no
+network.
+
+```
+armadai journal add --lot menu --kind decision --by lead "keep pack 1.3.0 for this lot"
+armadai journal add --kind state "pack 1.4.0 published"
+armadai journal show --lot menu --last 20
+armadai journal show --kind decision --json
+```
+
+`add` takes `--lot <name>` (without it the entry holds for every lot), `--kind decision|state|note`
+(default `note`; any other value is refused with the list), `--by <name>` (who writes it: 1 to 64 letters, digits, `.`, `_` or
+`-`; the author is declared, not checked) and the text. `show` takes `--lot`, `--kind` (the same list),
+`--last <n>` (default 20) and `--json`; a journal that is empty or absent prints nothing and exits 0.
+Entries are appended; none is ever edited or deleted.
+
+**Where it is written.** `.armadai/state/journal-<lot>.jsonl`, one file per lot, in the project of
+the **main checkout**: from a linked git worktree, the same path relative to the worktree's top in
+the main checkout (so a project in a subfolder keeps its own journal), provided that project holds
+`.armadai/project.yaml`; otherwise, and outside git, the project's own `.armadai/state/`. A session in
+a worktree and the one of the main checkout therefore read and write the same file. An entry without a
+lot goes to `journal.jsonl`, which `show --lot <lot>` reads along with the lot's own file; without `--lot`,
+`show` merges `journal.jsonl` and every `journal-<lot>.jsonl`. `state/` is not versioned.
+
+**The lot name.** The alphabet and length of the lot of a delegation marker (1 to 40 ASCII letters,
+digits, `.` or `-`), and it must start with a letter or a digit (so `.`, `..` and `.x` name no file).
+The file name is in lowercase and the case is kept in the `lot` field: `Menu-2.1` is written to
+`journal-menu-2.1.jsonl` with `"lot":"Menu-2.1"`, and `show --lot Menu-2.1` shows only the entries
+whose `lot` is exactly `Menu-2.1`, not those of `menu-2.1` kept in the same file.
+
+**Format.** One JSON object per line, `armadai.journal/1`; `--json` prints
+`{"schema":"armadai.journal/1","entries":[...]}` with the lines as written:
+
+```json
+{"schema":"armadai.journal/1","ts":1763000000,"kind":"decision","lot":"menu","by":"lead","text":"Keep pack 1.3.0 for this lot"}
+```
+
+`ts` is in Unix seconds (`show` prints local time); `lot` and `by` are absent when not given. New
+fields may be added; none is removed or renamed without a new version. In text, `show` prints one
+line per entry (date and time, lot or `(all)`, kind, author or `-`, text), the lot and author columns as wide as their longest
+value, oldest first, merged by `ts` and then by lot.
+
+**Limits.** The text is one line of at most 2000 characters, and the written line, newline included, at
+most 4096 bytes (3-byte characters can reach it before 2000). A line is written with one `write_all` in
+append mode, and `add` holds an exclusive lock on the file from the moment it opens it until the
+write is done, so two processes adding to one file do not mix their lines (measured: two processes
+of 50 entries, five times). `show` takes a shared lock while it reads a file, so it waits for an `add`
+in the middle of a line rather than seeing half of it. The lock is advisory (`flock`): it only
+holds against processes that take it, which `armadai journal` does, and nothing takes it off Unix. When the last line of a file was cut (no final newline), the next `add`
+starts on a new line, so the new entry is not lost. `show` skips a line it cannot read and one whose
+`schema` is not `armadai.journal/1` (a version to come), and counts them on stderr (`journal.jsonl: 2 unreadable lines
+skipped`). Neither `add` nor `show` goes through a symbolic link, on `state/` or on a journal file.
+
+**Nothing private.** The journal is free text kept in `.armadai/state/`, outside git; `show` output
+can end up in a report. Do not write a customer name, a token or a private path in it.
+
+`armadai link --target claude` can write the instructions that make a session use it
+([Link](link.md#the-lot-journal-and-the-session-link)); the journal exists without them.
+
 ## Limits
 
 - Claude Code only.

@@ -333,6 +333,7 @@ links not drawn:
     #[test]
     fn an_edge_to_an_unknown_step_is_listed() {
         let flow = armadai_model::Flow {
+            session_link: None,
             description: None,
             start: None,
             steps: [(
@@ -535,6 +536,7 @@ fr     flows: g
             when: when.map(String::from),
         };
         let flow = armadai_model::Flow {
+            session_link: None,
             description: None,
             start: None,
             steps: [

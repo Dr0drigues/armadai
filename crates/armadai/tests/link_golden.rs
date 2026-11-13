@@ -185,9 +185,74 @@ mod tests {
         );
     }
 
+    /// The same project with `sessions.journal: true` and the agent `dev` declaring
+    /// `journal: write`: the `### Journal` section of `CLAUDE.md`, the `## Journal` end of
+    /// `dev`'s file (T16 and T16w) and the report lines.
+    #[test]
+    fn the_journal_matches_its_golden() {
+        ui_golden_with(
+            "sessions:\n  journal: true\n",
+            Some(("dev", "journal: write\n")),
+            "",
+            "claude-journal",
+            &["### Journal", "## Journal", "agent dev journal: compiled"],
+        );
+    }
+
+    const SESSION_LINK: &str =
+        "session_link:\n  to: chantier\n  when: \"a question about the scope of the lot\"\n";
+
+    /// The same project with a `session_link` on its flow `ship`: the `### Sessions` section of
+    /// `CLAUDE.md` and the report line.
+    #[test]
+    fn the_session_link_matches_its_golden() {
+        ui_golden_with(
+            "",
+            None,
+            SESSION_LINK,
+            "claude-session-link",
+            &["### Sessions", "flow ship session link: approximated"],
+        );
+    }
+
+    /// `link` writes nothing but the guidance: `.claude/settings.json` is the same bytes
+    /// with and without a `session_link` (no `crossSessionInbound`, no rule on the
+    /// messaging tools).
+    #[test]
+    fn a_session_link_changes_nothing_in_settings_json() {
+        let settings = |flow_extra: &str| {
+            let (dir, output) = link_claude("", None, flow_extra);
+            assert!(output.status.success());
+            std::fs::read_to_string(dir.path().join("project/.claude/settings.json")).unwrap()
+        };
+        let with = settings(SESSION_LINK);
+        assert_eq!(with, settings(""));
+        for key in ["crossSessionInbound", "SendMessage", "ListAgents"] {
+            assert!(!with.contains(key), "{key}");
+        }
+    }
+
     fn ui_golden(ui: &str, golden: &str, present: &[&str]) {
+        ui_golden_with(ui, None, "", golden, present);
+    }
+
+    /// `agent_key`: a frontmatter line added to that agent's file; `flow_extra`: text
+    /// appended to the flow `ship`.
+    fn link_claude(
+        ui: &str,
+        agent_key: Option<(&str, &str)>,
+        flow_extra: &str,
+    ) -> (tempfile::TempDir, std::process::Output) {
         let dir = project();
         let root = dir.path().join("project");
+        if let Some((id, line)) = agent_key {
+            let path = root.join(format!(".armadai/agents/{id}.md"));
+            let text = std::fs::read_to_string(&path).unwrap();
+            std::fs::write(&path, text.replacen("---\n", &format!("---\n{line}"), 1)).unwrap();
+        }
+        let flow = root.join(".armadai/flows/ship.yaml");
+        let text = std::fs::read_to_string(&flow).unwrap();
+        std::fs::write(&flow, format!("{text}{flow_extra}")).unwrap();
         std::fs::write(
             root.join(".armadai/project.yaml"),
             format!("schema_version: 1\ncoordinator: lead\npolicy:\n  delegation: strict\n  free_agents: [Explore]\n{ui}"),
@@ -206,15 +271,29 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
+        (dir, output)
+    }
+
+    fn ui_golden_with(
+        ui: &str,
+        agent_key: Option<(&str, &str)>,
+        flow_extra: &str,
+        golden: &str,
+        present: &[&str],
+    ) {
+        let (dir, output) = link_claude(ui, agent_key, flow_extra);
+        let root = dir.path().join("project");
         let claude_md = std::fs::read_to_string(root.join("CLAUDE.md")).unwrap();
         let mut rendered = format!(
             "=== CLAUDE.md ===\n{claude_md}\n{}",
             render_tree(&root, &root.join(".claude"))
         );
-        rendered.push_str(&render_tree(
-            &root,
-            &root.join(".armadai/plugins/armadai-ui"),
-        ));
+        if root.join(".armadai/plugins/armadai-ui").is_dir() {
+            rendered.push_str(&render_tree(
+                &root,
+                &root.join(".armadai/plugins/armadai-ui"),
+            ));
+        }
         let stdout = String::from_utf8_lossy(&output.stdout);
         let report = stdout.split_once("Conformance report:\n").unwrap().1;
         rendered.push_str(&format!("=== report ===\n{report}"));
