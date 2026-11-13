@@ -1,7 +1,7 @@
-//! An exclusive advisory lock on an open file, held until the file is closed. The only
-//! `unsafe` of the journal feature; it serialises the check of a file's last byte and the
-//! append that follows, between processes (it does not guard against a process that ignores
-//! the lock).
+//! Advisory locks on an open file, exclusive for a writer and shared for a reader, held until
+//! the file is closed. The only `unsafe` of the journal feature; they serialise the check of a
+//! file's last byte and the append that follows, and keep a reader from a half-written line,
+//! between processes (a process that ignores the lock is not guarded against).
 
 /// Blocks until this process holds `flock` on `f`, exclusive or shared; the lock goes with
 /// the open file description, so it is released when `f` (and any duplicate) is dropped.
@@ -51,7 +51,7 @@ pub(crate) fn lock_shared(_f: &std::fs::File) -> std::io::Result<()> {
 #[cfg(all(test, unix))]
 pub(crate) fn is_locked_elsewhere(f: &std::fs::File) -> bool {
     use std::os::fd::AsRawFd;
-    // SAFETY: as in `lock_exclusive`; LOCK_NB makes the call return at once.
+    // SAFETY: as in `flock_blocking`; LOCK_NB makes the call return at once.
     let rc = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     rc != 0
 }
