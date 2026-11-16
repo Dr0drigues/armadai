@@ -56,7 +56,7 @@ ui:                          # optional, opt-in interface keys
   documents: [docs]          # folders whose recent .md files the panel lists (default [docs])
 sessions:                    # optional, opt-in session keys
   journal: true              # compile the lot-journal instructions for the coordinator (default false)
-  journal_dir: ../lot-journal # folder of the journal files (default: under the main checkout's .armadai/state/)
+  journal_dir: ../lot-journal # folder of the journal files (default: the .armadai/state/ of the main checkout, or of this checkout without one)
 ```
 
 With `pack:`, the project is built on a pack by reference: its files are the pack's, plus yours at
@@ -84,7 +84,7 @@ the pack's level of the same key as a whole.
 
 `sessions.journal_dir` (a string, optional) names the folder that holds the `journal*.jsonl` files, so that
 every session of one piece of work reads and writes the same journal. A relative path starts from the
-parent of the real folder holding `.armadai` (a link is followed), so every checkout whose `.armadai`
+real folder that holds `.armadai` (its link is followed), so every checkout whose `.armadai`
 leads to the same place reaches the same folder; prefer a relative path, an absolute one is specific to
 one machine. The text must be one line, not empty, with no blank at either end (`invalid-journal-dir`);
 the model does not look at the file system. `armadai journal` reads the key in the project's own
