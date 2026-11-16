@@ -1792,8 +1792,8 @@ fn invalid_journal_dir_names_the_key() {
     }
     for bad in ["", "  ", "a\nb", "a\rb", " a", "a ", "\ta"] {
         let ds = ds_for(bad);
+        assert_eq!(count(&ds), 1, "{bad:?}");
         let d = err(&ds, "invalid-journal-dir", (3, 3));
-        assert_eq!(d.code, "invalid-journal-dir", "{bad:?}");
         assert_eq!(
             d.message,
             "sessions.journal_dir must name a folder: one line, not empty, no blank at either end"
