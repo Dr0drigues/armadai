@@ -425,6 +425,17 @@ a worktree and the one of the main checkout therefore read and write the same fi
 lot goes to `journal.jsonl`, which `show --lot <lot>` reads along with the lot's own file; without `--lot`,
 `show` merges `journal.jsonl` and every `journal-<lot>.jsonl`. `state/` is not versioned.
 
+**`sessions.journal_dir`.** When the `.armadai/project.yaml` of the project holds `sessions.journal_dir`,
+the journal files live in that folder instead, and the rule above no longer applies: `add` and `show`
+use it from any checkout. A relative path starts from the parent of the resolved `.armadai` (links
+followed), so worktrees sharing one `.armadai` all reach the same folder; prefer a relative path,
+an absolute one is specific to a machine. The folder must already exist: `add` does not create it,
+and both commands refuse a path that does not exist or is not a folder, naming it and saying to
+create it or fix `project.yaml`. A symbolic link as that folder is refused like `state/`; a linked
+`.armadai` is allowed. Entries already written under `state/` are not moved. The key is read from the
+project's own `project.yaml` only (not from a pack), and a file that does not read leaves the
+default folder, so `journal` keeps working on a project that does not validate.
+
 **The lot name.** The alphabet and length of the lot of a delegation marker (1 to 40 ASCII letters,
 digits, `.` or `-`), and it must start with a letter or a digit (so `.`, `..` and `.x` name no file).
 The file name is in lowercase and the case is kept in the `lot` field: `Menu-2.1` is written to
