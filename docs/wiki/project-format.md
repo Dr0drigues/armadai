@@ -56,6 +56,7 @@ ui:                          # optional, opt-in interface keys
   documents: [docs]          # folders whose recent .md files the panel lists (default [docs])
 sessions:                    # optional, opt-in session keys
   journal: true              # compile the lot-journal instructions for the coordinator (default false)
+  journal_dir: ../lot-journal # folder of the journal files (default: under the main checkout's .armadai/state/)
 ```
 
 With `pack:`, the project is built on a pack by reference: its files are the pack's, plus yours at
@@ -80,6 +81,15 @@ when several flows hold it: `unknown-step`, `grant-ambiguous-until`). A level is
 writes, and what a level does not guarantee, is in [Link](link.md#permission-levels-grant). With
 `pack:`, the levels of the pack and of the project merge by key, and a level of the project replaces
 the pack's level of the same key as a whole.
+
+`sessions.journal_dir` (a string, optional) names the folder that holds the `journal*.jsonl` files, so that
+every session of one piece of work reads and writes the same journal. A relative path starts from the
+parent of the real folder holding `.armadai` (a link is followed), so every checkout whose `.armadai`
+leads to the same place reaches the same folder; prefer a relative path, an absolute one is specific to
+one machine. The text must be one line, not empty, with no blank at either end (`invalid-journal-dir`);
+the model does not look at the file system. `armadai journal` reads the key in the project's own
+`.armadai/project.yaml` only, so a key set by a pack is not read by it. Journal entries already written
+elsewhere are not moved when the key is set.
 
 `sessions.journal` (a boolean, default `false`; any other key under `sessions` is `invalid-yaml`) asks
 `link` for the journal instructions of the coordinator; absent or `false`, `link` writes nothing for
@@ -544,6 +554,7 @@ warning on stderr.
 | `optional-start-step` | error | A step marked `optional: true` is an entry step of its flow (the declared `start`, or the one the heuristic finds) | A flow must begin with a step that runs: make another step the start, or drop `optional` |
 | `unreachable-step` | warning | A step cannot be reached from any entry step (every link and `on_failure` counts here) | Link it, or remove it |
 | `invalid-session-link` | error | A flow's `session_link.to` is empty, has a line break (`\n` or `\r`), a backtick or a blank at either end, or its `when` is empty or blank | Name the session as you start it (`claude --name <name>`), and say when to write to it |
+| `invalid-journal-dir` | error | `sessions.journal_dir` is empty, has a line break (`\n` or `\r`) or a blank at either end | Give a path relative to the folder that holds `.armadai`, such as `../lot-journal` |
 | `empty-command` | error | An automation's `run` is empty | Give the command to run |
 | `unknown-template` | error | An agent's `from` names no template of `templates/` | Use an existing template id (the hint suggests a close one) |
 | `missing-template-var` | error | The template uses `{{x}}` and the instance's `vars` does not set `x` | Add `x` to `vars` |

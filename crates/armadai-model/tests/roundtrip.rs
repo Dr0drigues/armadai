@@ -382,6 +382,10 @@ fn sessions_and_journal_are_written_only_when_set() {
     let off: Manifest =
         armadai_model::yaml::from_str("schema_version: 1\nsessions: { journal: false }\n").unwrap();
     assert_eq!(render_manifest(&off), "schema_version: 1\n");
+    let dir_text = "schema_version: 1\nsessions:\n  journal: true\n  journal_dir: ../lot-journal\n";
+    let with: Manifest = armadai_model::yaml::from_str(dir_text).unwrap();
+    assert_eq!(with.sessions.journal_dir.as_deref(), Some("../lot-journal"));
+    assert_eq!(render_manifest(&with), dir_text);
     let agent = "---\ndescription: d\njournal: write\n---\n";
     let dir = tempfile::tempdir().unwrap();
     for (path, text) in [

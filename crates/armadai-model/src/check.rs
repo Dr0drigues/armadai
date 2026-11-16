@@ -742,6 +742,20 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
             Some("name a folder of the project such as `docs`".into()),
         );
     }
+    if let Some(d) = &m.sessions.journal_dir
+        && (d.is_empty() || d.contains(['\n', '\r']) || d.trim() != d)
+    {
+        o.err(
+            man,
+            "invalid-journal-dir",
+            Some(("journal_dir", true)),
+            "sessions.journal_dir must name a folder: one line, not empty, no blank at either end"
+                .into(),
+            Some(
+                "a path relative to the folder that holds .armadai, such as ../lot-journal".into(),
+            ),
+        );
+    }
     if let Some(p) = &m.pack {
         // positioned inside the `pack:` block, so a top-level `name:` is not matched
         let at = |o: &Out, key: &str| {

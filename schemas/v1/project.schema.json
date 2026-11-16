@@ -87,6 +87,13 @@
         "journal": {
           "description": "Compile the journal instructions for the coordinator (`armadai journal`).",
           "type": "boolean"
+        },
+        "journal_dir": {
+          "description": "Folder of the journal files; relative to the real folder holding `.armadai`.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "type": "object"

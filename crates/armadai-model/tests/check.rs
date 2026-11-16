@@ -1772,3 +1772,34 @@ fn an_unknown_key_under_session_link_is_invalid_yaml() {
     let ds = flow("steps:\n  a: { agent: dev }\nsession_link: { to: x, when: y, bogus: 1 }\n");
     assert!(ds.iter().any(|d| d.code == "invalid-yaml"), "{ds:?}");
 }
+
+#[test]
+fn invalid_journal_dir_names_the_key() {
+    let ds_for = |v: &str| {
+        let v = serde_json::to_string(v).unwrap();
+        diags(&[(
+            ".armadai/project.yaml",
+            &format!("schema_version: 1\nsessions:\n  journal_dir: {v}\n"),
+        )])
+    };
+    let count = |ds: &[Diagnostic]| {
+        ds.iter()
+            .filter(|d| d.code == "invalid-journal-dir")
+            .count()
+    };
+    for ok in ["../journal", "/var/lot-journal", "lot journal", "a/b"] {
+        assert_eq!(count(&ds_for(ok)), 0, "{ok}");
+    }
+    for bad in ["", "  ", "a\nb", "a\rb", " a", "a ", "\ta"] {
+        let ds = ds_for(bad);
+        let d = err(&ds, "invalid-journal-dir", (3, 3));
+        assert_eq!(
+            d.message,
+            "sessions.journal_dir must name a folder: one line, not empty, no blank at either end"
+        );
+        assert_eq!(
+            d.hint.as_deref(),
+            Some("a path relative to the folder that holds .armadai, such as ../lot-journal")
+        );
+    }
+}
