@@ -405,9 +405,9 @@ fn a_missing_journal_dir_fails_with_the_next_step_and_writes_nothing() {
         "sessions.journal_dir leads to {}, which does not exist; create it, or fix the path in .armadai/project.yaml",
         std::fs::canonicalize(e.dir.path())
             .unwrap()
-            .join("lot-journal")
+            .join("c/../lot-journal")
             .display()
     );
-    assert!(err.contains(&want), "{err}");
+    assert_eq!(err.trim_end(), format!("Error: {want}"));
     assert!(!e.dir.path().join("lot-journal").exists());
 }

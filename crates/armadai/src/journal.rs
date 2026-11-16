@@ -1,6 +1,7 @@
-//! The lot journal: JSONL files under the main checkout's `.armadai/state/`, one per lot
-//! (`journal-<lot in lowercase>.jsonl`) plus `journal.jsonl` for entries that hold for every
-//! lot. Written by `armadai journal add` in one append, read by `armadai journal show`.
+//! The lot journal: JSONL files under the main checkout's `.armadai/state/` or in the folder
+//! `sessions.journal_dir` names, one per lot (`journal-<lot in lowercase>.jsonl`) plus
+//! `journal.jsonl` for entries that hold for every lot. Written by `armadai journal add` in one
+//! append, read by `armadai journal show`.
 
 use std::path::{Path, PathBuf};
 
@@ -64,8 +65,8 @@ pub fn state_dir(root: &Path) -> PathBuf {
     }
 }
 
-/// The folder holding the journal files, and whether it was named by `sessions.journal_dir`
-/// (then it must already exist) or is the default one (created on the first write).
+/// The folder holding the journal files: named by `sessions.journal_dir` (it must already
+/// exist) or the default one (created on the first write).
 enum JournalDir {
     Default(PathBuf),
     Named(PathBuf),
@@ -81,41 +82,31 @@ fn journal_dir(root: &Path) -> JournalDir {
         let text = std::fs::read_to_string(root.join(".armadai/project.yaml")).ok()?;
         let v: serde_json::Value = armadai_model::yaml::from_str(&text).ok()?;
         let dir = v.pointer("/sessions/journal_dir")?.as_str()?.to_owned();
-        let armadai = root.join(".armadai");
-        let real = std::fs::canonicalize(&armadai).unwrap_or(armadai);
-        // `real` has no link left, so folding `..` lexically names the real folder
-        let mut out = PathBuf::new();
-        for c in real.parent()?.join(dir).components() {
-            match c {
-                std::path::Component::ParentDir => {
-                    out.pop();
-                }
-                c => out.push(c),
-            }
-        }
-        Some(out)
+        // a `canonicalize` that fails means no readable project: the default folder
+        let real = std::fs::canonicalize(root.join(".armadai")).ok()?;
+        Some(real.parent()?.join(dir))
     })();
     named.map_or_else(|| JournalDir::Default(state_dir(root)), JournalDir::Named)
 }
 
 /// The folder to use; a named one that is not a folder is refused with what to do next.
-fn resolve_dir(root: &Path) -> anyhow::Result<(PathBuf, bool)> {
+fn resolve_dir(root: &Path) -> anyhow::Result<PathBuf> {
     match journal_dir(root) {
-        JournalDir::Default(d) => Ok((d, true)),
+        JournalDir::Default(d) => Ok(d),
         JournalDir::Named(d) => {
             // a link is refused by the callers' own check, with its own message
             if !is_link(&d) {
                 let (what, fix) = match std::fs::metadata(&d) {
                     Err(_) => ("does not exist", "create it, or fix the path"),
                     Ok(m) if !m.is_dir() => ("is not a folder", "fix the path"),
-                    Ok(_) => return Ok((d, false)),
+                    Ok(_) => return Ok(d),
                 };
                 bail!(
                     "sessions.journal_dir leads to {}, which {what}; {fix} in .armadai/project.yaml",
                     d.display()
                 );
             }
-            Ok((d, false))
+            Ok(d)
         }
     }
 }
@@ -201,7 +192,7 @@ fn add_with(
             line.len()
         );
     }
-    let (dir, create) = resolve_dir(root)?;
+    let dir = resolve_dir(root)?;
     let path = dir.join(name);
     for at in [&dir, &path] {
         if is_link(at) {
@@ -211,9 +202,8 @@ fn add_with(
             );
         }
     }
-    if create {
-        std::fs::create_dir_all(&dir)?;
-    }
+    // a named folder exists by now (`resolve_dir`), so this only creates the default one
+    std::fs::create_dir_all(&dir)?;
     // One write of the whole line in append mode: two writers never mix their lines.
     let mut f = std::fs::OpenOptions::new()
         .create(true)
@@ -314,7 +304,7 @@ pub fn show(
     kind: Option<&str>,
     last: usize,
 ) -> anyhow::Result<Vec<Entry>> {
-    let (dir, _) = resolve_dir(root)?;
+    let dir = resolve_dir(root)?;
     let mut all: Vec<Entry> = Vec::new();
     for name in files_to_read(&dir, lot)? {
         let Some(bytes) = read_unlinked(&dir, &name)? else {
@@ -610,6 +600,21 @@ mod tests {
         symlink(w.join("c/.armadai"), w.join("wt/.armadai")).unwrap();
         put(&w.join("wt"), None, "x", 1);
         assert!(w.join("c/j/journal.jsonl").is_file());
+    }
+
+    #[test]
+    fn a_dotdot_after_a_linked_component_is_left_to_the_file_system() {
+        use std::os::unix::fs::symlink;
+        let (_t, real) = named("lnk/../j");
+        let else_ = tempfile::tempdir().unwrap();
+        let else_ = fs::canonicalize(else_.path()).unwrap();
+        fs::create_dir_all(else_.join("sub")).unwrap();
+        fs::create_dir_all(else_.join("j")).unwrap();
+        symlink(else_.join("sub"), real.join("lnk")).unwrap();
+        put(&real, None, "x", 1);
+        // `lnk/..` is `else_`, not the folder holding `lnk`
+        assert!(else_.join("j/journal.jsonl").is_file());
+        assert!(!real.join("j").exists());
     }
 
     #[test]

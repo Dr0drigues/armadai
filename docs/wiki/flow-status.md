@@ -428,7 +428,7 @@ lot goes to `journal.jsonl`, which `show --lot <lot>` reads along with the lot's
 **`sessions.journal_dir`.** When the `.armadai/project.yaml` of the project holds `sessions.journal_dir`,
 the journal files live in that folder instead, and the rule above no longer applies: `add` and `show`
 use it from any checkout. A relative path starts from the parent of the resolved `.armadai` (links
-followed), so worktrees sharing one `.armadai` all reach the same folder; prefer a relative path,
+followed; the rest of the path is left to the file system, `..` included), so worktrees sharing one `.armadai` all reach the same folder; prefer a relative path,
 an absolute one is specific to a machine. The folder must already exist: `add` does not create it,
 and both commands refuse a path that does not exist or is not a folder, naming it and saying to
 create it or fix `project.yaml`. A symbolic link as that folder is refused like `state/`; a linked
@@ -463,9 +463,9 @@ in the middle of a line rather than seeing half of it. The lock is advisory (`fl
 holds against processes that take it, which `armadai journal` does, and nothing takes it off Unix. When the last line of a file was cut (no final newline), the next `add`
 starts on a new line, so the new entry is not lost. `show` skips a line it cannot read and one whose
 `schema` is not `armadai.journal/1` (a version to come), and counts them on stderr (`journal.jsonl: 2 unreadable lines
-skipped`). Neither `add` nor `show` goes through a symbolic link, on `state/` or on a journal file.
+skipped`). Neither `add` nor `show` goes through a symbolic link, on the journal folder (`state/` or the one `sessions.journal_dir` names) or on a journal file.
 
-**Nothing private.** The journal is free text kept in `.armadai/state/`, outside git; `show` output
+**Nothing private.** The journal is free text kept in `.armadai/state/` (outside git) or in the folder `sessions.journal_dir` names, which can be inside a git repository and so be committed or pushed; `show` output
 can end up in a report. Do not write a customer name, a token or a private path in it.
 
 `armadai link --target claude` can write the instructions that make a session use it
