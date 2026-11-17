@@ -430,8 +430,9 @@ the journal files live in that folder instead, and the rule above no longer appl
 use it from any checkout. A relative path starts from the parent of the resolved `.armadai` (links
 followed; the rest of the path is left to the file system, `..` included), so worktrees sharing
 one `.armadai` all reach the same folder; prefer a relative path, an absolute one is specific to a
-machine. A value that `armadai validate` refuses as `invalid-journal-dir` (empty, a line break, a
-blank at either end) is refused by `add` and `show` too, with the same rule, and nothing is written. The folder must already exist: `add` does not create it,
+machine. The key is read as `armadai validate` reads it (a number is its text), and a value that
+`validate` refuses (`invalid-journal-dir`, or a list or a map) is refused by `add` and `show` too,
+with the same rule, and nothing is written. The folder must already exist: `add` does not create it,
 and both commands refuse a path that does not exist or is not a folder, naming it and saying to
 create it or fix `project.yaml`. A symbolic link as that folder is refused like `state/`; a linked
 `.armadai` is allowed. Entries already written under `state/` are not moved. The key is read from the

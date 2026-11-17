@@ -80,10 +80,26 @@ enum JournalDir {
 /// `.armadai` (links followed), so worktrees sharing one `.armadai` agree on the folder.
 /// Anything unreadable or of another shape means the default folder.
 fn journal_dir(root: &Path) -> JournalDir {
+    /// Only the key: read as the model reads it (a number is its text), whatever else is wrong.
+    #[derive(Deserialize)]
+    struct Key {
+        sessions: Option<Sessions>,
+    }
+    #[derive(Deserialize)]
+    struct Sessions {
+        journal_dir: Option<String>,
+    }
     let named = (|| {
         let text = std::fs::read_to_string(root.join(".armadai/project.yaml")).ok()?;
-        let v: serde_json::Value = armadai_model::yaml::from_str(&text).ok()?;
-        let dir = v.pointer("/sessions/journal_dir")?.as_str()?.to_owned();
+        let dir = match armadai_model::yaml::from_str::<Key>(&text) {
+            Ok(k) => k.sessions?.journal_dir?,
+            // a value `validate` refuses (a list, a map): refused here too, not ignored
+            Err(_) => {
+                let v: serde_json::Value = armadai_model::yaml::from_str(&text).ok()?;
+                v.pointer("/sessions/journal_dir")?;
+                return Some(JournalDir::Invalid);
+            }
+        };
         if !armadai_model::is_valid_journal_dir(&dir) {
             return Some(JournalDir::Invalid);
         }
@@ -640,6 +656,31 @@ mod tests {
             let names: Vec<_> = fs::read_dir(&real).unwrap().flatten().collect();
             assert_eq!(names.len(), 1, "{bad}: only .armadai");
             assert!(!real.join(".armadai/state").exists());
+        }
+    }
+
+    #[test]
+    fn journal_dir_is_read_as_validate_reads_it() {
+        // a number is its text: the folder `5`
+        let (_t, real) = named("5");
+        fs::create_dir_all(real.join("5")).unwrap();
+        put(&real, None, "x", 1);
+        assert!(real.join("5/journal.jsonl").is_file());
+        assert!(!real.join(".armadai/state").exists());
+        // a list or a map is refused, not ignored
+        for bad in ["[a]", "{a: b}"] {
+            let (_t, real) = named(bad);
+            let e = add(&real, None, Kind::Note, None, "x", 1).unwrap_err();
+            assert_eq!(
+                e.to_string(),
+                format!(
+                    "{}; fix it in .armadai/project.yaml",
+                    armadai_model::JOURNAL_DIR_RULE
+                ),
+                "{bad}"
+            );
+            assert!(show(&real, None, None, 20).is_err());
+            assert!(!real.join(".armadai/state").exists(), "{bad}");
         }
     }
 
