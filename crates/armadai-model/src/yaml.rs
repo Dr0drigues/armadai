@@ -8,9 +8,11 @@
 //!   would read a number, a boolean or null: leading zeros (`0123`), `_` separators
 //!   (`1_000`), upper-case prefixes (`0X1F`), mixed-case `tRuE`/`nUlL`, and number
 //!   literals beyond 64-bit integers or `f64` (kept as their exact text, never rounded);
-//!   A typed number or boolean field still parses that text as saphyr does: `1_000`,
-//!   `0X10`, `0b1_0` and `tRuE` are accepted there (the previous reader refused them),
-//!   `0123` is not;
+//!   A typed number field still parses that text as saphyr does: `1_000`, `0X10` and
+//!   `0b1_0` are accepted there (the previous reader refused them), `0123` is not; a
+//!   boolean field takes only the six YAML 1.2 Core spellings (`tRuE` is refused);
+//! - a blank or `~` value where a list, map or struct is required is an error (write `[]`
+//!   or `{}`, or leave the key out);
 //! - in a free (`native`) value `.inf`/`.nan` are refused (JSON data has no such number);
 //! - content after the root node (`{a: 1}` then `b: 2`) is an error, never dropped;
 //! - mappings nested deeper than 64 levels are refused (the previous reader allowed 128);
@@ -44,7 +46,16 @@ impl fmt::Display for Error {
         let msg = self.0.to_string();
         f.write_str(
             &msg.replace(", set DuplicateKeyPolicy in Options if acceptable", "")
-                .replace("; use Option<String>", ""),
+                .replace("; use Option<String>", "")
+                // a blank or `~` value where a collection is required (serde-saphyr 2.1)
+                .replace(
+                    "expected sequence start",
+                    "expected a list (an empty one is written `[]`)",
+                )
+                .replace(
+                    "expected mapping start",
+                    "expected a map (an empty one is written `{}`)",
+                ),
         )
     }
 }

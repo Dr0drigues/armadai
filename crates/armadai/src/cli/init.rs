@@ -256,7 +256,15 @@ fn md_name(name: &str) -> String {
 fn materialize_pack(pack_dir: &Path, pack: &StarterPack, tmp: &Path) -> anyhow::Result<()> {
     let base = tmp.join(".armadai");
     let unsafe_name = |n: &str| n.contains('/') || n.contains('\\') || n.contains("..");
-    let mut config = String::from("agents:\n");
+    // `key:` with no item is a null, which the YAML reader refuses for a list: `key: []`.
+    let section = |key: &str, items: &[String]| {
+        if items.is_empty() {
+            format!("{key}: []\n")
+        } else {
+            format!("{key}:\n{}", items.concat())
+        }
+    };
+    let mut agents = Vec::new();
     std::fs::create_dir_all(base.join("agents"))?;
     for name in pack.agents.iter().filter(|n| !unsafe_name(n)) {
         let file = md_name(name);
@@ -269,19 +277,19 @@ fn materialize_pack(pack_dir: &Path, pack: &StarterPack, tmp: &Path) -> anyhow::
             continue;
         }
         std::fs::copy(&src, base.join("agents").join(&file))?;
-        config.push_str(&format!("  - path: .armadai/agents/{file}\n"));
+        agents.push(format!("  - path: .armadai/agents/{file}\n"));
     }
-    config.push_str("prompts:\n");
+    let mut prompts = Vec::new();
     std::fs::create_dir_all(base.join("prompts"))?;
     for name in pack.prompts.iter().filter(|n| !unsafe_name(n)) {
         let file = md_name(name);
         let src = pack_dir.join("prompts").join(&file);
         if src.is_file() {
             std::fs::copy(&src, base.join("prompts").join(&file))?;
-            config.push_str(&format!("  - path: .armadai/prompts/{file}\n"));
+            prompts.push(format!("  - path: .armadai/prompts/{file}\n"));
         }
     }
-    config.push_str("skills:\n");
+    let mut skills = Vec::new();
     for name in pack.skills.iter().filter(|n| !unsafe_name(n)) {
         let src = pack_dir.join("skills").join(name);
         if !src.is_dir() {
@@ -289,8 +297,10 @@ fn materialize_pack(pack_dir: &Path, pack: &StarterPack, tmp: &Path) -> anyhow::
             continue;
         }
         copy_tree(&src, &base.join("skills").join(name))?;
-        config.push_str(&format!("  - path: .armadai/skills/{name}\n"));
+        skills.push(format!("  - path: .armadai/skills/{name}\n"));
     }
+    let mut config = section("agents", &agents) + &section("prompts", &prompts);
+    config.push_str(&section("skills", &skills));
     let coordinator = detect_pack_coordinator(pack, pack_dir);
     let target = detect_pack_link_target(pack_dir);
     if coordinator.is_some() || target.is_some() {
@@ -303,12 +313,20 @@ fn materialize_pack(pack_dir: &Path, pack: &StarterPack, tmp: &Path) -> anyhow::
         }
     }
     if let Some(c) = &coordinator {
+        let team: Vec<String> = pack
+            .agents
+            .iter()
+            .filter(|a| *a != c)
+            .map(|a| format!("        - {a}\n"))
+            .collect();
+        let team = if team.is_empty() {
+            " []\n".to_string()
+        } else {
+            format!("\n{}", team.concat())
+        };
         config.push_str(&format!(
-            "orchestration:\n  enabled: true\n  pattern: hierarchical\n  coordinator: {c}\n  teams:\n    - agents:\n"
+            "orchestration:\n  enabled: true\n  pattern: hierarchical\n  coordinator: {c}\n  teams:\n    - agents:{team}"
         ));
-        for a in pack.agents.iter().filter(|a| *a != c) {
-            config.push_str(&format!("        - {a}\n"));
-        }
     }
     std::fs::write(base.join("config.yaml"), config)?;
     Ok(())

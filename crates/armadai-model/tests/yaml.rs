@@ -170,8 +170,9 @@ fn kept_text_with_an_apostrophe_reads_unchanged() {
     }
 }
 
-/// A typed number or boolean field reads the kept text as saphyr reads it: `1_000`,
-/// `0X10`, `0b1_0` and `tRuE` are accepted there (the previous reader refused them).
+/// A typed number field reads the kept text as saphyr reads it: `1_000`, `0X10` and
+/// `0b1_0` are accepted there (the previous reader refused them). Since serde-saphyr 2.1 a
+/// boolean accepts only the six YAML 1.2 Core spellings: `tRuE` is refused.
 #[test]
 fn typed_fields_accept_what_saphyr_parses_from_kept_text() {
     #[derive(serde::Deserialize)]
@@ -179,9 +180,10 @@ fn typed_fields_accept_what_saphyr_parses_from_kept_text() {
         n: Vec<u32>,
         b: bool,
     }
-    let t: T = from_str("n: [1_000, 0X10, 0b1_0]\nb: tRuE\n").unwrap();
+    let t: T = from_str("n: [1_000, 0X10, 0b1_0]\nb: TRUE\n").unwrap();
     assert_eq!(t.n, [1000, 16, 2]);
     assert!(t.b);
+    assert!(from_str::<T>("n: []\nb: tRuE\n").is_err());
 }
 
 /// `true`, `True` and `TRUE` (and the same spellings of `false`, `null`) keep their type.
@@ -202,5 +204,54 @@ fn content_after_the_root_node_is_refused_not_dropped() {
     for src in ["{a: 1}\nb: 2\n", " x: v\nm: {x: 1}\n"] {
         let e = from_str::<Value>(src).unwrap_err();
         assert_eq!(e.location().map(|l| l.line()), Some(2), "{src:?}: {e}");
+    }
+}
+
+/// A blank, `~` or scalar value where a list or a map is required says how to write an
+/// empty one (serde-saphyr 2.1 refuses it; the position stays at the end).
+#[test]
+fn a_refused_blank_collection_names_the_way_out() {
+    #[derive(Debug, serde::Deserialize)]
+    struct S {
+        #[allow(dead_code)]
+        a: Vec<String>,
+    }
+    #[derive(Debug, serde::Deserialize)]
+    struct M {
+        #[allow(dead_code)]
+        a: BTreeMap<String, String>,
+    }
+    for (src, col) in [("a:\n", 2), ("a: ~\n", 4), ("a: x\n", 4)] {
+        assert_eq!(
+            from_str::<S>(src).unwrap_err().to_string(),
+            format!(
+                "expected a list (an empty one is written `[]`) at line 1, column {}",
+                col
+            ),
+            "{src:?}"
+        );
+        assert_eq!(
+            from_str::<M>(src).unwrap_err().to_string(),
+            format!(
+                "expected a map (an empty one is written `{{}}`) at line 1, column {}",
+                col
+            ),
+            "{src:?}"
+        );
+    }
+}
+
+/// A root document that is a scalar or a list where a map is required has no key to omit:
+/// the text stays neutral (the position is `1:1`, at the end).
+#[test]
+fn a_root_that_is_not_a_map_gets_the_neutral_text() {
+    for src in ["foo\n", "- a\n- b\n"] {
+        assert_eq!(
+            from_str::<BTreeMap<String, String>>(src)
+                .unwrap_err()
+                .to_string(),
+            "expected a map (an empty one is written `{}`) at line 1, column 1",
+            "{src:?}"
+        );
     }
 }
