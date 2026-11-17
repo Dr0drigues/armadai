@@ -963,8 +963,7 @@ fn init_prints_no_validator_warning_but_the_ignored_file() {
     assert_eq!(err, format!("{}\n", t8(&pack.join("tests/x"))));
 }
 
-const HINT_SEQ: &str =
-    "expected sequence start (write `[]` for an empty list, or leave the key out)";
+const HINT_SEQ: &str = "expected a list (an empty one is written `[]`)";
 
 /// A legacy pack whose only agent is the coordinator leaves its team empty: the config
 /// `init --pack` builds for `migrate` says `agents: []`, not a blank key the reader refuses.

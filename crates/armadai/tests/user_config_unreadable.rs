@@ -113,9 +113,7 @@ fn a_blank_list_in_the_user_config_says_what_to_write() {
     std::fs::write(dir.path().join("config.yaml"), "starters_dirs:\n").unwrap();
     let (_, stderr) = run(dir.path(), &["config", "starters-dir", "list"]);
     assert!(
-        stderr.contains(
-            "expected sequence start (write `[]` for an empty list, or leave the key out)"
-        ),
+        stderr.contains("expected a list (an empty one is written `[]`)"),
         "{stderr}"
     );
 }

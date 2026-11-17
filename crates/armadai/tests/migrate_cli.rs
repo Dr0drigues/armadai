@@ -452,9 +452,7 @@ fn a_blank_list_in_a_legacy_config_says_what_to_write() {
     let out = migrate(&dir, &[]).failure();
     let err = String::from_utf8_lossy(&out.get_output().stderr).into_owned();
     assert!(
-        err.contains(
-            "expected sequence start (write `[]` for an empty list, or leave the key out)"
-        ),
+        err.contains("expected a list (an empty one is written `[]`)"),
         "{err}"
     );
 }

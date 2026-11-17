@@ -50,11 +50,11 @@ impl fmt::Display for Error {
                 // a blank or `~` value where a collection is required (serde-saphyr 2.1)
                 .replace(
                     "expected sequence start",
-                    "expected sequence start (write `[]` for an empty list, or leave the key out)",
+                    "expected a list (an empty one is written `[]`)",
                 )
                 .replace(
                     "expected mapping start",
-                    "expected mapping start (write `{}` for an empty map, or leave the key out)",
+                    "expected a map (an empty one is written `{}`)",
                 ),
         )
     }

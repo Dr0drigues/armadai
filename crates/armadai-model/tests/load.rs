@@ -720,9 +720,9 @@ fn a_blank_list_or_map_is_refused_in_the_manifest() {
         let d = find(&l, "invalid-yaml");
         assert_eq!((d.line, d.severity), (Some(line), Severity::Error), "{key}");
         let hint = if key == "targets" {
-            "write `[]` for an empty list, or leave the key out"
+            "expected a list (an empty one is written `[]`)"
         } else {
-            "write `{}` for an empty map, or leave the key out"
+            "expected a map (an empty one is written `{}`)"
         };
         assert!(d.message.contains(hint), "{key}: {}", d.message);
     }
@@ -743,9 +743,9 @@ fn a_blank_list_is_refused_in_agent_frontmatter() {
         assert_eq!((d.line, d.severity), (Some(3), Severity::Error), "{key}");
         assert!(d.file.ends_with(".armadai/agents/dev.md"), "{key}");
         let hint = if key == "capabilities" {
-            "write `{}` for an empty map, or leave the key out"
+            "expected a map (an empty one is written `{}`)"
         } else {
-            "write `[]` for an empty list, or leave the key out"
+            "expected a list (an empty one is written `[]`)"
         };
         assert!(d.message.contains(hint), "{key}: {}", d.message);
     }
@@ -765,4 +765,20 @@ fn an_explicit_empty_list_or_map_is_accepted() {
     ]);
     let l = load_project(dir.path());
     assert!(!has_errors(&l.diagnostics), "{:?}", l.diagnostics);
+}
+
+/// A scalar where a list is required gets the same neutral text as a blank key, with the
+/// position of the value (`targets: foo`).
+#[test]
+fn a_scalar_where_a_list_is_required_gets_the_neutral_text() {
+    let dir = project(&[(".armadai/project.yaml", "schema_version: 1\ntargets: foo\n")]);
+    let l = load_project(dir.path());
+    let d = find(&l, "invalid-yaml");
+    assert_eq!(d.line, Some(2));
+    assert!(
+        d.message
+            .contains("expected a list (an empty one is written `[]`)"),
+        "{}",
+        d.message
+    );
 }

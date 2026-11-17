@@ -221,11 +221,11 @@ fn a_refused_blank_collection_names_the_way_out() {
         #[allow(dead_code)]
         a: BTreeMap<String, String>,
     }
-    for (src, col) in [("a:\n", 2), ("a: ~\n", 4)] {
+    for (src, col) in [("a:\n", 2), ("a: ~\n", 4), ("a: x\n", 4)] {
         assert_eq!(
             from_str::<S>(src).unwrap_err().to_string(),
             format!(
-                "expected sequence start (write `[]` for an empty list, or leave the key out) at line 1, column {}",
+                "expected a list (an empty one is written `[]`) at line 1, column {}",
                 col
             ),
             "{src:?}"
@@ -233,9 +233,24 @@ fn a_refused_blank_collection_names_the_way_out() {
         assert_eq!(
             from_str::<M>(src).unwrap_err().to_string(),
             format!(
-                "expected mapping start (write `{{}}` for an empty map, or leave the key out) at line 1, column {}",
+                "expected a map (an empty one is written `{{}}`) at line 1, column {}",
                 col
             ),
+            "{src:?}"
+        );
+    }
+}
+
+/// A root document that is a scalar or a list where a map is required has no key to omit:
+/// the text stays neutral (the position is `1:1`, at the end).
+#[test]
+fn a_root_that_is_not_a_map_gets_the_neutral_text() {
+    for src in ["foo\n", "- a\n- b\n"] {
+        assert_eq!(
+            from_str::<BTreeMap<String, String>>(src)
+                .unwrap_err()
+                .to_string(),
+            "expected a map (an empty one is written `{}`) at line 1, column 1",
             "{src:?}"
         );
     }
