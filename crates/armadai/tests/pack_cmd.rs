@@ -1038,6 +1038,64 @@ fn update_outside_the_range_is_refused() {
     assert_eq!(tree(&env.root()), before);
 }
 
+/// A `standards:` entry of `.armadai/pack.lock`, as the writer prints it.
+const STD_LOCK: &str = "standards:\n- pack: rust-std\n  source: https://example.com/rust-std.git\n  resolved:\n    version: \"2.0.1\"\n    tag: rust-std-v2.0.1\n    commit: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n";
+
+fn team_lock(url: &str, version: &str, commit: &str) -> String {
+    format!(
+        "format: 1\npack: demo\nsource: {url}\nresolved:\n  version: \"{version}\"\n  tag: demo-v{version}\n  commit: {commit}\n"
+    )
+}
+
+#[test]
+fn update_moves_the_team_entry_and_keeps_the_standards_entries() {
+    let (env, _second) = two_projects();
+    let lock = env.text(".armadai/pack.lock");
+    std::fs::write(
+        env.root().join(".armadai/pack.lock"),
+        format!("{lock}{STD_LOCK}"),
+    )
+    .unwrap();
+    let c3 = env.release("1.2.0", &[], &[]);
+    ok(&env.run(&["pack", "update"], &[]));
+    assert_eq!(
+        env.text(".armadai/pack.lock"),
+        format!("{}{STD_LOCK}", team_lock(&env.url(), "1.2.0", &c3))
+    );
+}
+
+#[test]
+fn add_of_a_team_pack_keeps_the_standards_entries_of_the_lock() {
+    let (env, _c1, c2) = released();
+    put(
+        &env.root(),
+        ".armadai/pack.lock",
+        &format!("format: 1\n{STD_LOCK}"),
+    );
+    ok(&env.run(&["pack", "add", "demo@^1.0"], &[]));
+    assert_eq!(
+        env.text(".armadai/pack.lock"),
+        format!("{}{STD_LOCK}", team_lock(&env.url(), "1.1.0", &c2))
+    );
+}
+
+#[test]
+fn add_with_an_unreadable_lock_stops_instead_of_dropping_its_standards() {
+    let (env, ..) = released();
+    let bad = format!("format: 1\n{STD_LOCK}branch: main\n");
+    put(&env.root(), ".armadai/pack.lock", &bad);
+    let r = env.run(&["pack", "add", "demo@^1.0"], &[]);
+    assert_ne!(r.code, Some(0), "{}{}", r.out, r.err);
+    assert!(
+        r.err
+            .starts_with("Error: .armadai/pack.lock: unknown field `branch`"),
+        "{}",
+        r.err
+    );
+    assert_eq!(env.text(".armadai/pack.lock"), bad);
+    assert!(!env.root().join(".armadai/project.yaml").exists());
+}
+
 #[test]
 fn update_inside_the_range_by_exact_version_is_allowed() {
     let (env, _second) = two_projects();

@@ -227,9 +227,7 @@ fn check(
     refuse_invalid(root, registry, env, retry)?;
     // the standards entries stay as the lock has them: only the team entry moves here
     let mut locked: lock::LockFile = lock.clone().into();
-    locked.standards = lock::read_committed(root)
-        .ok()
-        .flatten()
+    locked.standards = lock::read_committed(root)?
         .map(|l| l.standards)
         .unwrap_or_default();
     let view =
@@ -524,9 +522,7 @@ pub fn add_in(
         ],
     )?;
     // the lock first: a lock without the key is ignored, the key without a lock is not
-    let standards = lock::read_committed(root)
-        .ok()
-        .flatten()
+    let standards = lock::read_committed(root)?
         .map(|l| l.standards)
         .unwrap_or_default();
     lock::write(
