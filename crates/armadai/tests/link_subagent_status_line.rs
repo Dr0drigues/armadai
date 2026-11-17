@@ -539,7 +539,7 @@ fn a_registry_that_leads_away_gives_no_line_when_the_project_plugin_differs() {
 #[cfg(unix)]
 #[test]
 fn a_dot_git_that_leads_nowhere_does_not_stop_a_project_without_a_pack_behind_a_linked_armadai() {
-    let env = Env::new(on(), &[FLOW]);
+    let env = Env::new("schema_version: 1\ncoordinator: lead\n", &[FLOW]);
     let away = env.0.path().join("away");
     std::fs::create_dir_all(&away).unwrap();
     std::fs::rename(env.root().join(".armadai"), away.join(".armadai")).unwrap();
@@ -549,14 +549,19 @@ fn a_dot_git_that_leads_nowhere_does_not_stop_a_project_without_a_pack_behind_a_
         format!("gitdir: {}\n", env.0.path().join("gone").display()),
     )
     .unwrap();
-    // unlink goes through; link stops for its own reason (it does not write through a linked
-    // .armadai), never because of a pin the project has no use for
-    let out = env.run(&["unlink", "--dry-run"]);
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success(), "{err}");
-    let out = env.run(&["link", "--target", "claude"]);
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(!err.contains("does not lead to a git directory"), "{err}");
+    // neither command is stopped by a pin the project has no use for
+    for args in [
+        ["unlink", "--dry-run"].as_slice(),
+        ["link", "--target", "claude"].as_slice(),
+    ] {
+        let out = env.run(args);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{args:?}: {err}");
+        assert!(
+            !err.contains("does not lead to a git directory"),
+            "{args:?}: {err}"
+        );
+    }
 }
 
 #[test]
