@@ -679,6 +679,15 @@ fn check_grants(o: &mut Out, project: &Project) {
     }
 }
 
+/// The text of `invalid-journal-dir`, also the refusal of `armadai journal`.
+pub const JOURNAL_DIR_RULE: &str =
+    "sessions.journal_dir must name a folder: one line, not empty, no blank at either end";
+
+/// Whether `sessions.journal_dir` can name a folder: one line, not empty, no blank at either end.
+pub fn is_valid_journal_dir(d: &str) -> bool {
+    !(d.is_empty() || d.contains(['\n', '\r']) || d.trim() != d)
+}
+
 pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
     let mut o = Out {
         origins,
@@ -743,14 +752,13 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
         );
     }
     if let Some(d) = &m.sessions.journal_dir
-        && (d.is_empty() || d.contains(['\n', '\r']) || d.trim() != d)
+        && !is_valid_journal_dir(d)
     {
         o.err(
             man,
             "invalid-journal-dir",
             Some(("journal_dir", true)),
-            "sessions.journal_dir must name a folder: one line, not empty, no blank at either end"
-                .into(),
+            JOURNAL_DIR_RULE.into(),
             Some(
                 "a path relative to the folder that holds .armadai, such as ../lot-journal".into(),
             ),

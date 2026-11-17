@@ -70,6 +70,8 @@ pub fn state_dir(root: &Path) -> PathBuf {
 enum JournalDir {
     Default(PathBuf),
     Named(PathBuf),
+    /// The key holds a value that `invalid-journal-dir` refuses.
+    Invalid,
 }
 
 /// `sessions.journal_dir`, read from the `.armadai/project.yaml` of `root` alone (not the
@@ -82,17 +84,24 @@ fn journal_dir(root: &Path) -> JournalDir {
         let text = std::fs::read_to_string(root.join(".armadai/project.yaml")).ok()?;
         let v: serde_json::Value = armadai_model::yaml::from_str(&text).ok()?;
         let dir = v.pointer("/sessions/journal_dir")?.as_str()?.to_owned();
+        if !armadai_model::is_valid_journal_dir(&dir) {
+            return Some(JournalDir::Invalid);
+        }
         // a `canonicalize` that fails means no readable project: the default folder
         let real = std::fs::canonicalize(root.join(".armadai")).ok()?;
-        Some(real.parent()?.join(dir))
+        Some(JournalDir::Named(real.parent()?.join(dir)))
     })();
-    named.map_or_else(|| JournalDir::Default(state_dir(root)), JournalDir::Named)
+    named.unwrap_or_else(|| JournalDir::Default(state_dir(root)))
 }
 
 /// The folder to use; a named one that is not a folder is refused with what to do next.
 fn resolve_dir(root: &Path) -> anyhow::Result<PathBuf> {
     match journal_dir(root) {
         JournalDir::Default(d) => Ok(d),
+        JournalDir::Invalid => bail!(
+            "{}; fix it in .armadai/project.yaml",
+            armadai_model::JOURNAL_DIR_RULE
+        ),
         JournalDir::Named(d) => {
             // a link is refused by the callers' own check, with its own message
             if !is_link(&d) {
@@ -615,6 +624,23 @@ mod tests {
         // `lnk/..` is `else_`, not the folder holding `lnk`
         assert!(else_.join("j/journal.jsonl").is_file());
         assert!(!real.join("j").exists());
+    }
+
+    #[test]
+    fn a_value_the_validator_refuses_names_no_folder_and_writes_nothing() {
+        for bad in ["\"\"", "\" j\"", "\"j \"", "\"a\\nb\""] {
+            let (_t, real) = named(bad);
+            let want = format!(
+                "{}; fix it in .armadai/project.yaml",
+                armadai_model::JOURNAL_DIR_RULE
+            );
+            let e = add(&real, None, Kind::Note, None, "x", 1).unwrap_err();
+            assert_eq!(e.to_string(), want, "{bad}");
+            assert_eq!(show(&real, None, None, 20).unwrap_err().to_string(), want);
+            let names: Vec<_> = fs::read_dir(&real).unwrap().flatten().collect();
+            assert_eq!(names.len(), 1, "{bad}: only .armadai");
+            assert!(!real.join(".armadai/state").exists());
+        }
     }
 
     #[test]
