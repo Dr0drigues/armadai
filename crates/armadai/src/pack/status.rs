@@ -160,6 +160,9 @@ fn in_cache_text(all: &[Available], range: &str) -> String {
 /// M17: the text of `pack status`.
 pub fn report(root: &Path, registry: &Path, config: &Path) -> anyhow::Result<String> {
     let mut blocks = Vec::new();
+    if declared(root).is_none() && super::effective::only_unfinished_standards(root) {
+        return Err(anyhow!(super::effective::unfinished_standards("status")));
+    }
     if let Some(d) = declared(root) {
         let Some(lock) = lock::read_committed(root)?.and_then(|l| l.team) else {
             return Err(anyhow!(super::effective::lock_missing(&d.name)));

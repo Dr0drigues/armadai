@@ -108,6 +108,28 @@ pub(crate) fn references_packs(root: &Path) -> bool {
     pack_ref(root).is_some() || !standards_refs(root).is_empty()
 }
 
+/// Whether `standards:` lists entries but none is complete enough to be looked up (a bad
+/// name, an empty source or version): `validate` reports them, and the pack commands that
+/// need an entry send the user there.
+pub(crate) fn only_unfinished_standards(root: &Path) -> bool {
+    let listed = manifest_value(root)
+        .and_then(|v| {
+            v.get("standards")
+                .and_then(|s| s.as_array().map(|a| !a.is_empty()))
+        })
+        .unwrap_or(false);
+    listed && standards_locked_refs(root).is_empty()
+}
+
+/// What `pack pin`, `pack status` and `pack update` say of a project whose `standards:`
+/// holds nothing but unfinished entries (and no `pack:`).
+pub(crate) fn unfinished_standards(command: &str) -> String {
+    format!(
+        ".armadai/project.yaml has a standards: entry that is not complete: fix the errors \
+         `armadai validate` reports in standards:, then run `armadai pack {command}` again"
+    )
+}
+
 /// The entries of `standards:` to look for at the lock, as (name, source, version): a name
 /// that is not an id, an empty source or an empty version is `validate`'s to report, with
 /// its position.

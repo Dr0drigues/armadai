@@ -318,7 +318,17 @@ pub fn update_in(
 ) -> anyhow::Result<Done> {
     let team = status::declared(root);
     let stds = effective::standards_locked_refs(root);
-    if team.is_none() && stds.is_empty() {
+    if team.is_none() && effective::only_unfinished_standards(root) {
+        bail!("{}", effective::unfinished_standards("update"));
+    }
+    // nothing referenced, but the lock still holds standards: the update drops them
+    let leftover = team.is_none()
+        && stds.is_empty()
+        && lock::read_committed(root)
+            .ok()
+            .flatten()
+            .is_some_and(|l| !l.standards.is_empty());
+    if team.is_none() && stds.is_empty() && !leftover {
         return copy::update_in(root, registry, known, version, env);
     }
     // before any network access

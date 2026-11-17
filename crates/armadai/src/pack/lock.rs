@@ -239,6 +239,9 @@ fn write_file(p: &Path, lock: &LockFile) -> anyhow::Result<()> {
 pub fn pin(root: &Path) -> anyhow::Result<LockFile> {
     let team = super::effective::pack_ref(root);
     let standards = super::effective::standards_locked_refs(root);
+    if team.is_none() && super::effective::only_unfinished_standards(root) {
+        anyhow::bail!("{}", super::effective::unfinished_standards("pin"));
+    }
     if team.is_none() && standards.is_empty() {
         anyhow::bail!(
             "this project references no pack (pack: in .armadai/project.yaml); a pack installed by copy is already in the checkout and needs no pin"

@@ -3440,13 +3440,17 @@ fn status_of_a_standards_entry_without_a_lock_entry_names_pack_update() {
 #[test]
 fn add_of_a_team_pack_keeps_the_declared_standards_entries() {
     let (env, u, ca) = standards_only();
-    env.release("1.0.0", &[], &[]);
+    let team = env.release("1.0.0", &[], &[]);
     env.registries(&[&env.url(), &u]);
     ok(&env.run(&["pack", "add", "demo"], &[]));
-    let lock = env.text(".armadai/pack.lock");
-    assert!(lock.contains(&format!("commit: {ca}")), "{lock}");
-    assert!(lock.contains("- pack: alpha-std\n"), "{lock}");
-    assert!(lock.starts_with("format: 1\npack: demo\n"), "{lock}");
+    assert_eq!(
+        env.text(".armadai/pack.lock"),
+        format!(
+            "{}standards:\n{}",
+            team_lock(&env.url(), "1.0.0", &team),
+            std_entry(&u, "alpha-std", "1.0.0", &ca)
+        )
+    );
 }
 
 #[test]
@@ -3560,4 +3564,75 @@ fn a_failed_referent_record_puts_the_lock_back() {
     std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o755)).unwrap();
     assert_ne!(r.code, Some(0), "{}{}", r.out, r.err);
     assert_eq!(env.lock_bytes(), lock, "{}{}", r.out, r.err);
+}
+
+#[test]
+fn update_drops_the_last_standards_entry_when_nothing_is_referenced_any_more() {
+    let (env, ..) = standards_only();
+    put(
+        &env.root(),
+        ".armadai/project.yaml",
+        "schema_version: 1\n# mine\n",
+    );
+    assert!(env.text(".armadai/pack.lock").contains("- pack: alpha-std"));
+    let r = env.run(&["pack", "update"], &[]);
+    ok(&r);
+    // the lock stays, as a file with no entry
+    assert_eq!(env.text(".armadai/pack.lock"), "format: 1\n");
+}
+
+const HALF_ONLY: &str =
+    "schema_version: 1\nstandards:\n  - name: half\n    source: ''\n    version: ''\n";
+
+fn half_only_says(cmd: &str) -> String {
+    format!(
+        "Error: .armadai/project.yaml has a standards: entry that is not complete: fix the errors `armadai validate` reports in standards:, then run `armadai pack {cmd}` again"
+    )
+}
+
+#[test]
+fn pack_status_sends_an_unfinished_standards_entry_to_validate() {
+    let env = Env::new();
+    put(&env.root(), ".armadai/project.yaml", HALF_ONLY);
+    let r = env.run(&["pack", "status"], &[]);
+    assert_eq!(r.code, Some(1), "{}{}", r.out, r.err);
+    assert!(r.err_has(&half_only_says("status")), "{}", r.err);
+}
+
+#[test]
+fn pack_pin_sends_an_unfinished_standards_entry_to_validate() {
+    let env = Env::new();
+    put(&env.root(), ".armadai/project.yaml", HALF_ONLY);
+    let r = env.run(&["pack", "pin"], &[]);
+    assert_eq!(r.code, Some(1), "{}{}", r.out, r.err);
+    assert!(r.err_has(&half_only_says("pin")), "{}", r.err);
+    assert!(!pin_file(&env).exists());
+}
+
+#[test]
+fn pack_update_sends_an_unfinished_standards_entry_to_validate() {
+    let env = Env::new();
+    put(&env.root(), ".armadai/project.yaml", HALF_ONLY);
+    let (path, witness) = fake_tools(env.dir.path());
+    let r = env.run(&["pack", "update"], &[("PATH", &path)]);
+    assert_eq!(r.code, Some(1), "{}{}", r.out, r.err);
+    assert!(r.err_has(&half_only_says("update")), "{}", r.err);
+    assert!(!witness.exists(), "git or curl was started");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_failed_referent_record_puts_an_add_back() {
+    use std::os::unix::fs::PermissionsExt;
+    let (env, ..) = released();
+    ok(&env.run(&["pack", "add", "demo"], &[]));
+    let second = env.other_project("project2");
+    let config = env.config();
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let r = env.run_in(&second, &["pack", "add", "demo"], &[]);
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_ne!(r.code, Some(0), "{}{}", r.out, r.err);
+    for f in [".armadai/pack.lock", ".armadai/project.yaml"] {
+        assert!(!second.join(f).exists(), "{f} was left\n{}{}", r.out, r.err);
+    }
 }
