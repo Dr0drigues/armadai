@@ -263,3 +263,31 @@ fn a_project_with_a_pack_behind_a_dot_git_that_leads_nowhere_is_refused_and_left
         assert_eq!(env.snapshot(), before, "{cmd}");
     }
 }
+
+/// The same with only `.claude` leading out: the second name of the loop.
+#[test]
+fn a_project_with_a_pack_and_a_claude_link_out_is_refused_behind_a_dot_git_that_leads_nowhere() {
+    let env = linked_chantier(false);
+    std::fs::remove_file(env.wt().join(".armadai")).unwrap(); // only `.claude` leads out
+    env.own_project();
+    put(
+        &env.wt().join(".armadai/project.yaml"),
+        "schema_version: 1\npack:\n  name: demo\n  source: https://example.com/packs.git\n",
+    );
+    std::fs::remove_dir_all(env.wt().join(".git")).unwrap();
+    put(
+        &env.wt().join(".git"),
+        &format!("gitdir: {}\n", env.0.path().join("gone").display()),
+    );
+    let t14 = format!(
+        "Error: {}/.git does not lead to a git directory, where this checkout keeps its pack pin; repair it (git worktree repair) and run the command again\n",
+        std::fs::canonicalize(env.wt()).unwrap().display()
+    );
+    let before = env.snapshot();
+    for cmd in ["unlink --dry-run", "unlink"] {
+        let (code, out, err) = env.run(&env.wt(), cmd);
+        assert_eq!(code, Some(1), "{cmd}: {out}{err}");
+        assert_eq!(err, t14, "{cmd}");
+        assert_eq!(env.snapshot(), before, "{cmd}");
+    }
+}
