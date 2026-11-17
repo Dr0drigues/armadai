@@ -523,6 +523,43 @@ fn a_registry_that_leads_away_gives_no_line_when_the_plugin_is_not_written() {
 }
 
 #[test]
+fn a_registry_that_leads_away_gives_no_line_when_the_project_plugin_differs() {
+    let env = Env::new(on(), &[FLOW]);
+    let other = "{\"name\": \"armadai-ui\", \"description\": \"mine\"}\n";
+    env.put(&format!("{PLUGIN}/.claude-plugin/plugin.json"), other);
+    env.put_registry(&registry_to(&env.0.path().join("gone")));
+    let report = env.ok(&["link", "--target", "claude"]);
+    assert_eq!(
+        lines(&report),
+        [differs(&format!("{PLUGIN}/.claude-plugin/plugin.json"))]
+    );
+    assert_eq!(marketplace_lines(&report), Vec::<&str>::new());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_dot_git_that_leads_nowhere_does_not_stop_a_project_without_a_pack_behind_a_linked_armadai() {
+    let env = Env::new(on(), &[FLOW]);
+    let away = env.0.path().join("away");
+    std::fs::create_dir_all(&away).unwrap();
+    std::fs::rename(env.root().join(".armadai"), away.join(".armadai")).unwrap();
+    std::os::unix::fs::symlink(away.join(".armadai"), env.root().join(".armadai")).unwrap();
+    std::fs::write(
+        env.root().join(".git"),
+        format!("gitdir: {}\n", env.0.path().join("gone").display()),
+    )
+    .unwrap();
+    // unlink goes through; link stops for its own reason (it does not write through a linked
+    // .armadai), never because of a pin the project has no use for
+    let out = env.run(&["unlink", "--dry-run"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{err}");
+    let out = env.run(&["link", "--target", "claude"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!err.contains("does not lead to a git directory"), "{err}");
+}
+
+#[test]
 fn a_registry_that_is_absent_unreadable_or_the_plugins_own_gives_no_line() {
     let env = Env::new(on(), &[FLOW]);
     env.put_registry("{ not json");

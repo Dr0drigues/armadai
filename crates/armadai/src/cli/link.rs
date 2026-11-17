@@ -941,7 +941,13 @@ pub(crate) fn check_outgoing_links(root: &Path, verb: &str, note: bool) -> anyho
             continue;
         }
         let target = target.display();
-        if crate::pack::lock::read_pin(root)?.is_some() {
+        // a project without `pack:` has no pin to keep: a `.git` that leads nowhere is not its concern
+        let pinned = match crate::pack::lock::read_pin(root) {
+            Ok(pin) => pin.is_some(),
+            Err(_) if crate::pack::effective::pack_ref(root).is_none() => false,
+            Err(e) => return Err(e),
+        };
+        if pinned {
             bail!(
                 "{verb} refused: {name} is a symbolic link to {target}, outside this checkout, and this checkout pins its pack; give the worktree its own {name}/ or run armadai pack unpin"
             );
