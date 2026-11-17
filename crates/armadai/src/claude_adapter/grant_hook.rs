@@ -23,7 +23,7 @@
 //! that make an accident or a naive attempt fail; four ways around them were found in
 //! review, and more remain. Under a level whose rule is broad (`Bash(cp *)`, `Bash(python
 //! *)`, `Bash(sh *)`, `Bash(*)`), an agent can still do what the allowed program can do:
-//! an interpreter or a shell runs any code, so it can rewrite `.armadai/state/grants.yaml`
+//! an interpreter or a shell runs any code, so it can rewrite the state file
 //! or call `armadai grant` from inside a script the hook never reads; `cp`, `mv`, `ln` or
 //! `git` can reach the state file through a link, a directory or a name this hook does not
 //! recognize; a command a rule covers may start a program that does. Write the rules of a
@@ -38,10 +38,14 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Where the active levels are kept, under the project root.
-pub const STATE_FILE: &str = ".armadai/state/grants.yaml";
+/// Where the active levels are kept, under the git dir of a checkout.
+pub const STATE_NAME: &str = "armadai/grants.yaml";
 
-/// `.armadai/state/grants.yaml`: the levels switched on by `armadai grant`.
+/// Where they are kept outside git, under the project root; inside git, the file of the
+/// versions before this one, which is no longer read.
+pub const LEGACY_STATE_FILE: &str = ".armadai/state/grants.yaml";
+
+/// `<git dir>/armadai/grants.yaml`: the levels switched on by `armadai grant`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GrantState {
     pub version: u32,
@@ -251,22 +255,34 @@ pub fn marked_since_in_logs(root: &Path, step: &str, since: DateTime<Utc>) -> bo
     false
 }
 
-/// The state file of `root`: `None` when missing or unreadable.
-pub fn read_state(root: &Path) -> Option<GrantState> {
-    let text = std::fs::read_to_string(root.join(STATE_FILE)).ok()?;
+/// The state file of the checkout holding `cwd`: `<git dir>/armadai/grants.yaml`, so a
+/// level opened in one worktree is not seen by another (the git dir is private to each
+/// checkout, while `.armadai` may be shared by a link). Outside git,
+/// `root/.armadai/state/grants.yaml`. `Err(dot_git)` when the `.git` of `cwd` does not
+/// lead to a git dir: the caller refuses, or gives no opinion, never a guess.
+pub fn state_path(cwd: &Path, root: &Path) -> Result<PathBuf, PathBuf> {
+    Ok(match crate::worktree::git_dir_checked(cwd)? {
+        Some(git_dir) => git_dir.join(STATE_NAME),
+        None => root.join(LEGACY_STATE_FILE),
+    })
+}
+
+/// The state file at `path`: `None` when missing or unreadable.
+pub fn read_state(path: &Path) -> Option<GrantState> {
+    let text = std::fs::read_to_string(path).ok()?;
     let state: GrantState = armadai_model::yaml::from_str(&text).ok()?;
     (state.version == 1).then_some(state)
 }
 
 /// The level's `allow` rules and the project root, read as the gate reads the project.
-fn project_rules(raw: &str, level: &str) -> Option<(PathBuf, Vec<String>)> {
+fn project_rules(raw: &str, level: &str) -> Option<(PathBuf, PathBuf, Vec<String>)> {
     let v: Value = serde_json::from_str(raw).ok()?;
     let cwd = v.get("cwd").and_then(Value::as_str)?;
     let root = super::policy_gate::resolve_project(Path::new(cwd))?;
     let view = crate::pack::effective::open(&root, crate::pack::effective::Vars::Literal).ok()?;
     let (project, _) = view.load_checked().ok()?;
     let grant = project.manifest.policy.grants.get(level)?;
-    Some((root, grant.allow.clone()))
+    Some((root, PathBuf::from(cwd), grant.allow.clone()))
 }
 
 /// Read a hook payload from stdin and emit a decision for `level`. Never fails the hook.
@@ -275,10 +291,14 @@ pub fn grant_from_stdin(level: &str) -> anyhow::Result<()> {
     if std::io::stdin().read_to_string(&mut raw).is_err() {
         return Ok(());
     }
-    let Some((root, rules)) = project_rules(&raw, level) else {
+    let Some((root, cwd, rules)) = project_rules(&raw, level) else {
         return Ok(());
     };
-    let state = read_state(&root);
+    // a `.git` that does not read: no opinion (a hook never allows on a doubt)
+    let Ok(path) = state_path(&cwd, &root) else {
+        return Ok(());
+    };
+    let state = read_state(&path);
     let marked = |step: &str, since: DateTime<Utc>| marked_since_in_logs(&root, step, since);
     if let Some(json) = decide(
         &raw,
@@ -671,8 +691,8 @@ mod tests {
     #[test]
     fn the_state_reads_back_and_a_bad_one_reads_as_none() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(read_state(dir.path()), None);
-        let path = dir.path().join(STATE_FILE);
+        let path = dir.path().join("armadai/grants.yaml");
+        assert_eq!(read_state(&path), None);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
             &path,
@@ -680,7 +700,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            read_state(dir.path()),
+            read_state(&path),
             Some(state(Some(END), Some("evolution/publish")))
         );
         for bad in [
@@ -690,8 +710,76 @@ mod tests {
             "version: 1\nactive:\n  l: { since: nope }\n",
         ] {
             std::fs::write(&path, bad).unwrap();
-            assert_eq!(read_state(dir.path()), None, "{bad}");
+            assert_eq!(read_state(&path), None, "{bad}");
         }
+    }
+
+    /// Two linked worktrees whose `.armadai` is a link to one folder: the same project
+    /// root, two checkouts. Returns (`a`, `b`, shared root, main git dir).
+    #[cfg(unix)]
+    fn two_worktrees(base: &Path) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+        let base = std::fs::canonicalize(base).unwrap();
+        let main_git = base.join("main/.git");
+        let shared = base.join("c");
+        std::fs::create_dir_all(shared.join(".armadai")).unwrap();
+        let mut dirs = Vec::new();
+        for name in ["a", "b"] {
+            let gd = main_git.join("worktrees").join(name);
+            std::fs::create_dir_all(&gd).unwrap();
+            let wt = base.join(name);
+            std::fs::create_dir_all(&wt).unwrap();
+            std::fs::write(wt.join(".git"), format!("gitdir: {}\n", gd.display())).unwrap();
+            std::os::unix::fs::symlink(shared.join(".armadai"), wt.join(".armadai")).unwrap();
+            dirs.push(wt);
+        }
+        let b = dirs.pop().unwrap();
+        let a = dirs.pop().unwrap();
+        (a, b, shared, main_git)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn each_worktree_has_its_own_state_path_under_its_git_dir() {
+        let t = tempfile::tempdir().unwrap();
+        let (a, b, shared, main_git) = two_worktrees(t.path());
+        // the same root for both: only the checkout tells them apart
+        assert_eq!(
+            state_path(&a, &shared),
+            Ok(main_git.join("worktrees/a/armadai/grants.yaml"))
+        );
+        assert_eq!(
+            state_path(&b, &shared),
+            Ok(main_git.join("worktrees/b/armadai/grants.yaml"))
+        );
+        // a subfolder of a checkout is the same checkout
+        std::fs::create_dir_all(a.join("src")).unwrap();
+        assert_eq!(state_path(&a.join("src"), &shared), state_path(&a, &shared));
+    }
+
+    #[test]
+    fn outside_git_the_state_stays_under_the_project_and_a_broken_git_is_an_error() {
+        let t = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(t.path()).unwrap();
+        assert_eq!(
+            state_path(&root, &root),
+            Ok(root.join(".armadai/state/grants.yaml"))
+        );
+        let wt = root.join("wt");
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(wt.join(".git"), "").unwrap();
+        assert_eq!(state_path(&wt, &root), Err(wt.join(".git")));
+    }
+
+    #[test]
+    fn each_clause_of_the_grant_machinery_check_bites_alone() {
+        // a path under a git dir names both
+        assert!(names_grant_machinery(
+            "cp x .git/worktrees/wt/armadai/grants.yaml"
+        ));
+        // `grants.yaml` without `armadai`, and `armadai` without `grants.yaml`
+        assert!(names_grant_machinery("cp x ../gd/grants.yaml"));
+        assert!(names_grant_machinery("cp x ../gd/armadai/other"));
+        assert!(!names_grant_machinery("cp x ../gd/other"));
     }
 
     fn log(root: &Path, name: &str, lines: &[&str]) {
@@ -853,10 +941,10 @@ mod tests {
         let iso = armadai_core::test_support::IsolatedConfigDir::enter();
         grants_pack(&registry_of(iso.config_dir()));
         let root = pinned_project();
-        let (_, rules) = project_rules(&cwd_payload(root.path()), "ops").unwrap();
+        let (_, _, rules) = project_rules(&cwd_payload(root.path()), "ops").unwrap();
         assert_eq!(rules, ["Bash(echo *)"]);
         crate::pack::lock::unpin(root.path()).unwrap();
-        let (_, rules) = project_rules(&cwd_payload(root.path()), "ops").unwrap();
+        let (_, _, rules) = project_rules(&cwd_payload(root.path()), "ops").unwrap();
         assert_eq!(rules, ["Bash(ls *)"]);
     }
 
@@ -867,9 +955,21 @@ mod tests {
         let iso = armadai_core::test_support::IsolatedConfigDir::enter();
         grants_pack(&registry_of(iso.config_dir()));
         let root = pinned_project();
-        let pin = crate::pack::lock::pin_path(root.path()).unwrap();
+        let pin = crate::pack::lock::pin_path(root.path()).unwrap().unwrap();
         std::fs::remove_file(&pin).unwrap();
         std::os::unix::fs::symlink(root.path().join(crate::pack::lock::LOCK), &pin).unwrap();
         assert!(project_rules(&cwd_payload(root.path()), "ops").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_git_that_leads_nowhere_gives_the_grant_hook_no_rules_not_the_committed_ones() {
+        use crate::claude_adapter::policy_gate::pinned_fixture::*;
+        let iso = armadai_core::test_support::IsolatedConfigDir::enter();
+        grants_pack(&registry_of(iso.config_dir()));
+        let parent = pinned_project();
+        let (dang, _) = dangling_checkout(parent.path());
+        // the committed lock (C2) grants `Bash(ls *)`: a fallback would read it
+        assert!(project_rules(&cwd_payload(&dang), "ops").is_none());
     }
 }

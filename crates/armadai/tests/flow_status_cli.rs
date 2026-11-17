@@ -860,27 +860,75 @@ fn statusline_prints_the_user_bar_then_the_flow_line() {
 }
 
 #[test]
-fn statusline_prints_the_flow_line_alone_when_the_user_bar_fails_or_is_too_slow() {
+fn statusline_waits_three_seconds_for_the_user_bar() {
     let env = Env::new();
     env.three_logs();
     let root = env.root();
     let stdin = format!(r#"{{"session_id":"S","cwd":"{}"}}"#, root.display());
     let (_, flow, _) = env.statusline(env.dir.path(), &stdin);
+    // 2 s is over the old 1 s limit and under the new 3 s one
+    env.user_bar("sleep 2; printf user-bar");
+    let got = env.statusline(env.dir.path(), &stdin);
+    assert_eq!(got, (Some(0), format!("user-bar\n{flow}"), String::new()));
+}
+
+#[cfg(unix)]
+#[test]
+fn statusline_marks_the_flow_line_when_the_user_bar_fails_or_is_too_slow() {
+    let env = Env::new();
+    env.three_logs();
+    let root = env.root();
+    let stdin = format!(r#"{{"session_id":"S","cwd":"{}"}}"#, root.display());
+    let (_, flow, _) = env.statusline(env.dir.path(), &stdin);
+    let flow_plain = strip_sgr(&flow);
+    let flow_plain = flow_plain.trim_end_matches('\n');
     for (name, command) in [
         ("failing", "printf lost; exit 3"),
-        ("slow", "sleep 5"),
+        ("slow", "sleep 10"),
         ("missing", "no-such-bar-command-armadai"),
     ] {
         env.user_bar(command);
         let start = std::time::Instant::now();
-        let got = env.statusline(env.dir.path(), &stdin);
-        assert_eq!(got, (Some(0), flow.clone(), String::new()), "{name}");
-        // threshold of the defect: a bar that is waited for takes 5 s
+        let (code, out, err) = env.statusline(env.dir.path(), &stdin);
+        assert_eq!(code, Some(0), "{name}");
+        assert_eq!(err, String::new(), "{name}");
+        assert_eq!(
+            strip_sgr(&out),
+            format!("{flow_plain}  [status bar failed]\n"),
+            "{name}"
+        );
+        // threshold of the defect: a bar that is waited for takes 10 s
         assert!(
-            start.elapsed() < std::time::Duration::from_secs(4),
+            start.elapsed() < std::time::Duration::from_secs(6),
             "{name}"
         );
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn statusline_prints_the_marker_alone_when_there_is_no_flow_line_and_the_bar_fails() {
+    let env = Env::new();
+    env.three_logs();
+    env.user_bar("exit 3");
+    let (code, out, err) = env.statusline(&env.root(), "");
+    assert_eq!(
+        (code, strip_sgr(&out), err),
+        (Some(0), "[status bar failed]\n".to_string(), String::new())
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn statusline_does_not_mark_a_bar_that_succeeds_with_an_empty_output() {
+    let env = Env::new();
+    env.three_logs();
+    let root = env.root();
+    let stdin = format!(r#"{{"session_id":"S","cwd":"{}"}}"#, root.display());
+    let (_, flow, _) = env.statusline(env.dir.path(), &stdin);
+    env.user_bar("printf ''");
+    let got = env.statusline(env.dir.path(), &stdin);
+    assert_eq!(got, (Some(0), flow, String::new()));
 }
 
 #[test]

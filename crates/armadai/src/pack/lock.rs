@@ -45,10 +45,18 @@ fn path(root: &Path) -> PathBuf {
     root.join(LOCK)
 }
 
-/// Where this checkout's pin lives: `<git dir>/armadai/pack.lock`; `None` outside git.
+/// Where this checkout's pin lives: `<git dir>/armadai/pack.lock`; `Ok(None)` outside git;
+/// `Err(T14)` when the nearest `.git` does not lead to a git directory
+/// (`worktree::git_dir_checked`): the pin is never looked for in another checkout.
 /// Git never lists that folder, and `git worktree remove` takes it with the worktree.
-pub fn pin_path(root: &Path) -> Option<PathBuf> {
-    crate::worktree::git_dir_of(root).map(|g| g.join("armadai/pack.lock"))
+pub fn pin_path(root: &Path) -> anyhow::Result<Option<PathBuf>> {
+    match crate::worktree::git_dir_checked(root) {
+        Ok(gd) => Ok(gd.map(|g| g.join("armadai/pack.lock"))),
+        Err(dot_git) => anyhow::bail!(
+            "{} does not lead to a git directory, where this checkout keeps its pack pin; repair it (git worktree repair) and run the command again",
+            dot_git.display()
+        ),
+    }
 }
 
 fn read_file(p: &Path, shown: &str) -> anyhow::Result<Option<PackLock>> {
@@ -65,7 +73,7 @@ fn read_file(p: &Path, shown: &str) -> anyhow::Result<Option<PackLock>> {
 /// The pin of this checkout, if any. A symbolic link (on the file or on `armadai/`) is
 /// refused, not read through.
 pub fn read_pin(root: &Path) -> anyhow::Result<Option<PackLock>> {
-    let Some(p) = pin_path(root) else {
+    let Some(p) = pin_path(root)? else {
         return Ok(None);
     };
     for f in [Some(&*p), p.parent()].into_iter().flatten() {
@@ -132,7 +140,7 @@ pub fn pin(root: &Path) -> anyhow::Result<PackLock> {
             "this project references no pack (pack: in .armadai/project.yaml); a pack installed by copy is already in the checkout and needs no pin"
         );
     };
-    let Some(p) = pin_path(root) else {
+    let Some(p) = pin_path(root).map_err(|e| anyhow::anyhow!("pack pin refused: {e}"))? else {
         anyhow::bail!(
             "pack pin needs a git checkout: the pin is kept in its git directory, and there is no .git above {}",
             root.display()
@@ -154,10 +162,11 @@ pub fn pin(root: &Path) -> anyhow::Result<PackLock> {
 
 /// `pack unpin`: removes the pin (the folder around it stays); the pin it held, if any.
 pub fn unpin(root: &Path) -> anyhow::Result<Option<PackLock>> {
+    pin_path(root).map_err(|e| anyhow::anyhow!("pack unpin refused: {e}"))?;
     let Some(old) = read_pin(root)? else {
         return Ok(None);
     };
-    if let Some(p) = pin_path(root) {
+    if let Some(p) = pin_path(root)? {
         std::fs::remove_file(p)?;
     }
     Ok(Some(old))
@@ -492,7 +501,7 @@ mod tests {
         write(&wt, &at("1.3.0", '3')).unwrap();
         assert_eq!(pin(&wt).unwrap(), at("1.3.0", '3'));
         assert_eq!(
-            pin_path(&wt),
+            pin_path(&wt).unwrap(),
             Some(m.join(".git/worktrees/wt/armadai/pack.lock"))
         );
         // the main checkout has no pin of its own
@@ -555,7 +564,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            pin_path(&root),
+            pin_path(&root).unwrap(),
             None,
             "the temporary folder sits inside a git repository"
         );
@@ -576,7 +585,7 @@ mod tests {
         let (_, wt) = checkouts(t.path());
         let real = t.path().join("elsewhere");
         std::fs::write(&real, "format: 1\n").unwrap();
-        let p = pin_path(&wt).unwrap();
+        let p = pin_path(&wt).unwrap().unwrap();
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::os::unix::fs::symlink(&real, &p).unwrap();
         let want = format!("{} is a symbolic link; it is not read through", p.display());
@@ -609,5 +618,67 @@ mod tests {
         )
         .unwrap();
         assert_eq!(read(t.path()).unwrap(), Some(sample()));
+    }
+    /// A project referencing pack `demo`, in `dir`.
+    fn project_in(dir: &Path) {
+        std::fs::create_dir_all(dir.join(".armadai")).unwrap();
+        std::fs::write(
+            dir.join(".armadai/project.yaml"),
+            "schema_version: 1\npack: { name: demo, source: 'https://example.com/packs.git', version: latest }\n",
+        )
+        .unwrap();
+    }
+
+    fn broken(dot_git: &Path) -> String {
+        format!(
+            "{} does not lead to a git directory, where this checkout keeps its pack pin; repair it (git worktree repair) and run the command again",
+            dot_git.display()
+        )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_dot_git_never_borrows_the_pin_of_the_checkout_above() {
+        let t = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(t.path()).unwrap();
+        let m = root.join("main");
+        project_in(&m);
+        std::fs::create_dir_all(m.join(".git")).unwrap();
+        write(&m, &at("1.3.0", '3')).unwrap();
+        pin(&m).unwrap();
+        let main_pin = std::fs::read(m.join(".git/armadai/pack.lock")).unwrap();
+        let dang = m.join("dang");
+        project_in(&dang);
+        std::os::unix::fs::symlink(root.join("nowhere"), dang.join(".git")).unwrap();
+        let want = broken(&dang.join(".git"));
+        assert_eq!(read(&dang).unwrap_err().to_string(), want);
+        assert_eq!(
+            unpin(&dang).unwrap_err().to_string(),
+            format!("pack unpin refused: {want}")
+        );
+        assert_eq!(
+            std::fs::read(m.join(".git/armadai/pack.lock")).unwrap(),
+            main_pin
+        );
+    }
+
+    #[test]
+    fn a_gitdir_to_a_missing_folder_is_refused_and_creates_nothing() {
+        let t = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(t.path()).unwrap();
+        let gone = root.join("main/gone");
+        project_in(&gone);
+        let absent = root.join("absent");
+        write_file(&path(&gone), &at("1.3.0", '3')).unwrap();
+        std::fs::write(
+            gone.join(".git"),
+            format!("gitdir: {}\n", absent.join(".git/worktrees/gone").display()),
+        )
+        .unwrap();
+        assert_eq!(
+            pin(&gone).unwrap_err().to_string(),
+            format!("pack pin refused: {}", broken(&gone.join(".git")))
+        );
+        assert!(!absent.exists());
     }
 }

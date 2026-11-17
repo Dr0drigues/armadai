@@ -58,6 +58,8 @@ impl Env {
             .current_dir(self.root())
             .env("HOME", self.dir.path().join("home"))
             .env("ARMADAI_CONFIG_DIR", self.dir.path().join("config"))
+            .env("CLAUDE_CONFIG_DIR", self.dir.path().join("claude"))
+            .env_remove("CLAUDE_CODE_PLUGIN_CACHE_DIR")
             .args(args)
             .output()
             .unwrap();
@@ -258,6 +260,8 @@ fn an_opencode_jsonc_refuses_the_link_before_any_write() {
         .current_dir(env.root())
         .env("HOME", env.dir.path().join("home"))
         .env("ARMADAI_CONFIG_DIR", env.dir.path().join("config"))
+        .env("CLAUDE_CONFIG_DIR", env.dir.path().join("claude"))
+        .env_remove("CLAUDE_CODE_PLUGIN_CACHE_DIR")
         .args(["link", "--target", "opencode"])
         .output()
         .unwrap();
@@ -384,6 +388,8 @@ fn unlink_refuses_an_opencode_json_it_cannot_read_before_removing_anything() {
         .current_dir(env.root())
         .env("HOME", env.dir.path().join("home"))
         .env("ARMADAI_CONFIG_DIR", env.dir.path().join("config"))
+        .env("CLAUDE_CONFIG_DIR", env.dir.path().join("claude"))
+        .env_remove("CLAUDE_CODE_PLUGIN_CACHE_DIR")
         .args(["unlink", "--target", "opencode"])
         .output()
         .unwrap();

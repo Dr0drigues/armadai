@@ -52,7 +52,9 @@ impl Env {
         let mut c = Command::cargo_bin("armadai").unwrap();
         c.current_dir(self.root())
             .env("HOME", self.dir.path().join("home"))
-            .env("ARMADAI_CONFIG_DIR", self.dir.path().join("config"));
+            .env("ARMADAI_CONFIG_DIR", self.dir.path().join("config"))
+            .env("CLAUDE_CONFIG_DIR", self.dir.path().join("claude"))
+            .env_remove("CLAUDE_CODE_PLUGIN_CACHE_DIR");
         c
     }
 

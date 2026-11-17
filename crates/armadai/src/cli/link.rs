@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, bail};
 use armadai_model::Project;
 
+use crate::claude_adapter::marketplace_registry;
 use crate::compile::claude_settings::{self, HookEntry};
 use crate::compile::json_keys::JsonKeys;
 use crate::compile::patch::{self, PatchKind, PatchedFile};
@@ -87,6 +88,18 @@ pub fn load_project() -> anyhow::Result<(PathBuf, Effective, Project)> {
             bail!("the project is invalid; nothing was written")
         }
     }
+}
+
+/// The warning when Claude Code's registry sends `armadai-ui` away from this project's
+/// plugin; `None` for any registry that cannot be read or does not say so.
+fn marketplace_warning(root: &Path) -> Option<String> {
+    let file = marketplace_registry::registry_file(&|k| std::env::var(k).ok())?;
+    let text = std::fs::read_to_string(&file).ok()?;
+    // `root` comes from the working directory, already resolved, and link refuses a linked
+    // `.armadai` (a separate write check: "link does not write through it"): this path is
+    // the resolved one
+    let plugin = root.join(compile::PLUGIN_DIR);
+    marketplace_registry::armadai_ui_warning(&file, &text, &plugin)
 }
 
 /// Every path a plain `link` may write, patch or remove, relative to the project root:
@@ -258,6 +271,7 @@ fn prepare(
                         && e.outcome == Outcome::Created
                 });
             // one line for each key that asks for the plugin: (status, reason) by key
+            let mut plugin_stays = false;
             let (sub, panel, band): ((Status, String), (Status, String), (Status, String)) =
                 match clash {
                     Some(path) => {
@@ -278,6 +292,11 @@ fn prepare(
                         } else {
                             claude_settings::found_plugin(root, existing.as_deref(), ui)?
                         };
+                        plugin_stays = matches!(
+                            found,
+                            claude_settings::FoundPlugin::Absent
+                                | claude_settings::FoundPlugin::Identical
+                        );
                         match found {
                         claude_settings::FoundPlugin::Absent => (
                             (
@@ -334,6 +353,10 @@ fn prepare(
                 if on {
                     p.report.push(target, element, status, Some(&why));
                 }
+            }
+            if plugin_stays && let Some(why) = marketplace_warning(root) {
+                p.report
+                    .push(target, "ui marketplace", Status::Approximated, Some(&why));
             }
         }
         if project.manifest.ui.status_line {
@@ -918,7 +941,13 @@ pub(crate) fn check_outgoing_links(root: &Path, verb: &str, note: bool) -> anyho
             continue;
         }
         let target = target.display();
-        if crate::pack::lock::read_pin(root)?.is_some() {
+        // a project without `pack:` has no pin to keep: a `.git` that leads nowhere is not its concern
+        let pinned = match crate::pack::lock::read_pin(root) {
+            Ok(pin) => pin.is_some(),
+            Err(_) if crate::pack::effective::pack_ref(root).is_none() => false,
+            Err(e) => return Err(e),
+        };
+        if pinned {
             bail!(
                 "{verb} refused: {name} is a symbolic link to {target}, outside this checkout, and this checkout pins its pack; give the worktree its own {name}/ or run armadai pack unpin"
             );

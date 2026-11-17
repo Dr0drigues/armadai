@@ -84,12 +84,12 @@ checkout; link writes through it`. `link` refuses a `.claude` leading out with o
 | automation | `.claude/settings.json` hooks: `session-start` -> `SessionStart`, `session-end` -> `SessionEnd`, `before-tool` -> `PreToolUse`, `after-tool` -> `PostToolUse`, `on-prompt` -> `UserPromptSubmit`, `on-stop` -> `Stop`; `native.claude.matcher` is the group matcher, other `native.claude` keys go into the handler |
 | `policy.delegation: strict` | a `PreToolUse` hook on `Agent|Task` running `armadai __claude-policy-gate` (see [Policy gate](policy-gate.md)) |
 | a flow | with the flows, async hooks running `armadai __record-flow-event` (`SubagentStart`, `SubagentStop`, `PreToolUse` on `SubagentHandback` and on `Agent|Task` (the delegation marker only), `UserPromptExpansion` (a typed command, its name only)), a `### Marking delegations` section in the root `CLAUDE.md` block (the form of the `[flow/step#lot]` marker and of the `REF:` line; under `strict`, a sentence saying the gate refuses a delegation without it) and, for an agent holding a step with `states:` or a failure path, a closing `STATE: <state>` instruction in its file (OpenCode agents get it too); report `flow recording: compiled (hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback, Agent|Task), UserPromptExpansion in .claude/settings.json)`. `.armadai/.gitignore` gets `state/`. See [Flow status](flow-status.md) |
-| `policy.grants` | per rule of each level, a `PermissionRequest` hook (matcher `Bash`, `if` the rule) running `armadai __claude-grant <level>`, and two `deny` rules owned by link, `Bash(armadai grant *)` and `Edit(/.armadai/state/grants.yaml)`. Reports `policy grants: compiled (PermissionRequest hooks (armadai __claude-grant), one per rule; inactive until armadai grant)` and `grant state guard: compiled (deny rules Bash(armadai grant *) and Edit(/.armadai/state/grants.yaml) in .claude/settings.json)`; other targets `not-compiled (Claude Code only)`. See [Permission levels](#permission-levels-grant) |
+| `policy.grants` | per rule of each level, a `PermissionRequest` hook (matcher `Bash`, `if` the rule) running `armadai __claude-grant <level>`, and three `deny` rules owned by link, `Bash(armadai grant *)`, `Edit(/.armadai/state/grants.yaml)` and `Edit(//**/armadai/grants.yaml)`. Reports `policy grants: compiled (PermissionRequest hooks (armadai __claude-grant), one per rule; inactive until armadai grant)` and `grant state guard: compiled (deny rules Bash(armadai grant *), Edit(/.armadai/state/grants.yaml) and Edit(//**/armadai/grants.yaml) in .claude/settings.json)`; other targets `not-compiled (Claude Code only)`. See [Permission levels](#permission-levels-grant) |
 | `sessions.journal: true`, `journal:` of an agent | the lot-journal instructions, see [below](#the-lot-journal-and-the-session-link); reports `journal` and `agent <id> journal`; other targets `not-compiled (Claude Code only)` |
 | `session_link` of a flow | a `### Sessions` section in the root `CLAUDE.md` block; report `flow <id> session link: approximated`; other targets `not-compiled (Claude Code only)` |
 | `native.claude` of project.yaml | top-level keys of `settings.json` |
 | `ui.status_line: true` | the `statusLine` of `.claude/settings.json`, running `armadai __claude-statusline` (chained after the `statusLine` of your user settings, when there is one; a `statusLine` already in the project settings is kept and reported `not-compiled`) |
-| `ui.subagent_status_line: true` | the plugin `armadai-ui` in `.armadai/plugins/armadai-ui/` (`.claude-plugin/marketplace.json`, `.claude-plugin/plugin.json`, and a `settings.json` whose `subagentStatusLine` runs `armadai __claude-subagent-statusline`), and two entries in `.claude/settings.json`: `extraKnownMarketplaces.armadai-ui` (a `directory` source, `./.armadai/plugins/armadai-ui`) and `enabledPlugins.armadai-ui@armadai-ui: true`. Claude Code loads the plugin once you trust the folder. The plugin is versioned with the project. If you already set one of those two entries to another value, `link` writes no plugin and reports `ui.subagent_status_line` as `not-compiled`, naming the key. `native.claude` may not hold `enabledPlugins` or `extraKnownMarketplaces` with this key (error). The other targets report `not-compiled (Claude Code only)` |
+| `ui.subagent_status_line: true` | the plugin `armadai-ui` in `.armadai/plugins/armadai-ui/` (`.claude-plugin/marketplace.json`, `.claude-plugin/plugin.json`, and a `settings.json` whose `subagentStatusLine` runs `armadai __claude-subagent-statusline`), and two entries in `.claude/settings.json`: `extraKnownMarketplaces.armadai-ui` (a `directory` source, `./.armadai/plugins/armadai-ui`) and `enabledPlugins.armadai-ui@armadai-ui: true`. Claude Code loads the plugin once you trust the folder. The plugin is versioned with the project. If you already set one of those two entries to another value, `link` writes no plugin and reports `ui.subagent_status_line` as `not-compiled`, naming the key. `native.claude` may not hold `enabledPlugins` or `extraKnownMarketplaces` with this key (error). Claude Code keeps one `armadai-ui` marketplace per user (`known_marketplaces.json`, under `$CLAUDE_CODE_PLUGIN_CACHE_DIR`, else `$CLAUDE_CONFIG_DIR/plugins`, else `~/.claude/plugins`): when that entry leads somewhere other than this project's plugin (a folder that is gone, another folder, or a `github` source), `link` adds a `ui marketplace` line, `approximated`, with the command that fixes it (`claude plugin marketplace remove armadai-ui`). `link` only reads that file; one that is absent, unreadable or of another shape gives no line. The other targets report `not-compiled (Claude Code only)` |
 | `ui.panel: true` | the mod of the plugin `armadai-ui`: `hooks/hooks.json`, `hooks/register.js` (embedded in the binary, written as is) and `panel.json` (`ui.documents`, default `["docs"]`), plus the plugin and its two `.claude/settings.json` entries when `ui.subagent_status_line` has not already written them (the plugin's own `settings.json` stays that key's). Reported `approximated`: it runs JavaScript and the `armadai` command with your permissions and needs Claude Code 2.1.318 or later. The same rules as for `ui.subagent_status_line` apply to a user value on a plugin key, to a plugin you already have and to `native.claude`. The other targets report `not-compiled (Claude Code only)`. See [Flow status](flow-status.md#panel-mod) |
 | `ui.flow_band: true` | the same mod and plugin as `ui.panel` (the two keys share the files; the mod is written when either is on), and in `panel.json` `"band": true`; without `ui.panel`, `panel.json` is `{"band": true, "pane": false}` (no panel opens, no documents are listed). The mod draws a one-line band above the prompt with the run in progress, refreshed every 2 s. Reported `approximated` (`a band above the prompt drawn by the armadai-ui mod (terminal and Desktop), refreshed from flow status every 2 s`), with the same rules as `ui.panel` for a user value on a plugin key, a plugin you already have and `native.claude`. With both keys on, a mod file left in place is reported under both. The other targets report `not-compiled (Claude Code only)`. See [Flow status](flow-status.md#band-mod) |
 
@@ -138,19 +138,20 @@ What the target requires, from the documentation of Claude Code (`cross-session-
 (`armadai __claude-statusline`) with `refreshInterval: 5`: the refresh interval of your own status
 line is replaced by ours, 5 seconds, since only one `statusLine` runs. That command first runs your
 user `statusLine` (`$CLAUDE_CONFIG_DIR/settings.json`, else `~/.claude/settings.json`; a command of
-the `command` type, not ours) with `sh -c`, the same JSON on stdin and a limit of 1 second, then
-prints its output and the flow line on the next row. Failing (non-zero), absent or too slow, your
-bar shows nothing and the flow line shows alone; the exit code is always 0. Only a bar that goes
-over the 1 second has its whole process group killed, so no child of it lingers; a bar that ends in
+the `command` type, not ours) with `sh -c`, the same JSON on stdin and a limit of 3 seconds, then
+prints its output and the flow line on the next row. Failing (non-zero), too slow or with its command missing, your
+bar shows nothing and the flow line ends with two spaces and the marker `[status bar failed]`
+(the marker alone without a flow line); with no user bar there is no marker; the exit code is
+always 0. Only a bar that goes over the 3 seconds has its whole process group killed, so no child of it lingers; a bar that ends in
 time, even one that fails, is left alone, and so is anything it detached. The chain sets
 `ARMADAI_STATUSLINE_CHAINED=1` for your command, so a user bar that is ours does not call itself.
-Unix only (Windows shows the flow line alone). The report line is `chained after your user status
+Unix only (Windows shows the flow line alone, never the marker). The report line is `chained after your user status
 line when there is one`.
 
 Cost, measured on 2026-11-12 with the development binary, `{}` on stdin, an isolated `HOME`: 20
 runs each without a user bar (a median of 11 ms, the first, cold run 699 ms) and with a bar that
 prints `bar` (a median of 25 ms, about 14 ms more); with a bar that sleeps 5 s, 3 runs only, a median
-of 1016 ms (the longest 1026 ms), the 1 second limit plus about 16 ms, never the 5 s. A real bar such as ccstatusline was not measured.
+of 1016 ms (the longest 1026 ms), the 1 s limit then in force plus about 16 ms, never the 5 s (measured before the limit went to 3 s, not repeated). A real bar such as ccstatusline was not measured.
 
 **Commands use `.claude/commands/`**, the format Claude Code documents as merged into skills
 whose files "keep working" (skills page, read on 2026-10-21): a legacy format that may be
@@ -213,8 +214,14 @@ replaces the level's. `--for` and `--until-time` exclude each other (the command
 `--until` combines with either, and the level then ends at the first of the two. `--until <step>` is `<flow>/<step>`, or a step id held by one flow only; it
 needs the delegation markers that `link` makes Claude Code record (see
 [Flow status](flow-status.md#the-delegation-marker)), so run `armadai link --target claude` first.
-The state is `.armadai/state/grants.yaml`, git-ignored with the rest of `state/`; the hook of each
-rule reads it at every call, so an expiry holds without anything running in between. A grant never
+The state is kept per checkout, in `<git dir>/armadai/grants.yaml` (outside git, `.armadai/state/grants.yaml`
+of the project, git-ignored with the rest of `state/`); the hook of each
+rule reads it at every call, so an expiry holds without anything running in between. A project in a
+sub-folder shares the state of its checkout with any other project of that checkout. If a `.git`
+does not lead to a git directory, `grant` and `revoke` refuse (`grant refused: <path>/.git does not lead to a git directory, ...`); run
+`git worktree repair`. The old `.armadai/state/grants.yaml` is never read or touched: while it exists,
+each `grant` prints a note on stderr, and a level opened before this version is off; delete the file
+to drop the note. The flow journals stay under the project root, not in the git directory. A grant never
 lifts a `deny`: a level whose rule is, character for character, a `deny` rule of
 `.claude/settings.json` or `.claude/settings.local.json` is refused, and one that equals a
 `native.claude.permissions.deny` rule is the validator error `grant-over-deny`.
@@ -223,10 +230,16 @@ A level with no `Bash(...)` rule has no hook to answer anything: `armadai grant`
 **What `link` writes.** For each `Bash(...)` rule, a `PermissionRequest` hook with matcher `Bash` and `if` set to
 the rule, running `armadai __claude-grant <level>` (hidden command: it reads the hook JSON on stdin,
 answers `allow` only while the level is active and the call is covered, and prints nothing
-otherwise, which leaves Claude Code's own prompt). Two `deny` rules guard the state:
-`Bash(armadai grant *)` and `Edit(/.armadai/state/grants.yaml)`. `unlink` removes the hooks and the
-two rules it added (yours are kept) and, for the `claude` target, deletes
-`.armadai/state/grants.yaml`, which switches every level off.
+otherwise, which leaves Claude Code's own prompt). Three `deny` rules guard the state:
+`Bash(armadai grant *)`, `Edit(/.armadai/state/grants.yaml)` (the state outside git) and
+`Edit(//**/armadai/grants.yaml)` (the state under a git directory, which is outside the project
+folder that a `/path` rule is anchored to; `//` anchors at the filesystem root, see
+[the permissions page](https://code.claude.com/docs/en/permissions)). The state of a checkout is
+`<git dir>/armadai/grants.yaml`, and the hook of a checkout reads that one only; when the `.git` of the
+checkout does not lead to a git directory the hook gives no opinion. `unlink` removes the hooks and the
+rules it added (yours are kept) and, for the `claude` target, deletes the state file of the checkout
+where it runs, which switches every level off there; the file of the versions before this one
+(`.armadai/state/grants.yaml`) is not touched.
 
 **What a level covers, and what it does not.**
 
@@ -260,8 +273,8 @@ has twice (the autumn change) is the first one.
 
 **A worktree linked to a checkout.** When a pinned worktree's `.armadai` is a symbolic link to
 another checkout (see [Starter packs](starter-packs.md#pinning-a-pack-per-checkout)), `grant` and
-`revoke` write `.armadai/state/grants.yaml` of that other checkout, so the level is switched on
-for its session too, not only for the worktree's. `link` and `unlink` refuse in that setting;
+`revoke` act on the checkout where you type them: the level is switched on or off for that worktree
+only, never for the one its `.armadai` leads to. `link` and `unlink` refuse in that setting;
 `grant` and `revoke` do not.
 
 ## OpenCode

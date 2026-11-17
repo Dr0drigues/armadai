@@ -69,6 +69,8 @@ impl Env {
             .unwrap()
             .current_dir(self.root())
             .env("ARMADAI_CONFIG_DIR", self.dir.path().join("config"))
+            .env("CLAUDE_CONFIG_DIR", self.dir.path().join("claude"))
+            .env_remove("CLAUDE_CODE_PLUGIN_CACHE_DIR")
             .args(args)
             .output()
             .unwrap();
@@ -1417,14 +1419,14 @@ fn levels_add_their_hooks_and_guard_rules_and_unlink_removes_them() {
     );
     assert_eq!(
         s["permissions"],
-        serde_json::json!({"allow": ["Bash(ls)"], "deny": ["Bash(armadai grant *)", "Edit(/.armadai/state/grants.yaml)"]})
+        serde_json::json!({"allow": ["Bash(ls)"], "deny": ["Bash(armadai grant *)", "Edit(/.armadai/state/grants.yaml)", "Edit(//**/armadai/grants.yaml)"]})
     );
     assert!(
         out.contains("claude: policy grants: compiled (PermissionRequest hooks (armadai __claude-grant), one per rule; inactive until armadai grant)"),
         "{out}"
     );
     assert!(
-        out.contains("claude: grant state guard: compiled (deny rules Bash(armadai grant *) and Edit(/.armadai/state/grants.yaml) in .claude/settings.json)"),
+        out.contains("claude: grant state guard: compiled (deny rules Bash(armadai grant *), Edit(/.armadai/state/grants.yaml) and Edit(//**/armadai/grants.yaml) in .claude/settings.json)"),
         "{out}"
     );
     // the levels are dropped: the entries and the rules go, the user's stay
@@ -1456,6 +1458,8 @@ fn the_grant_hook_allows_only_while_a_level_is_on() {
             .unwrap()
             .args(["__claude-grant", "auto-until-mr"])
             .env("ARMADAI_CONFIG_DIR", env.dir.path().join("config"))
+            .env("CLAUDE_CONFIG_DIR", env.dir.path().join("claude"))
+            .env_remove("CLAUDE_CODE_PLUGIN_CACHE_DIR")
             .write_stdin(payload)
             .output()
             .unwrap();
@@ -1482,4 +1486,135 @@ fn the_grant_hook_allows_only_while_a_level_is_on() {
     // a state that does not read
     std::fs::write(&state, "version: [\n").unwrap();
     assert_eq!(call(push), "");
+}
+
+/// Two linked worktrees `a` and `b` of one repository, whose `.armadai` is a link to the
+/// folder of `grant_project`: one project, two checkouts. Returns the git dirs of `a`
+/// and `b`.
+#[cfg(unix)]
+fn two_worktrees(env: &Env) -> (PathBuf, PathBuf) {
+    let base = std::fs::canonicalize(env.dir.path()).unwrap();
+    let mut git_dirs = Vec::new();
+    for name in ["a", "b"] {
+        let gd = base.join("main/.git/worktrees").join(name);
+        std::fs::create_dir_all(&gd).unwrap();
+        let wt = base.join(name);
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(wt.join(".git"), format!("gitdir: {}\n", gd.display())).unwrap();
+        std::os::unix::fs::symlink(base.join("project/.armadai"), wt.join(".armadai")).unwrap();
+        git_dirs.push(gd);
+    }
+    let b = git_dirs.pop().unwrap();
+    (git_dirs.pop().unwrap(), b)
+}
+
+#[cfg(unix)]
+fn active_level_state() -> String {
+    let until = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+    let since = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+    format!(
+        "version: 1\nactive:\n  auto-until-mr:\n    since: \"{since}\"\n    expires_at: \"{until}\"\n"
+    )
+}
+
+/// The hook output for `command` called from `cwd`.
+#[cfg(unix)]
+fn grant_hook_from(env: &Env, cwd: &Path, command: &str) -> String {
+    let payload = serde_json::json!({
+        "session_id": "s", "cwd": cwd.to_string_lossy(),
+        "hook_event_name": "PermissionRequest", "tool_name": "Bash",
+        "tool_input": {"command": command},
+    })
+    .to_string();
+    let o = Command::cargo_bin("armadai")
+        .unwrap()
+        .args(["__claude-grant", "auto-until-mr"])
+        .env("ARMADAI_CONFIG_DIR", env.dir.path().join("config"))
+        .env("CLAUDE_CONFIG_DIR", env.dir.path().join("claude"))
+        .env_remove("CLAUDE_CODE_PLUGIN_CACHE_DIR")
+        .env("HOME", env.dir.path())
+        .write_stdin(payload)
+        .output()
+        .unwrap();
+    assert!(o.status.success());
+    String::from_utf8_lossy(&o.stdout).into_owned()
+}
+
+const ALLOW_OUT: &str = "{\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"decision\":{\"behavior\":\"allow\"}}}\n";
+
+/// A level opened in one worktree is not seen from another one that shares `.armadai`;
+/// a `.git` that does not lead to a git dir gives no opinion, even with a level active
+/// under the project (the file of the versions before this one).
+#[cfg(unix)]
+#[test]
+fn the_grant_hook_reads_the_state_of_the_checkout_of_its_cwd() {
+    let env = grant_project(GRANTS_MANIFEST);
+    let (git_a, _git_b) = two_worktrees(&env);
+    let base = std::fs::canonicalize(env.dir.path()).unwrap();
+    let push = "git push origin feature/x";
+    std::fs::create_dir_all(git_a.join("armadai")).unwrap();
+    std::fs::write(git_a.join("armadai/grants.yaml"), active_level_state()).unwrap();
+    assert_eq!(grant_hook_from(&env, &base.join("a"), push), ALLOW_OUT);
+    assert_eq!(grant_hook_from(&env, &base.join("b"), push), "");
+    // a worktree whose `.git` does not read, with the old file active under the project
+    let legacy = env.root().join(".armadai/state/grants.yaml");
+    std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+    std::fs::write(&legacy, active_level_state()).unwrap();
+    let broken = base.join("broken");
+    std::fs::create_dir_all(&broken).unwrap();
+    std::fs::write(broken.join(".git"), "").unwrap();
+    std::os::unix::fs::symlink(base.join("project/.armadai"), broken.join(".armadai")).unwrap();
+    assert_eq!(grant_hook_from(&env, &broken, push), "");
+    // control: outside git the old location is still the state
+    assert_eq!(grant_hook_from(&env, &env.root(), push), ALLOW_OUT);
+}
+
+/// A worktree without its own `.armadai` is policed through the main checkout (the
+/// project root is the main checkout), but its level is still its own: the state is in
+/// the git dir of the checkout where the call is made, not in the one of the root.
+#[cfg(unix)]
+#[test]
+fn the_grant_hook_of_a_worktree_without_armadai_reads_the_state_of_that_worktree() {
+    let env = grant_project(GRANTS_MANIFEST);
+    let base = std::fs::canonicalize(env.dir.path()).unwrap();
+    let main_git = env.root().join(".git");
+    let gd = main_git.join("worktrees/w");
+    std::fs::create_dir_all(&gd).unwrap();
+    std::fs::create_dir_all(base.join("w")).unwrap();
+    std::fs::write(base.join("w/.git"), format!("gitdir: {}\n", gd.display())).unwrap();
+    let push = "git push origin feature/x";
+    let wt = base.join("w");
+    // a level opened in the main checkout is not the worktree's
+    std::fs::create_dir_all(main_git.join("armadai")).unwrap();
+    std::fs::write(main_git.join("armadai/grants.yaml"), active_level_state()).unwrap();
+    assert_eq!(grant_hook_from(&env, &wt, push), "");
+    std::fs::create_dir_all(gd.join("armadai")).unwrap();
+    std::fs::write(gd.join("armadai/grants.yaml"), active_level_state()).unwrap();
+    assert_eq!(grant_hook_from(&env, &wt, push), ALLOW_OUT);
+}
+
+/// `unlink` removes the state of the checkout where it runs, leaves the state of another
+/// worktree, and leaves the file of the versions before this one.
+#[cfg(unix)]
+#[test]
+fn unlink_removes_the_grant_state_of_its_checkout_only() {
+    let env = grant_project(GRANTS_MANIFEST);
+    env.ok(&["link"]);
+    let (git_a, git_b) = two_worktrees(&env);
+    std::fs::write(
+        env.root().join(".git"),
+        format!("gitdir: {}\n", git_a.display()),
+    )
+    .unwrap();
+    let legacy = env.root().join(".armadai/state/grants.yaml");
+    std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+    std::fs::write(&legacy, "old\n").unwrap();
+    for gd in [&git_a, &git_b] {
+        std::fs::create_dir_all(gd.join("armadai")).unwrap();
+        std::fs::write(gd.join("armadai/grants.yaml"), active_level_state()).unwrap();
+    }
+    env.ok(&["unlink"]);
+    assert!(!git_a.join("armadai/grants.yaml").exists());
+    assert!(git_b.join("armadai/grants.yaml").exists());
+    assert_eq!(std::fs::read_to_string(&legacy).unwrap(), "old\n");
 }

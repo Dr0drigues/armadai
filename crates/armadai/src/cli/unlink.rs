@@ -35,10 +35,15 @@ pub fn execute(
     }
     // the permission levels switched on belong to the claude target's hooks
     if !dry_run && targets.iter().any(|t| t == "claude") {
-        match std::fs::remove_file(root.join(crate::claude_adapter::grant_hook::STATE_FILE)) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e).context("cannot remove .armadai/state/grants.yaml"),
+        // the state of this checkout; an unreadable `.git` leaves nothing to find
+        if let Ok(state) = crate::claude_adapter::grant_hook::state_path(&root, &root) {
+            match std::fs::remove_file(&state) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(e).with_context(|| format!("cannot remove {}", state.display()));
+                }
+            }
         }
     }
     for target_name in targets {

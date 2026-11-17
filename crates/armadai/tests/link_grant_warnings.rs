@@ -33,6 +33,8 @@ impl Env {
             .current_dir(self.root())
             .env("HOME", self.0.path().join("home"))
             .env("ARMADAI_CONFIG_DIR", self.0.path().join("config"))
+            .env("CLAUDE_CONFIG_DIR", self.0.path().join("claude"))
+            .env_remove("CLAUDE_CODE_PLUGIN_CACHE_DIR")
             .arg("link")
             .args(["--target", "claude"])
             .args(args)

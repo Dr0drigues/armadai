@@ -36,6 +36,8 @@ fn armadai(root: &Path, config: &Path, args: &[&str]) -> String {
         .unwrap()
         .current_dir(root)
         .env("ARMADAI_CONFIG_DIR", config)
+        .env("CLAUDE_CONFIG_DIR", config.join("claude"))
+        .env_remove("CLAUDE_CODE_PLUGIN_CACHE_DIR")
         .args(args)
         .output()
         .unwrap();
