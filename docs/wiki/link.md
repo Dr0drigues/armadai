@@ -137,7 +137,7 @@ What the target requires, from the documentation of Claude Code (`cross-session-
 line is replaced by ours, 5 seconds, since only one `statusLine` runs. That command first runs your
 user `statusLine` (`$CLAUDE_CONFIG_DIR/settings.json`, else `~/.claude/settings.json`; a command of
 the `command` type, not ours) with `sh -c`, the same JSON on stdin and a limit of 3 seconds, then
-prints its output and the flow line on the next row. Failing (non-zero), missing or too slow, your
+prints its output and the flow line on the next row. Failing (non-zero), too slow or with its command missing, your
 bar shows nothing and the flow line ends with two spaces and the marker `[status bar failed]`
 (the marker alone without a flow line); with no user bar there is no marker; the exit code is
 always 0. Only a bar that goes over the 3 seconds has its whole process group killed, so no child of it lingers; a bar that ends in
@@ -149,7 +149,7 @@ line when there is one`.
 Cost, measured on 2026-11-12 with the development binary, `{}` on stdin, an isolated `HOME`: 20
 runs each without a user bar (a median of 11 ms, the first, cold run 699 ms) and with a bar that
 prints `bar` (a median of 25 ms, about 14 ms more); with a bar that sleeps 5 s, 3 runs only, a median
-of 1016 ms (the longest 1026 ms), the limit of the time (1 s) plus about 16 ms, never the 5 s (measured before the limit went to 3 s, not repeated). A real bar such as ccstatusline was not measured.
+of 1016 ms (the longest 1026 ms), the 1 s limit then in force plus about 16 ms, never the 5 s (measured before the limit went to 3 s, not repeated). A real bar such as ccstatusline was not measured.
 
 **Commands use `.claude/commands/`**, the format Claude Code documents as merged into skills
 whose files "keep working" (skills page, read on 2026-10-21): a legacy format that may be
