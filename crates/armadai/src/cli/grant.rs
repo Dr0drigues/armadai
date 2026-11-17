@@ -22,7 +22,7 @@ use chrono::{DateTime, Duration, NaiveTime, TimeZone, Utc};
 use serde_json::Value;
 
 use crate::claude_adapter::grant_hook::{
-    ActiveGrant, GrantState, STATE_FILE, marked_since_in_logs, read_state,
+    ActiveGrant, GrantState, marked_since_in_logs, read_state, state_path,
 };
 
 /// What ends a level, as the user typed it.
@@ -359,24 +359,24 @@ pub fn markers_installed(root: &Path) -> bool {
 }
 
 /// Write the state atomically: a temporary file beside it, then a rename.
-pub fn write_state(root: &Path, state: &GrantState) -> anyhow::Result<()> {
-    let path = root.join(STATE_FILE);
+pub fn write_state(path: &Path, state: &GrantState) -> anyhow::Result<()> {
     let dir = path.parent().expect("the state file has a folder");
     std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     let text = armadai_model::yaml::to_string(state)?;
     let tmp = dir.join(format!("grants.yaml.tmp-{}", std::process::id()));
     std::fs::write(&tmp, text).with_context(|| format!("cannot write {}", tmp.display()))?;
-    std::fs::rename(&tmp, &path).with_context(|| format!("cannot write {}", path.display()))?;
+    std::fs::rename(&tmp, path).with_context(|| format!("cannot write {}", path.display()))?;
     Ok(())
 }
 
 /// The state on disk: empty when there is no file. A file that does not read (damaged, or
 /// of a later version) is an error, never silently replaced.
-fn load_state(root: &Path) -> anyhow::Result<GrantState> {
-    match read_state(root) {
+fn load_state(path: &Path) -> anyhow::Result<GrantState> {
+    match read_state(path) {
         Some(s) => Ok(s),
-        None if root.join(STATE_FILE).exists() => bail!(
-            "{STATE_FILE} does not read (damaged, or written by a later version); delete it and run the command again"
+        None if path.exists() => bail!(
+            "{} does not read (damaged, or written by a later version); delete it and run the command again",
+            path.display()
         ),
         None => Ok(GrantState::default()),
     }
@@ -401,6 +401,18 @@ fn open_project() -> anyhow::Result<(std::path::PathBuf, Project)> {
     }
 }
 
+/// The state file of the checkout where the command is typed; a `.git` that does not read
+/// refuses the command (a guess could open a level for another checkout).
+fn checkout_state_path(root: &Path, command: &str) -> anyhow::Result<std::path::PathBuf> {
+    let cwd = std::env::current_dir()?;
+    state_path(&cwd, root).map_err(|dot_git| {
+        anyhow::anyhow!(
+            "{command} refused: {} does not lead to a git directory, where this checkout keeps its grant levels; repair it (git worktree repair) and run the command again",
+            dot_git.display()
+        )
+    })
+}
+
 pub fn execute_grant(
     level: Option<String>,
     until: Option<String>,
@@ -408,7 +420,8 @@ pub fn execute_grant(
     at: Option<String>,
 ) -> anyhow::Result<()> {
     let (root, project) = open_project()?;
-    let mut state = load_state(&root)?;
+    let path = checkout_state_path(&root, "grant")?;
+    let mut state = load_state(&path)?;
     let now = chrono::Local::now();
     let Some(level) = level else {
         let ended = |step: &str, since| marked_since_in_logs(&root, step, since);
@@ -437,17 +450,18 @@ pub fn execute_grant(
     };
     let (active, line) = plan_grant(&project, &level, &bounds, &env).map_err(anyhow::Error::msg)?;
     state.active.insert(level, active);
-    write_state(&root, &state)?;
+    write_state(&path, &state)?;
     anstream::println!("{line}");
     Ok(())
 }
 
 pub fn execute_revoke(level: Option<String>) -> anyhow::Result<()> {
     let (root, _) = open_project()?;
-    let state = load_state(&root)?;
+    let path = checkout_state_path(&root, "revoke")?;
+    let state = load_state(&path)?;
     let (next, line) = plan_revoke(&state, level.as_deref()).map_err(anyhow::Error::msg)?;
     if next != state {
-        write_state(&root, &next)?;
+        write_state(&path, &next)?;
     }
     anstream::println!("{line}");
     Ok(())
@@ -772,12 +786,13 @@ mod tests {
                 until_step: Some("evolution/publish".into()),
             },
         );
-        write_state(dir.path(), &state).unwrap();
-        assert_eq!(read_state(dir.path()), Some(state));
-        let text = std::fs::read_to_string(dir.path().join(STATE_FILE)).unwrap();
+        let path = dir.path().join("armadai/grants.yaml");
+        write_state(&path, &state).unwrap();
+        assert_eq!(read_state(&path), Some(state));
+        let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.starts_with("version: 1\n"), "{text}");
         // nothing is left beside it
-        let left: Vec<_> = std::fs::read_dir(dir.path().join(".armadai/state"))
+        let left: Vec<_> = std::fs::read_dir(dir.path().join("armadai"))
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
@@ -787,11 +802,11 @@ mod tests {
     #[test]
     fn a_state_that_does_not_read_is_refused_not_replaced() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(load_state(dir.path()).unwrap(), GrantState::default());
-        let path = dir.path().join(STATE_FILE);
+        let path = dir.path().join("armadai/grants.yaml");
+        assert_eq!(load_state(&path).unwrap(), GrantState::default());
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "version: 2\nactive: {}\n").unwrap();
-        assert!(load_state(dir.path()).is_err());
+        assert!(load_state(&path).is_err());
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "version: 2\nactive: {}\n"

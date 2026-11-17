@@ -67,7 +67,7 @@ impl Env {
     }
 
     fn state(&self) -> Option<String> {
-        std::fs::read_to_string(self.root().join(".armadai/state/grants.yaml")).ok()
+        std::fs::read_to_string(self.root().join(".git/armadai/grants.yaml")).ok()
     }
 }
 

@@ -84,7 +84,7 @@ checkout; link writes through it`. `link` refuses a `.claude` leading out with o
 | automation | `.claude/settings.json` hooks: `session-start` -> `SessionStart`, `session-end` -> `SessionEnd`, `before-tool` -> `PreToolUse`, `after-tool` -> `PostToolUse`, `on-prompt` -> `UserPromptSubmit`, `on-stop` -> `Stop`; `native.claude.matcher` is the group matcher, other `native.claude` keys go into the handler |
 | `policy.delegation: strict` | a `PreToolUse` hook on `Agent|Task` running `armadai __claude-policy-gate` (see [Policy gate](policy-gate.md)) |
 | a flow | with the flows, async hooks running `armadai __record-flow-event` (`SubagentStart`, `SubagentStop`, `PreToolUse` on `SubagentHandback` and on `Agent|Task` (the delegation marker only), `UserPromptExpansion` (a typed command, its name only)), a `### Marking delegations` section in the root `CLAUDE.md` block (the form of the `[flow/step#lot]` marker and of the `REF:` line; under `strict`, a sentence saying the gate refuses a delegation without it) and, for an agent holding a step with `states:` or a failure path, a closing `STATE: <state>` instruction in its file (OpenCode agents get it too); report `flow recording: compiled (hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback, Agent|Task), UserPromptExpansion in .claude/settings.json)`. `.armadai/.gitignore` gets `state/`. See [Flow status](flow-status.md) |
-| `policy.grants` | per rule of each level, a `PermissionRequest` hook (matcher `Bash`, `if` the rule) running `armadai __claude-grant <level>`, and two `deny` rules owned by link, `Bash(armadai grant *)` and `Edit(/.armadai/state/grants.yaml)`. Reports `policy grants: compiled (PermissionRequest hooks (armadai __claude-grant), one per rule; inactive until armadai grant)` and `grant state guard: compiled (deny rules Bash(armadai grant *) and Edit(/.armadai/state/grants.yaml) in .claude/settings.json)`; other targets `not-compiled (Claude Code only)`. See [Permission levels](#permission-levels-grant) |
+| `policy.grants` | per rule of each level, a `PermissionRequest` hook (matcher `Bash`, `if` the rule) running `armadai __claude-grant <level>`, and three `deny` rules owned by link, `Bash(armadai grant *)`, `Edit(/.armadai/state/grants.yaml)` and `Edit(//**/armadai/grants.yaml)`. Reports `policy grants: compiled (PermissionRequest hooks (armadai __claude-grant), one per rule; inactive until armadai grant)` and `grant state guard: compiled (deny rules Bash(armadai grant *), Edit(/.armadai/state/grants.yaml) and Edit(//**/armadai/grants.yaml) in .claude/settings.json)`; other targets `not-compiled (Claude Code only)`. See [Permission levels](#permission-levels-grant) |
 | `sessions.journal: true`, `journal:` of an agent | the lot-journal instructions, see [below](#the-lot-journal-and-the-session-link); reports `journal` and `agent <id> journal`; other targets `not-compiled (Claude Code only)` |
 | `session_link` of a flow | a `### Sessions` section in the root `CLAUDE.md` block; report `flow <id> session link: approximated`; other targets `not-compiled (Claude Code only)` |
 | `native.claude` of project.yaml | top-level keys of `settings.json` |
@@ -221,10 +221,16 @@ A level with no `Bash(...)` rule has no hook to answer anything: `armadai grant`
 **What `link` writes.** For each `Bash(...)` rule, a `PermissionRequest` hook with matcher `Bash` and `if` set to
 the rule, running `armadai __claude-grant <level>` (hidden command: it reads the hook JSON on stdin,
 answers `allow` only while the level is active and the call is covered, and prints nothing
-otherwise, which leaves Claude Code's own prompt). Two `deny` rules guard the state:
-`Bash(armadai grant *)` and `Edit(/.armadai/state/grants.yaml)`. `unlink` removes the hooks and the
-two rules it added (yours are kept) and, for the `claude` target, deletes
-`.armadai/state/grants.yaml`, which switches every level off.
+otherwise, which leaves Claude Code's own prompt). Three `deny` rules guard the state:
+`Bash(armadai grant *)`, `Edit(/.armadai/state/grants.yaml)` (the state outside git) and
+`Edit(//**/armadai/grants.yaml)` (the state under a git directory, which is outside the project
+folder that a `/path` rule is anchored to; `//` anchors at the filesystem root, see
+[the permissions page](https://code.claude.com/docs/en/permissions)). The state of a checkout is
+`<git dir>/armadai/grants.yaml`, and the hook of a checkout reads that one only; when the `.git` of the
+checkout does not lead to a git directory the hook gives no opinion. `unlink` removes the hooks and the
+rules it added (yours are kept) and, for the `claude` target, deletes the state file of the checkout
+where it runs, which switches every level off there; the file of the versions before this one
+(`.armadai/state/grants.yaml`) is not touched.
 
 **What a level covers, and what it does not.**
 

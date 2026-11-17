@@ -173,8 +173,8 @@ impl Compiler for ClaudeCompiler {
                 "grant state guard",
                 Status::Compiled,
                 Some(
-                    "deny rules Bash(armadai grant *) and Edit(/.armadai/state/grants.yaml) in \
-                     .claude/settings.json",
+                    "deny rules Bash(armadai grant *), Edit(/.armadai/state/grants.yaml) and \
+                     Edit(//**/armadai/grants.yaml) in .claude/settings.json",
                 ),
             );
         }
@@ -819,7 +819,7 @@ mod tests {
             l("grant state guard"),
             (
                 Status::Compiled,
-                Some("deny rules Bash(armadai grant *) and Edit(/.armadai/state/grants.yaml) in .claude/settings.json".into())
+                Some("deny rules Bash(armadai grant *), Edit(/.armadai/state/grants.yaml) and Edit(//**/armadai/grants.yaml) in .claude/settings.json".into())
             )
         );
         let plan = compile(&[M, DEV]).unwrap();

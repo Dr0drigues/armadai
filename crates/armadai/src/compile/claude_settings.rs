@@ -147,10 +147,16 @@ pub fn hook_entries(project: &Project) -> anyhow::Result<Vec<HookEntry>> {
     Ok(out)
 }
 
-/// The two `deny` rules that keep an agent from switching a level on itself (D15, D16:
-/// a deny rule covers the call Claude usually makes, it is not a security boundary).
-pub const GRANT_GUARD_RULES: [&str; 2] =
-    ["Bash(armadai grant *)", "Edit(/.armadai/state/grants.yaml)"];
+/// The `deny` rules that keep an agent from switching a level on itself (D15, D16: a deny
+/// rule covers the call Claude usually makes, it is not a security boundary). The second
+/// guards the state outside git; the third, anchored at the filesystem root (`//`, the
+/// permissions page, 2026-11-16), the one under any git dir, which is outside the
+/// project folder that `/path` rules are anchored to.
+pub const GRANT_GUARD_RULES: [&str; 3] = [
+    "Bash(armadai grant *)",
+    "Edit(/.armadai/state/grants.yaml)",
+    "Edit(//**/armadai/grants.yaml)",
+];
 
 /// One `PermissionRequest` entry per (level, `Bash` rule), levels and rules in order: the
 /// matcher is the rule's tool name, `if` the rule itself (best effort, hooks doc D2-D4),
@@ -1140,13 +1146,13 @@ mod tests {
     }
 
     #[test]
-    fn levels_add_the_two_guard_rules_after_the_projects_own_denies() {
+    fn levels_add_the_three_guard_rules_after_the_projects_own_denies() {
         let (_d, p) = grants_project(
             "native:\n  claude:\n    permissions:\n      deny: [\"Bash(curl *)\"]\n",
         );
         assert_eq!(
             native_settings(&p).unwrap()["permissions"],
-            json!({"deny": ["Bash(curl *)", "Bash(armadai grant *)", "Edit(/.armadai/state/grants.yaml)"]})
+            json!({"deny": ["Bash(curl *)", "Bash(armadai grant *)", "Edit(/.armadai/state/grants.yaml)", "Edit(//**/armadai/grants.yaml)"]})
         );
         // a guard rule the project already denies is not added twice
         let (_d, p) = grants_project(
@@ -1154,13 +1160,13 @@ mod tests {
         );
         assert_eq!(
             native_settings(&p).unwrap()["permissions"],
-            json!({"deny": ["Bash(armadai grant *)", "Edit(/.armadai/state/grants.yaml)"]})
+            json!({"deny": ["Bash(armadai grant *)", "Edit(/.armadai/state/grants.yaml)", "Edit(//**/armadai/grants.yaml)"]})
         );
         // no native permissions: the guard alone
         let (_d, p) = grants_project("");
         assert_eq!(
             native_settings(&p).unwrap()["permissions"],
-            json!({"deny": ["Bash(armadai grant *)", "Edit(/.armadai/state/grants.yaml)"]})
+            json!({"deny": ["Bash(armadai grant *)", "Edit(/.armadai/state/grants.yaml)", "Edit(//**/armadai/grants.yaml)"]})
         );
     }
 
@@ -1181,12 +1187,45 @@ mod tests {
         );
         assert_eq!(
             v["permissions"]["deny"],
-            json!(["Bash(armadai grant *)", "Edit(/.armadai/state/grants.yaml)"])
+            json!([
+                "Bash(armadai grant *)",
+                "Edit(/.armadai/state/grants.yaml)",
+                "Edit(//**/armadai/grants.yaml)"
+            ])
         );
         assert_eq!(
             value(&remove_entries(&merged, &owned).unwrap()),
             value(USER)
         );
+    }
+
+    #[test]
+    fn a_manifest_of_the_two_rule_version_gains_the_third_guard_rule() {
+        let (_d, p) = grants_project("");
+        let hooks = hook_entries(&p).unwrap();
+        let keys = native_settings(&p).unwrap();
+        let (merged, owned, _) =
+            merge_settings(Some(USER), &hooks, &keys, &Owned::default(), false).unwrap();
+        // what the previous version wrote: the same file without the third rule, and a
+        // manifest that owns the first two
+        let two = ["Bash(armadai grant *)", "Edit(/.armadai/state/grants.yaml)"];
+        let mut old_doc = value(&merged);
+        old_doc["permissions"]["deny"] = json!(two);
+        let mut old_owned = owned.clone();
+        let owned_deny = old_owned
+            .permissions
+            .array_entries
+            .get_mut("permissions.deny")
+            .expect("the deny rules are owned entry by entry");
+        assert_eq!(owned_deny.len(), 3);
+        owned_deny.pop();
+        let (relinked, now, _) =
+            merge_settings(Some(&old_doc.to_string()), &hooks, &keys, &old_owned, false).unwrap();
+        assert_eq!(
+            value(&relinked)["permissions"]["deny"],
+            json!([two[0], two[1], GRANT_GUARD_RULES[2]])
+        );
+        assert_eq!(now.permissions, owned.permissions);
     }
 
     #[test]

@@ -43,6 +43,22 @@ pub(crate) fn git_dir_of(dir: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Like `git_dir_of`, but tells "outside git" (`Ok(None)`) from a `.git` that does not lead
+/// to a git dir (`Err(that .git)`: an empty file, no `gitdir:` line, a dangling link).
+pub(crate) fn git_dir_checked(dir: &Path) -> Result<Option<PathBuf>, PathBuf> {
+    if let Some(gd) = git_dir_of(dir) {
+        return Ok(Some(gd));
+    }
+    match dir
+        .ancestors()
+        .map(|d| d.join(".git"))
+        .find(|g| g.symlink_metadata().is_ok())
+    {
+        Some(dot_git) => Err(dot_git),
+        None => Ok(None),
+    }
+}
+
 /// The main checkout behind a linked worktree; `None` in a main checkout, in a
 /// submodule or outside git. A worktree's git dir is `<repo>/.git/worktrees/<name>`.
 pub(crate) fn main_checkout_of(dir: &Path) -> Option<PathBuf> {
@@ -74,6 +90,37 @@ mod tests {
             Some(t.path().join("m/.git"))
         );
         assert_eq!(main_checkout_of(&t.path().join("m")), None);
+    }
+
+    #[test]
+    fn git_dir_checked_tells_outside_git_from_a_dot_git_that_leads_nowhere() {
+        let t = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(t.path()).unwrap();
+        // a folder
+        fs::create_dir_all(root.join("m/.git")).unwrap();
+        assert_eq!(
+            git_dir_checked(&root.join("m")),
+            Ok(Some(root.join("m/.git")))
+        );
+        // a valid `gitdir:` file, from a subfolder
+        let gd = root.join("main/.git/worktrees/wt");
+        dotgit(&root.join("wt"), &format!("gitdir: {}\n", gd.display()));
+        fs::create_dir_all(root.join("wt/src")).unwrap();
+        assert_eq!(git_dir_checked(&root.join("wt/src")), Ok(Some(gd)));
+        // an empty file and a file without a `gitdir:` line
+        dotgit(&root.join("empty"), "");
+        assert_eq!(
+            git_dir_checked(&root.join("empty")),
+            Err(root.join("empty/.git"))
+        );
+        dotgit(&root.join("junk"), "not a gitdir line\n");
+        assert_eq!(
+            git_dir_checked(&root.join("junk")),
+            Err(root.join("junk/.git"))
+        );
+        // outside git
+        fs::create_dir_all(root.join("free")).unwrap();
+        assert_eq!(git_dir_checked(&root.join("free")), Ok(None));
     }
 
     #[test]
