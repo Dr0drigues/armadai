@@ -208,7 +208,7 @@ mod hierarchical_tests {
         let yaml = r#"
 enabled: true
 pattern: hierarchical
-coordinator: boulanger-architect
+coordinator: shop-architect
 teams:
   - lead: java-lead
     agents:
@@ -226,7 +226,7 @@ consensus_threshold: 0.85
         let config: OrchestrationConfig = armadai_model::yaml::from_str(yaml).unwrap();
         assert!(config.enabled);
         assert_eq!(config.pattern, OrchestrationPattern::Hierarchical);
-        assert_eq!(config.coordinator.as_deref(), Some("boulanger-architect"));
+        assert_eq!(config.coordinator.as_deref(), Some("shop-architect"));
         assert_eq!(config.teams.len(), 2);
         assert_eq!(config.teams[0].lead.as_deref(), Some("java-lead"));
         assert_eq!(config.teams[0].agents.len(), 2);
