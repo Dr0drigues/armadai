@@ -78,7 +78,8 @@ enum JournalDir {
 /// effective view: `journal` must keep working on a project that does not validate, and a key
 /// set by a pack is not read). A relative value starts from the parent of the resolved
 /// `.armadai` (links followed), so worktrees sharing one `.armadai` agree on the folder.
-/// Anything unreadable or of another shape means the default folder.
+/// A file that does not read, or a `sessions` of another shape, means the default folder; a
+/// `journal_dir` that `validate` refuses (bad text, a list, a map) is `Invalid`.
 fn journal_dir(root: &Path) -> JournalDir {
     /// Only the key: read as the model reads it (a number is its text), whatever else is wrong.
     #[derive(Deserialize)]
