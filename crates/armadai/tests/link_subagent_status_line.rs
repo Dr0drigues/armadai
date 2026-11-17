@@ -513,6 +513,16 @@ fn a_registry_that_leads_away_from_the_plugin_is_warned_and_link_still_succeeds(
 }
 
 #[test]
+fn a_registry_that_leads_away_gives_no_line_when_the_plugin_is_not_written() {
+    let env = Env::new(on(), &[FLOW]);
+    env.put_settings(r#"{"enabledPlugins": {"armadai-ui@armadai-ui": false}}"#);
+    env.put_registry(&registry_to(&env.0.path().join("gone")));
+    let report = env.ok(&["link", "--target", "claude"]);
+    assert_eq!(marketplace_lines(&report), Vec::<&str>::new());
+    assert!(!env.root().join(PLUGIN).exists());
+}
+
+#[test]
 fn a_registry_that_is_absent_unreadable_or_the_plugins_own_gives_no_line() {
     let env = Env::new(on(), &[FLOW]);
     env.put_registry("{ not json");
