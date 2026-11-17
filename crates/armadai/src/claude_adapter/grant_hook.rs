@@ -960,4 +960,16 @@ mod tests {
         std::os::unix::fs::symlink(root.path().join(crate::pack::lock::LOCK), &pin).unwrap();
         assert!(project_rules(&cwd_payload(root.path()), "ops").is_none());
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_git_that_leads_nowhere_gives_the_grant_hook_no_rules_not_the_committed_ones() {
+        use crate::claude_adapter::policy_gate::pinned_fixture::*;
+        let iso = armadai_core::test_support::IsolatedConfigDir::enter();
+        grants_pack(&registry_of(iso.config_dir()));
+        let parent = pinned_project();
+        let (dang, _) = dangling_checkout(parent.path());
+        // the committed lock (C2) grants `Bash(ls *)`: a fallback would read it
+        assert!(project_rules(&cwd_payload(&dang), "ops").is_none());
+    }
 }

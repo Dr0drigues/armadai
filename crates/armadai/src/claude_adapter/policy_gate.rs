@@ -307,6 +307,30 @@ pub(crate) mod pinned_fixture {
     pub fn registry_of(config: &Path) -> PathBuf {
         config.join("registry")
     }
+
+    /// A checkout `<parent>/dang` of the same pack whose `.git` is a dangling link, under
+    /// `parent` (which carries a pin at `C1`). Its committed lock, at `C2`, is the only
+    /// view a fallback could read; returns the checkout and the text a refusal carries.
+    #[cfg(unix)]
+    pub fn dangling_checkout(parent: &Path) -> (PathBuf, String) {
+        let dang = parent.join("dang");
+        put(
+            &dang,
+            ".armadai/project.yaml",
+            "pack: { name: demo, source: 'https://example.com/packs.git', version: latest }\n",
+        );
+        std::fs::write(
+            dang.join(lock::LOCK),
+            armadai_model::yaml::to_string(&lock_at("1.4.0", C2)).unwrap(),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(parent.join("nowhere"), dang.join(".git")).unwrap();
+        let why = format!(
+            "{} does not lead to a git directory, where this checkout keeps its pack pin; repair it (git worktree repair) and run the command again",
+            dang.join(".git").display()
+        );
+        (dang, why)
+    }
 }
 
 #[cfg(test)]
@@ -844,6 +868,23 @@ mod tests {
         assert!(
             r.ends_with("is a symbolic link; it is not read through"),
             "{r}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_git_that_leads_nowhere_is_denied_by_the_gate_not_read_from_the_committed_lock() {
+        let iso = armadai_core::test_support::IsolatedConfigDir::enter();
+        two_snapshots(&pinned_fixture::registry_of(iso.config_dir()));
+        let parent = pinned_fixture::pinned_project();
+        let (dang, why) = pinned_fixture::dangling_checkout(parent.path());
+        // the committed lock (C2) holds `review` with `rev`: read as such, the call is allowed
+        let r = reason(decide(&marked("", "rev", "[f/review]", &dang)));
+        assert_eq!(
+            r,
+            format!(
+                "the project's pack cannot be read, so the delegation policy cannot be checked: {why}"
+            )
         );
     }
 }
