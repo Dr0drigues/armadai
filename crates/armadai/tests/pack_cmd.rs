@@ -2753,3 +2753,478 @@ fn add_under_a_pin_is_refused_before_the_network() {
     );
     assert!(!witness.exists(), "git or curl was started");
 }
+
+// --- standards packs: `pack add --standards`, `pack update`, `pack sync` ---
+
+const DEV_SLOT: &str = "---\ndescription: d\nslots: [code-standards]\n---\nDev\n";
+
+impl Env {
+    /// The standards pack `name` at `version` in an origin of its own (tag `<name>-v<version>`),
+    /// with one skill `<name>-rule` that fills `code-standards`. Returns its URL and commit.
+    fn std_release(&self, name: &str, version: &str) -> (String, String) {
+        let o = self.dir.path().join(format!("origin-{name}"));
+        if !o.join(".git").exists() {
+            std::fs::create_dir_all(&o).unwrap();
+            git(&o, &["init", "-q"]);
+        }
+        put(
+            &o,
+            &format!("{name}/pack.yaml"),
+            &format!("format: 1\nname: {name}\nkind: standards\ndescription: d\n"),
+        );
+        put(
+            &o,
+            &format!("{name}/skills/{name}-rule/SKILL.md"),
+            &format!(
+                "---\nname: {name}-rule\ndescription: d\nmetadata:\n  armadai-slot: code-standards\n---\nrule {version}\n"
+            ),
+        );
+        put(
+            &o,
+            "armadai-packs.yaml",
+            &format!(
+                "format: 1\npacks:\n  - name: {name}\n    path: {name}\n    version: {version}\n"
+            ),
+        );
+        git(&o, &["add", "-A"]);
+        git(&o, &["commit", "-qm", version]);
+        git(&o, &["tag", &format!("{name}-v{version}")]);
+        (
+            format!("file://{}", o.display()),
+            git(&o, &["rev-parse", "HEAD"]),
+        )
+    }
+
+    /// A project of its own agent `dev`, which declares the slot the standards fill.
+    fn std_project(&self) {
+        put(
+            &self.root(),
+            ".armadai/project.yaml",
+            "schema_version: 1\n# mine\n",
+        );
+        put(&self.root(), ".armadai/agents/dev.md", DEV_SLOT);
+    }
+
+    fn snapshot(&self, url: &str, name: &str, commit: &str) -> PathBuf {
+        let key = armadai_core::registries::cache_key(url);
+        (self.config().join("registry/packs"))
+            .join(key)
+            .join(name)
+            .join(commit)
+    }
+}
+
+fn std_entry(url: &str, name: &str, version: &str, commit: &str) -> String {
+    format!(
+        "- pack: {name}\n  source: {url}\n  resolved:\n    version: \"{version}\"\n    tag: {name}-v{version}\n    commit: {commit}\n"
+    )
+}
+
+#[test]
+fn add_standards_writes_the_entry_the_lock_and_links() {
+    let env = Env::new();
+    env.std_project();
+    let (u1, c1) = env.std_release("alpha-std", "1.0.0");
+    let (u2, c2) = env.std_release("beta-std", "2.0.0");
+    env.registries(&[&u1, &u2]);
+    let r = env.run(&["pack", "add", "alpha-std", "--standards"], &[]);
+    ok(&r);
+    let first = format!(
+        "schema_version: 1\n# mine\nstandards:\n  - name: alpha-std\n    source: '{u1}'\n    version: '^1.0.0'\n"
+    );
+    assert_eq!(env.text(".armadai/project.yaml"), first);
+    assert!(
+        r.out_has(&format!(
+            "Added standards alpha-std 1.0.0 ({}): .armadai/project.yaml (version: ^1.0.0) and .armadai/pack.lock",
+            id12(&c1)
+        )),
+        "{}",
+        r.out
+    );
+    assert!(
+        r.out_has(&format!(
+            "claude: standards alpha-std: compiled (1.0.0 ({}), from the cache)",
+            id12(&c1)
+        )),
+        "{}",
+        r.out
+    );
+    // a key after the block and a comment of the user's: the second entry goes into the block
+    put(
+        &env.root(),
+        ".armadai/project.yaml",
+        &format!("{first}targets: [claude]\n# trailing\n"),
+    );
+    ok(&env.run(&["pack", "add", "beta-std@^2", "--standards"], &[]));
+    assert_eq!(
+        env.text(".armadai/project.yaml"),
+        format!(
+            "{first}  - name: beta-std\n    source: '{u2}'\n    version: '^2'\ntargets: [claude]\n# trailing\n"
+        )
+    );
+    assert_eq!(
+        env.text(".armadai/pack.lock"),
+        format!(
+            "format: 1\nstandards:\n{}{}",
+            std_entry(&u1, "alpha-std", "1.0.0", &c1),
+            std_entry(&u2, "beta-std", "2.0.0", &c2)
+        )
+    );
+    assert!(!env.config().join("pack-referents.yaml").exists());
+}
+
+#[test]
+fn add_standards_refuses_a_standards_key_that_is_not_a_block_list() {
+    let env = Env::new();
+    let (u1, _) = env.std_release("alpha-std", "1.0.0");
+    env.registries(&[&u1]);
+    for body in [
+        "standards: []\n".to_string(),
+        format!("standards: [ {{ name: other, source: '{u1}', version: '^1' }} ]\n"),
+        "standards:\ntargets: [claude]\n".to_string(),
+    ] {
+        let text = format!("schema_version: 1\n{body}");
+        put(&env.root(), ".armadai/project.yaml", &text);
+        let r = env.run(&["pack", "add", "alpha-std", "--standards"], &[]);
+        assert_eq!(r.code, Some(1), "{body}{}{}", r.out, r.err);
+        assert!(
+            r.err_has("Error: .armadai/project.yaml has a standards: key that pack add cannot extend (not a block list): add the entry by hand, then run `armadai pack update`"),
+            "{}",
+            r.err
+        );
+        assert_eq!(env.text(".armadai/project.yaml"), text);
+        assert!(!env.root().join(".armadai/pack.lock").exists());
+    }
+}
+
+#[test]
+fn add_standards_twice_is_refused() {
+    let env = Env::new();
+    env.std_project();
+    let (u1, _) = env.std_release("alpha-std", "1.0.0");
+    env.registries(&[&u1]);
+    ok(&env.run(&["pack", "add", "alpha-std", "--standards"], &[]));
+    let (yaml, lock) = (env.text(".armadai/project.yaml"), env.lock_bytes());
+    let r = env.run(&["pack", "add", "alpha-std", "--standards"], &[]);
+    assert_eq!(r.code, Some(1), "{}{}", r.out, r.err);
+    assert!(
+        r.err_has("Error: .armadai/project.yaml already references standards alpha-std: use `armadai pack update`"),
+        "{}",
+        r.err
+    );
+    assert_eq!(env.text(".armadai/project.yaml"), yaml);
+    assert_eq!(env.lock_bytes(), lock);
+}
+
+#[test]
+fn add_standards_of_a_team_pack_is_refused() {
+    let env = Env::new();
+    env.std_project();
+    env.native("1.1.0", &[], &[]);
+    env.registries(&[&env.url()]);
+    let r = env.run(&["pack", "add", "demo", "--standards"], &[]);
+    assert_eq!(r.code, Some(1), "{}{}", r.out, r.err);
+    assert!(
+        r.err
+            .lines()
+            .any(|l| l.ends_with(": error[standards-wrong-kind]: standards demo is a team pack (its pack.yaml has no kind: standards): reference it with pack:, not standards:")),
+        "{}",
+        r.err
+    );
+    assert!(
+        r.err_has(
+            "Error: standards demo 1.1.0 would make the project invalid; nothing was changed"
+        ),
+        "{}",
+        r.err
+    );
+    assert_eq!(
+        env.text(".armadai/project.yaml"),
+        "schema_version: 1\n# mine\n"
+    );
+    assert!(!env.root().join(".armadai/pack.lock").exists());
+}
+
+/// `demo` (team) 1.0.0, `alpha-std` 2.0.0 and `beta-std` 1.0.0 added, in that order.
+fn team_and_two_standards() -> (Env, [(String, String); 2]) {
+    let env = Env::new();
+    env.std_project();
+    env.release("1.0.0", &[], &[]);
+    let a = env.std_release("alpha-std", "2.0.0");
+    let b = env.std_release("beta-std", "1.0.0");
+    env.registries(&[&env.url(), &a.0, &b.0]);
+    ok(&env.run(&["pack", "add", "demo"], &[]));
+    ok(&env.run(&["pack", "add", "alpha-std", "--standards"], &[]));
+    ok(&env.run(&["pack", "add", "beta-std", "--standards"], &[]));
+    (env, [a, b])
+}
+
+#[test]
+fn update_moves_every_standards_lock() {
+    let (env, [(ua, ca), (ub, cb1)]) = team_and_two_standards();
+    let before = env.lock_bytes();
+    let c2 = env.release("1.1.0", &[], &[]);
+    let (_, cb2) = env.std_release("beta-std", "1.1.0");
+    let r = env.run(&["pack", "update"], &[]);
+    ok(&r);
+    for line in [
+        format!(
+            "Pack demo: 1.0.0 -> 1.1.0 ({}), .armadai/pack.lock updated",
+            id12(&c2)
+        ),
+        format!("Standards alpha-std is up to date: 2.0.0 ({})", id12(&ca)),
+        format!(
+            "Standards beta-std: 1.0.0 -> 1.1.0 ({}), .armadai/pack.lock updated",
+            id12(&cb2)
+        ),
+    ] {
+        assert!(r.out_has(&line), "no {line:?} in\n{}", r.out);
+    }
+    assert_ne!(env.lock_bytes(), before);
+    assert_eq!(
+        env.text(".armadai/pack.lock"),
+        format!(
+            "{}standards:\n{}{}",
+            team_lock(&env.url(), "1.1.0", &c2),
+            std_entry(&ua, "alpha-std", "2.0.0", &ca),
+            std_entry(&ub, "beta-std", "1.1.0", &cb2)
+        )
+    );
+    assert_ne!(cb1, cb2);
+    let linked = env.run(&["link"], &[]);
+    ok(&linked);
+    assert!(
+        linked.out_has(&format!(
+            "claude: standards beta-std: compiled (1.1.0 ({}), from the cache)",
+            id12(&cb2)
+        )),
+        "{}",
+        linked.out
+    );
+}
+
+/// A project on `alpha-std` 1.0.0 alone (no team pack), and its origin's URL and commit.
+fn standards_only() -> (Env, String, String) {
+    let env = Env::new();
+    env.std_project();
+    let (u, c) = env.std_release("alpha-std", "1.0.0");
+    env.registries(&[&u]);
+    ok(&env.run(&["pack", "add", "alpha-std", "--standards"], &[]));
+    (env, u, c)
+}
+
+#[test]
+fn update_under_a_pin_is_refused_before_the_network_with_standards() {
+    let (env, ..) = standards_only();
+    put(
+        &env.root(),
+        ".git/armadai/pack.lock",
+        &env.text(".armadai/pack.lock"),
+    );
+    env.std_release("alpha-std", "1.1.0");
+    let lock = env.lock_bytes();
+    let (path, witness) = fake_tools(env.dir.path());
+    let r = env.run(&["pack", "update"], &[("PATH", &path)]);
+    assert_eq!(r.code, Some(1), "{}{}", r.out, r.err);
+    assert!(
+        r.err_has("Error: refused: this checkout pins standards alpha-std 1.0.0 (armadai pack pin); run armadai pack unpin first"),
+        "{}",
+        r.err
+    );
+    assert!(!witness.exists(), "git or curl was started");
+    assert_eq!(env.lock_bytes(), lock);
+}
+
+#[test]
+fn update_with_a_version_and_no_team_pack_is_refused() {
+    let (env, ..) = standards_only();
+    let lock = env.lock_bytes();
+    let (path, witness) = fake_tools(env.dir.path());
+    let r = env.run(&["pack", "update", "1.0.0"], &[("PATH", &path)]);
+    assert_eq!(r.code, Some(1), "{}{}", r.out, r.err);
+    assert!(
+        r.err_has("Error: pack update <version> moves the pack: of .armadai/project.yaml, and this project has none; armadai pack update alone moves its standards"),
+        "{}",
+        r.err
+    );
+    assert!(!witness.exists(), "git or curl was started");
+    assert_eq!(env.lock_bytes(), lock);
+}
+
+#[test]
+fn a_failed_link_puts_the_standards_lock_back() {
+    let (env, ..) = standards_only();
+    env.std_release("alpha-std", "1.1.0");
+    let out = env.root().join(".claude/skills/alpha-std-rule/SKILL.md");
+    assert!(out.is_file());
+    std::fs::remove_file(&out).unwrap();
+    std::fs::create_dir(&out).unwrap();
+    let armadai = tree(&env.root().join(".armadai"));
+    let r = env.run(&["pack", "update"], &[]);
+    assert_ne!(r.code, Some(0), "{}{}", r.out, r.err);
+    assert!(
+        r.err_has("standards alpha-std 1.1.0 was not applied: link failed, so .armadai/pack.lock, the referent record and the files link had written are back as they were"),
+        "{}",
+        r.err
+    );
+    assert!(!r.out.contains(".armadai/pack.lock updated"), "{}", r.out);
+    assert_eq!(tree(&env.root().join(".armadai")), armadai);
+}
+
+/// A project that installed `demo` 1.0.0 by copy and added `alpha-std` 1.0.0.
+fn copied_with_standards() -> (Env, String) {
+    let env = Env::new();
+    env.copied(&[]);
+    let (u, _) = env.std_release("alpha-std", "1.0.0");
+    env.registries(&[&env.url(), &u]);
+    ok(&env.run(&["pack", "add", "alpha-std", "--standards"], &[]));
+    (env, u)
+}
+
+#[test]
+fn update_of_a_copied_pack_moves_its_standards_under_one_link() {
+    let (env, u) = copied_with_standards();
+    env.native("1.1.0", &[("agents/b.md", &agent("B"))], &[]);
+    let (_, c2) = env.std_release("alpha-std", "1.1.0");
+    let r = env.run(&["pack", "update"], &[]);
+    ok(&r);
+    assert!(env.root().join(".armadai/agents/b.md").is_file());
+    assert!(
+        r.out
+            .lines()
+            .any(|l| l.starts_with("Pack demo: 1.0.0 -> 1.1.0 (")),
+        "{}",
+        r.out
+    );
+    assert!(
+        r.out_has(&format!(
+            "Standards alpha-std: 1.0.0 -> 1.1.0 ({}), .armadai/pack.lock updated",
+            id12(&c2)
+        )),
+        "{}",
+        r.out
+    );
+    assert_eq!(
+        env.text(".armadai/pack.lock"),
+        format!(
+            "format: 1\nstandards:\n{}",
+            std_entry(&u, "alpha-std", "1.1.0", &c2)
+        )
+    );
+    assert!(env.text(".armadai/project.yaml").contains("standards:\n"));
+    assert!(
+        env.root().join(".claude/agents/b.md").is_file(),
+        "one link made the copied file's output and the standards'"
+    );
+}
+
+#[test]
+fn a_failed_link_puts_the_copy_and_the_standards_back() {
+    let (env, _) = copied_with_standards();
+    env.native("1.1.0", &[("agents/b.md", &agent("B"))], &[]);
+    env.std_release("alpha-std", "1.1.0");
+    let out = env.root().join(".claude/skills/alpha-std-rule/SKILL.md");
+    std::fs::remove_file(&out).unwrap();
+    std::fs::create_dir(&out).unwrap();
+    let armadai = tree(&env.root().join(".armadai"));
+    let r = env.run(&["pack", "update"], &[]);
+    assert_ne!(r.code, Some(0), "{}{}", r.out, r.err);
+    assert!(r.err_has(NOT_APPLIED_COPY), "{}", r.err);
+    assert_eq!(tree(&env.root().join(".armadai")), armadai);
+}
+
+#[test]
+fn a_standards_error_after_the_copy_puts_the_copy_back() {
+    let (env, _) = copied_with_standards();
+    let yaml = env
+        .text(".armadai/project.yaml")
+        .replace("'^1.0.0'", "'^9'");
+    put(&env.root(), ".armadai/project.yaml", &yaml);
+    env.native("1.1.0", &[("agents/b.md", &agent("B"))], &[]);
+    let armadai = tree(&env.root().join(".armadai"));
+    let r = env.run(&["pack", "update"], &[]);
+    assert_eq!(r.code, Some(1), "{}{}", r.out, r.err);
+    assert!(
+        r.err_has("Error: no cached version of standards alpha-std matches ^9 (cached: 1.0.0): run `armadai pack sync`, or change the version of standards alpha-std in .armadai/project.yaml"),
+        "{}",
+        r.err
+    );
+    assert_eq!(tree(&env.root().join(".armadai")), armadai);
+}
+
+#[test]
+fn sync_lays_the_snapshot_of_each_standards_entry() {
+    let (env, [(ua, ca), (ub, cb)]) = team_and_two_standards();
+    let snaps = [
+        env.snapshot(&ua, "alpha-std", &ca),
+        env.snapshot(&ub, "beta-std", &cb),
+    ];
+    for s in &snaps {
+        assert!(s.is_dir(), "{}", s.display());
+        std::fs::remove_dir_all(s).unwrap();
+    }
+    ok(&env.run(&["pack", "sync"], &[]));
+    for s in &snaps {
+        assert!(s.is_dir(), "{} was not laid again", s.display());
+    }
+    ok(&env.run(&["link"], &[]));
+}
+
+#[test]
+fn the_newer_note_names_a_standards_pack() {
+    let (env, ..) = standards_only();
+    env.std_release("alpha-std", "1.1.0");
+    let r = env.run(&["pack", "sync"], &[]);
+    ok(&r);
+    assert!(
+        r.err_has("note: standards alpha-std 1.1.0 is in the cache (locked: 1.0.0): run `armadai pack update`"),
+        "{}",
+        r.err
+    );
+}
+
+#[test]
+fn sync_signals_a_moved_tag_of_a_standards_pack() {
+    let (env, _, c1) = standards_only();
+    let (_, c2) = env.std_release("alpha-std", "1.1.0");
+    git(
+        &env.dir.path().join("origin-alpha-std"),
+        &["tag", "-f", "alpha-std-v1.0.0", &c2],
+    );
+    let r = env.run(&["pack", "sync"], &[]);
+    ok(&r);
+    assert!(
+        r.err_has(&format!(
+            "  warn: tag alpha-std-v1.0.0 of standards alpha-std now points to {}, .armadai/pack.lock says {}: the lock is kept (link uses its commit)",
+            id12(&c2),
+            id12(&c1)
+        )),
+        "{}",
+        r.err
+    );
+}
+
+#[test]
+fn sync_takes_the_source_of_a_standards_entry_and_says_so() {
+    let env = Env::new();
+    env.std_project();
+    let (u, _) = env.std_release("alpha-std", "1.0.0");
+    ok(&env.run(
+        &["pack", "add", "alpha-std", "--standards", "--source", &u],
+        &[],
+    ));
+    let r = env.run(&["pack", "sync"], &[]);
+    ok(&r);
+    assert!(
+        r.out_has(&format!("Synced {u}: 1 pack(s), 1 version(s)")),
+        "{}",
+        r.out
+    );
+    assert!(
+        r.err_has(&format!(
+            "note: {u} comes from .armadai/project.yaml (standards alpha-std), not from your registries.yaml"
+        )),
+        "{}",
+        r.err
+    );
+}

@@ -134,7 +134,7 @@ pub fn open_in(root: &Path, vars: Vars, registry: &Path) -> anyhow::Result<Effec
             None => bail!("{}", lock_missing(&name)),
         },
     };
-    open_locked(root, team, lock.as_ref(), vars, registry)
+    open_locked(root, team, lock.as_ref(), None, vars, registry)
 }
 
 /// M5a.
@@ -162,7 +162,26 @@ pub fn open_with_lock_in(
     registry: &Path,
 ) -> anyhow::Result<Effective> {
     // the lock given is the team's even before `pack add` has written the `pack:` key
-    open_locked(root, lock.team.as_ref(), Some(lock), vars, registry)
+    open_locked(root, lock.team.as_ref(), Some(lock), None, vars, registry)
+}
+
+/// [`open_with_lock_in`] for a `pack add --standards`: the entry `adding` is not in
+/// `project.yaml` yet, and is looked for in `lock` like the declared ones.
+pub fn open_adding_standards_in(
+    root: &Path,
+    lock: &LockFile,
+    adding: &str,
+    vars: Vars,
+    registry: &Path,
+) -> anyhow::Result<Effective> {
+    open_locked(
+        root,
+        lock.team.as_ref(),
+        Some(lock),
+        Some(adding),
+        vars,
+        registry,
+    )
 }
 
 /// `team` as given, and the standards entries `root` references found in `lock` (E1 to
@@ -171,12 +190,14 @@ fn open_locked(
     root: &Path,
     team: Option<&PackLock>,
     lock: Option<&LockFile>,
+    adding: Option<&str>,
     vars: Vars,
     registry: &Path,
 ) -> anyhow::Result<Effective> {
     let mut stds = Vec::new();
     let mut seen = BTreeSet::new();
-    for (name, _) in standards_declared(root) {
+    let declared = standards_declared(root).into_iter().map(|(n, _)| n);
+    for name in declared.chain(adding.map(str::to_string)) {
         if !seen.insert(name.clone()) {
             bail!(".armadai/project.yaml references standards {name} twice: keep one entry");
         }

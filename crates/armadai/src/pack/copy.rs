@@ -141,7 +141,14 @@ fn locate(
             id,
         });
     }
-    let (best, path) = resolve_in(registry, &source, name, version.unwrap_or("latest"), false)?;
+    let (best, path) = resolve_in(
+        registry,
+        &source,
+        "pack",
+        name,
+        version.unwrap_or("latest"),
+        false,
+    )?;
     let dir = cache::ensure_snapshot_in(registry, &source, name, &path, &best)?;
     Ok(Newest {
         dir,
@@ -289,7 +296,7 @@ pub fn update_in(
         })
         .map(|(p, _)| base.join(p))
         .collect();
-    let mut undo = Undo::new(&name, &shown, &touched)?;
+    let mut undo = Undo::new("pack", &name, &shown, &touched)?;
     undo.record = Some((root.to_path_buf(), recorded.clone()));
 
     let mut lines = Vec::new();
@@ -537,6 +544,7 @@ mod tests {
         std::fs::write(&edited, "A1").unwrap();
         manifest::write_installed_pack(root.path(), "demo", old.clone()).unwrap();
         let mut undo = Undo::new(
+            "pack",
             "demo",
             "1.1.0",
             &[kept.clone(), edited.clone(), base.join("flows/new/f.yaml")],
