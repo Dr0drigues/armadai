@@ -170,9 +170,11 @@ kind: standards
 description: "Rust conventions and security rules"
 ```
 
-Only files under `skills/` are read. `pack.yaml` and a README are not read and are fine; any other
-file (`project.yaml`, `agents/`, `flows/`, ...) is the error `standards-foreign-file`:
-``a standards pack holds only skills: `<rel>` is not under skills/``. A skill that fills no slot
+A standards pack is read through the white list of the project format: `skills/`, and the files
+outside it that the format would read (`project.yaml`, `agents/*.md`, `templates/*.md`,
+`commands/*.md`, `flows/*.yaml`, `automations/*.yaml`). Each of those outside `skills/` is the error
+`standards-foreign-file`: ``a standards pack holds only skills: `<rel>` is not under skills/``.
+`pack.yaml`, a README and any other file are not read, so they are fine. A skill that fills no slot
 is the warning `standards-skill-no-slot` (`validate <pack>` reports it). Each skill says what it
 fills with `metadata: { armadai-slot: code-standards }`. `armadai pack new <name> --kind standards`
 writes the minimal pack (`pack.yaml` and `skills/.gitkeep`, description `A standards pack` by
@@ -208,7 +210,10 @@ armadai pack status                              # one block per entry
 armadai pack new rust-std --kind standards --empty
 ```
 
-- `pack add <name>[@<range>] --standards` adds the entry at the end of the block list of
+- `pack add <name>[@<range>] --standards` needs a project that has an
+  `.armadai/project.yaml`: in a folder without one it fails (`missing-manifest`,
+  `standards <name> <version> would make the project invalid; nothing was changed`), where `pack add`
+  of a team pack creates the file. It adds the entry at the end of the block list of
   `standards:` (a new block when there is none; your comments stay), locks it, and links:
   `Added standards rust-std 1.0.0 (0123456789ab): .armadai/project.yaml (version: ^1.0.0) and
   .armadai/pack.lock`. It does not register the project as a referent (see the limits below). A name
@@ -241,9 +246,12 @@ armadai pack new rust-std --kind standards --empty
   <name> now points to <new12>, .armadai/pack.lock says <old12>: the lock is kept (link uses its
   commit)` and `  warn: tag <tag> of standards <name> no longer exists, .armadai/pack.lock keeps <old12>`.
   When the cache holds a newer version than the lock, `pack sync`, `list`, `inspect` and `link`
-  print ``note: standards <name> <version> is in the cache (locked: <old>): run `armadai pack update` ``
-  (a team pack installed by copy keeps its own note).
-- `pack status` shows, after the `Pack` block and a blank line, one block per entry:
+  print one note, ``note: standards <name> <version> is in the cache (locked: <old>): run `armadai pack update` ``:
+  the team pack's note when it has one, else the one of the first entry of `standards:`, in list
+  order, that has a newer version; none under a [pin](#pinning-a-pack-per-checkout). A team pack
+  installed by copy keeps its own note, which comes first.
+- `pack status` shows one block per entry after the `Pack … (reference)` block, each separated by a
+  blank line (and before a `Pack … (copy)` block):
 
   ```
   Standards rust-std (reference)
@@ -290,8 +298,8 @@ refused by every command that reads the project, with the cure named:
   `pack update` skip it, and when it is all `standards:` holds (and there is no `pack:`) they say
   `.armadai/project.yaml has a standards: entry that is not complete: fix the errors `armadai validate`
   reports in standards:, then run `armadai pack <status|pin|update>` again`;
-- an unreadable committed `pack.lock`: `pack add` stops with the read error (for example `Error:
-  .armadai/pack.lock: unknown field `branch``) and writes nothing; it never overwrites a lock it
+- an unreadable committed `pack.lock`: `pack add` stops with the read error (the message begins with `Error:
+  .armadai/pack.lock: …`, for example `unknown field `branch``) and writes nothing; it never overwrites a lock it
   cannot read;
 - a `.git` that leads nowhere (the lot-14 rule): `pack pin` and `pack unpin` refuse with `pack pin
   refused: …` and `pack unpin refused: …`, and every command that reads the lock of a project with
@@ -302,8 +310,8 @@ refused by every command that reads the project, with the cure named:
 copy like the others (`armadai init --pack rust-standards`), so its two skills land in
 `.armadai/skills/`, and any team that declares those slots receives them: on `concept-to-code`,
 `implementer` gets both. On a project that already holds a `rust-conventions` skill (the `rust-dev`
-pack ships one) the install keeps yours and says `warn: skills/rust-conventions exists, kept (the
-pack's skill is not mixed in)`; `rust-security` is still added. Publish it in a source of your own
+pack ships one) the install keeps yours and says `  warn: skills/rust-conventions exists, kept (the
+pack's skill is not mixed in)` (two spaces in front); `rust-security` is still added. Publish it in a source of your own
 and reference it with `standards:` to have it by reference instead.
 
 **Limits.**

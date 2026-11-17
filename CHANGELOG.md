@@ -1,3 +1,17 @@
+## Unreleased
+
+### Added
+
+- Standards packs: packs that hold skills only. A standards pack declares `kind: standards` in its `pack.yaml`; a project lists it under the new `standards:` key of `.armadai/project.yaml` (same fields as `pack:`), with or without a team `pack:`. Layers stack as team pack, then each standards pack in the order of the list, then the project's own files; the project's `skills/<id>/` replaces a standards folder of the same id whole, and two pack sources holding the same skill id are an error (`duplicate-standards-skill`). A file that the project format reads and that sits outside `skills/` in a standards pack is refused (`standards-foreign-file`), and so is a team pack named in `standards:` (`standards-wrong-kind`). See [Starter packs](docs/wiki/starter-packs.md#standards-packs).
+- `armadai pack add <name> --standards` adds an entry; `pack update`, `pack sync`, `pack status`, `pack pin` and `pack unpin` handle every entry of the lock (a team pack installed by copy and its standards are updated under one `link`, undone together if it fails); `pack new <name> --kind standards` creates a standards pack. An entry no longer in `standards:` leaves `pack.lock` on the next `pack update` or `pack add`.
+- `armadai link` reports each standards pack (`standards <name>: compiled (…)`), names the pack of each skill that fills a slot (`code-standards: a-rule from rust-std`), and reports a standards skill whose slot no agent declares. `list`, `inspect` and `skills show` name the pack too.
+- A new embedded pack, `rust-standards`, ships `rust-conventions` (slot `code-standards`) and `rust-security` (slot `security`).
+
+### Changed
+
+- `pack add` stops with the read error when `.armadai/pack.lock` cannot be read, instead of overwriting it.
+- Compatibility: a `pack.lock` that has a `standards:` list, and a `project.yaml` that has a `standards:` key, cannot be read by an older binary (both reject unknown keys): the project is refused, not corrupted, and works again once the binary is upgraded. An older binary reads a `kind: standards` `pack.yaml` as a team pack that holds only skills. A project without `standards:` is unchanged: `link` writes the same bytes, and `pack.lock` is read and rewritten byte for byte.
+
 ## v1.0.0-rc.13 (2026-11-13)
 
 Thirteenth release candidate. Two things for work that spreads over several sessions or several git worktrees. A checkout can now keep the pack version it locks (`armadai pack pin`, `pack unpin`), while `.armadai/pack.lock` moves on in the main checkout. And a lot gets a journal, `armadai journal add|show`, that every session of the project reads, worktrees included; `sessions.journal: true` and the agent key `journal: read | write` make `link --target claude` compile the instructions that use it, and `session_link` on a flow tells the coordinator which session to write to with `SendMessage`, the journal being the fallback. Everything is opt-in: without `pin`, without those keys and without `armadai journal`, nothing changes, and `link` writes the same files as in rc.12 (no new `link` is needed to move from rc.12). Cross-session messaging needs Claude Code 2.1.224 or later on macOS and Linux, 2.1.234 or later on Windows; below that the journal is the way to pass a message. Also fixed: the delegation gate no longer reads the `.armadai/` of the superproject from inside a git submodule.
