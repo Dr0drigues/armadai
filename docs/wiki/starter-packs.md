@@ -174,7 +174,9 @@ A standards pack is read through the white list of the project format: `skills/`
 outside it that the format would read (`project.yaml`, `agents/*.md`, `templates/*.md`,
 `commands/*.md`, `flows/*.yaml`, `automations/*.yaml`). Each of those outside `skills/` is the error
 `standards-foreign-file`: ``a standards pack holds only skills: `<rel>` is not under skills/``.
-`pack.yaml`, a README and any other file are not read, so they are fine. A skill that fills no slot
+`pack.yaml`, a README and any other file are not read, so they are fine; a file in a
+subfolder that the white list does not name gets the existing warning `ignored-pack-file` from
+`validate <pack>`. A skill that fills no slot
 is the warning `standards-skill-no-slot` (`validate <pack>` reports it). Each skill says what it
 fills with `metadata: { armadai-slot: code-standards }`. `armadai pack new <name> --kind standards`
 writes the minimal pack (`pack.yaml` and `skills/.gitkeep`, description `A standards pack` by
@@ -248,8 +250,8 @@ armadai pack new rust-std --kind standards --empty
   When the cache holds a newer version than the lock, `pack sync`, `list`, `inspect` and `link`
   print one note, ``note: standards <name> <version> is in the cache (locked: <old>): run `armadai pack update` ``:
   the team pack's note when it has one, else the one of the first entry of `standards:`, in list
-  order, that has a newer version; none under a [pin](#pinning-a-pack-per-checkout). A team pack
-  installed by copy keeps its own note, which comes first.
+  order, that has a newer version; none for referenced packs under a [pin](#pinning-a-pack-per-checkout). A team
+  pack installed by copy keeps its own note, which comes first and is printed under a pin too.
 - `pack status` shows one block per entry after the `Pack … (reference)` block, each separated by a
   blank line (and before a `Pack … (copy)` block):
 
