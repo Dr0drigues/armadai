@@ -4,6 +4,7 @@
 - Cadre : réponse de `framer` du 2026-11-13, décisions Q1 à Q5 de Dimitri du 2026-11-13. Elles ne sont pas rouvertes ici.
 - Branche : `feat/lot-c-normes`, worktree `armadai-lotc`.
 - Mesures : lecture du code par `architect` et trois passes d'`Explore` (lecture seule, 2026-11-13), citées « (Explore) ». Rien n'a été compilé ni lancé pour écrire ce plan.
+- **Amendement du 2026-11-17**, après les tâches T1 à T7 et les décisions de Dimitri consignées au journal du lot C (points transmis par `lead`, le journal n'a pas été relu par `architect`). Les tâches approuvées ne se refont pas : les passages marqués « Livré » disent seulement où la livraison s'écarte du plan d'origine.
 
 ## 0. Ce que le plan tranche
 
@@ -48,6 +49,17 @@ Recommandation : **b**.
 
 **C8. Un pack `kind: standards` référencé par `pack:`** est accepté : c'est un pack d'équipe qui ne porte que des skills. Seul `standards:` exige `kind: standards`.
 
+**C9. Rebase sur le lot 14 (master `a21f358`).** La règle du `.git` le plus proche du lot 14 s'applique au lot C :
+- `lock::pin_path` passe par `worktree::git_dir_checked` et rend `anyhow::Result<Option<PathBuf>>` ; un `.git` qui ne mène à aucun dossier git est une erreur (T14), jamais un repli sur un autre checkout (vérifié dans `pack/lock.rs:144-156`) ;
+- `lock::read` (donc `read_pin`) refuse sur un `.git` cassé (T14) au lieu de lire le lock commité ;
+- `check_outgoing_links` (`cli/link.rs`) concerne un projet qui a `pack:` **ou** `standards:` : le test passe par `effective::references_packs`, et non plus par `pack:` seul.
+
+**C10. Décisions de Dimitri pendant les tâches** (journal du lot C) :
+- T2 : un lock commité illisible fait refuser `pack add`, qui n'écrit rien (« Refuser et dire pourquoi ») ;
+- T3 : un pack cité dans `standards:` qui n'est pas `kind: standards` émet `standards-wrong-kind` **et** un `standards-foreign-file` par fichier hors `skills/`, `project.yaml` compris (« wrong-kind + foreign-file ») ; c'est ce que disait déjà la §2 ;
+- T5 : `pack update` et `pack add` ôtent du lock les entrées de normes qui ne sont plus déclarées (« L'ôter du lock ») ; l'annulation du cas combiné (copie et normes) garde le message de la copie, `NOT_APPLIED_COPY` (« Garder le texte actuel ») ;
+- T6 : le `pack.yaml` de `pack new --kind standards` met sa description entre guillemets JSON (« Guillemets, plan amendé »), voir N4.
+
 ## 1. Contraintes globales (toutes les tâches)
 
 - Règles du dépôt : skill `armadai-rules` (barrière complète, `CARGO_TARGET_DIR` privé au worktree, `/usr/bin/grep`, `/bin/ls`, jamais `git stash`, aucune tâche en arrière-plan, `HOME` et `ARMADAI_CONFIG_DIR` isolés pour tout essai du binaire).
@@ -55,7 +67,7 @@ Recommandation : **b**.
 - `armadai-model` reste pur ; `armadai-core` et `armadai-model` compilent seuls.
 - Chaque code neuf entre dans la table de `docs/wiki/project-format.md` dans la tâche qui l'émet. Aucun code n'est renommé.
 - Lock et pin restent en `format: 1` : champ `standards` optionnel, absent quand la liste est vide. Un test relit un lock écrit par rc.13 et le réécrit à l'identique.
-- Aucun test n'ouvre le réseau. Une source de normes est un dépôt git local servi en `file://`, sur le modèle d'`Env::release` de `crates/armadai/tests/pack_cmd.rs:717` (Explore). Un test unitaire du cache passe par `StarterFetcher` (`cache.rs:568`, `struct Local`).
+- Aucun test n'ouvre le réseau. Une source de normes est un dépôt git local servi en `file://`, sur le modèle d'`Env::release` de `crates/armadai/tests/pack_cmd.rs:717` (Explore). Un test unitaire du cache passe par `StarterFetcher` (`cache.rs:568`, `struct Local`). Livré : les tests de `pack_link.rs` (T4, T7) posent les snapshots à la main dans le cache au lieu de servir une source `file://` ; c'est équivalent, puisque `link` n'accède jamais au réseau.
 - Fixtures à valeurs distinctes deux à deux (noms de packs, ids de skills, versions et commits différents) ; assertions sur des lignes entières.
 - Chaque test nommé ci-dessous vient avec sa mutation : la casser, voir rouge, restaurer avec une mtime neuve (`touch`), reporter la sortie.
 - Les textes de sortie de la §5 sont ceux du plan, validés par Dimitri à la relecture. Un spécialiste qui veut en changer un le rend à `lead`, il ne l'improvise pas.
@@ -82,7 +94,7 @@ flowchart LR
 
 Lecture du schéma :
 
-- Les couches s'empilent de gauche à droite. D'abord le pack d'équipe (s'il y en a un), puis chaque pack de normes dans l'ordre de `standards:`, puis le projet. Seuls les fichiers `skills/**` d'un pack de normes entrent dans la vue ; tout autre fichier listé devient un `standards-foreign-file`.
+- Les couches s'empilent de gauche à droite. D'abord le pack d'équipe (s'il y en a un), puis chaque pack de normes dans l'ordre de `standards:`, puis le projet. Seuls les fichiers `skills/**` d'un pack de normes entrent dans la vue ; tout autre fichier listé devient un `standards-foreign-file`, `project.yaml` compris. Un pack d'équipe cité dans `standards:` reçoit donc `standards-wrong-kind` et un `standards-foreign-file` par fichier hors `skills/` (décision de Dimitri, T3, C10).
 - Deux sources de pack qui apportent le même id de skill donnent `duplicate-standards-skill` (erreur). Cela vaut pour normes contre normes et pour équipe contre normes. Si le projet a `skills/<id>/`, la collision tombe et c'est la skill du projet qui est lue (C3).
 - Les diagnostics de la vue (`extra`) précèdent ceux du validateur. `load_checked` échoue s'ils contiennent une erreur : `link` s'arrête avant d'écrire, `list`, `graph`, `flow` et le gate refusent.
 - Sans `standards:`, `open_in` suit exactement le chemin d'aujourd'hui (lecture en place, ou une seule couche de pack).
@@ -119,7 +131,7 @@ Le fichier sur disque garde l'ordre `format`, `pack`, `source`, `resolved`, puis
 
 ## 3. Les lecteurs du lock, un par un
 
-Inventaire d'`Explore`, vérifié sur `effective.rs`, `lock.rs`, `status.rs`, `pack/mod.rs`, `cli/pack.rs` et `pack_test.rs`.
+Inventaire d'`Explore`, vérifié sur `effective.rs`, `lock.rs`, `status.rs`, `pack/mod.rs`, `cli/pack.rs` et `pack_test.rs`. Depuis le rebase sur le lot 14 (C9), tout lecteur qui passe par `lock::read` ou `read_pin` refuse sur un `.git` cassé (T14).
 
 | Lecteur | Où (aujourd'hui) | Ce qu'il fait des normes | Tâche | Test qui le prouve |
 |---|---|---|---|---|
@@ -131,11 +143,11 @@ Inventaire d'`Explore`, vérifié sur `effective.rs`, `lock.rs`, `status.rs`, `p
 | `pack pin` | `pack/lock.rs:129` `pin` | copie le `LockFile` entier ; accepte un projet à normes seules | T6 | `pin_copies_every_entry_and_a_standards_only_project_pins` |
 | `pack unpin` | `pack/lock.rs:156`, `cli/pack.rs:156-167` | une ligne par entrée retirée | T6 | `unpin_says_each_entry` |
 | `pack status` | `pack/status.rs:119` `report`, `:58` `newer` | un bloc `Standards <nom> (reference)` par entrée ; note « newer » pour une norme | T6 | `status_shows_each_standards_pack` et `the_newer_note_names_a_standards_pack` |
-| `pack update` | `pack/mod.rs:296` `update_in` | avance aussi chaque entrée de normes ; refus sous pin avant le réseau | T5 | `update_moves_every_standards_lock` et `update_under_a_pin_is_refused_before_the_network_with_standards` |
-| `pack add` | `pack/mod.rs:409` `add_in` | `--standards` ajoute une entrée | T5 | `add_standards_writes_the_entry_the_lock_and_links` |
+| `pack update` | `pack/mod.rs:296` `update_in` | avance aussi chaque entrée de normes ; refus sous pin avant le réseau ; ôte du lock une entrée de normes qui n'est plus déclarée (C10) | T5 | `update_moves_every_standards_lock` et `update_under_a_pin_is_refused_before_the_network_with_standards` ; garde des entrées déclarées : tests passés en T2, reformulés en T5 |
+| `pack add` | `pack/mod.rs:409` `add_in` | `--standards` ajoute une entrée ; un pack d'équipe ajouté garde les entrées de normes déclarées et ôte les autres ; un lock commité illisible fait refuser la commande, rien n'est écrit (C10) | T2, T5 | `add_standards_writes_the_entry_the_lock_and_links` ; garde des entrées : tests passés en T2, reformulés en T5 |
 | `pack sync` | `cli/pack.rs:214` `sync`, `:306` `check_lock` | synchronise les sources des normes et pose leurs snapshots ; avertissements de tag par entrée | T5 | `sync_lays_the_snapshot_of_each_standards_entry` |
 | `snapshot_path` | `pack/effective.rs:119` | vérifie le nom et la source de chaque entrée | T3 | tests de messages de T3 |
-| `check_outgoing_links` | `cli/link.rs:921` (`read_pin(..).is_some()`) | type seul (`LockFile`), même sens | T2 | test existant `link_outgoing_links.rs` inchangé |
+| `check_outgoing_links` | `cli/link.rs:921` (`read_pin(..).is_some()`) | type seul (`LockFile`) ; livré après rebase (C9) : s'applique à un projet qui a `pack:` ou `standards:` (`effective::references_packs`) | T2, T4 | test existant `link_outgoing_links.rs` inchangé |
 | Rapport de `link` | `cli/link.rs:861` `report_view` | ligne `standards <nom>`, lignes de prise non consommée, provenance dans les lignes de prise | T4 | voir T4 |
 | `armadai skills` | `cli/skills.rs:507` (`match &v.pack`) | une skill de normes affiche `standards <nom>, skills/<id>` | T6 | `skills_lists_a_standards_skill_with_its_pack` |
 | `pack new --from-project` | `cli/pack.rs:404` `status::declared` | refuse aussi un projet à `standards:` | T6 | `new_from_project_refuses_a_project_with_standards` |
@@ -214,7 +226,9 @@ Rendu existant : `file:line:column: error[code]: message` puis `hint: …`.
 | U1. une norme avancée | `Standards <nom>: <ancienne> -> <v> (<id12>), .armadai/pack.lock updated` (`<ancienne>` vaut `(none)` pour une entrée qui n'était pas au lock) |
 | U2. une norme à jour | `Standards <nom> is up to date: <v> (<id12>)` |
 | U3. `pack update <version>` sans `pack:` | `pack update <version> moves the pack: of .armadai/project.yaml, and this project has none; armadai pack update alone moves its standards` |
-| U4. lien échoué après un update de normes (annulation) | `standards <nom> <v> was not applied: link failed, so .armadai/pack.lock, the referent record and the files link had written are back as they were` (même forme que le message existant, `pack` remplacé par `standards`) |
+| U4. lien échoué après un update de normes (annulation) | `standards <nom> <v> was not applied: link failed, so .armadai/pack.lock, the referent record and the files link had written are back as they were` (même forme que le message existant, `pack` remplacé par `standards`). Cas combiné (pack copié et normes) : le message existant de la copie, `NOT_APPLIED_COPY`, inchangé (décision de Dimitri, C10) |
+| U6. aucune version en cache ne tient la plage d'une norme (livré en T5, **à valider par Dimitri en PR**) | `no cached version of standards <nom> matches <range> …` (la suite de la ligne est celle du message existant pour `pack`) |
+| H1. aide de `pack add --standards` (livré en T5, **à valider par Dimitri en PR**) | ``Add it to `standards:` (a pack of skills only) instead of making it the project's pack`` |
 | U5. refus sous un pin à normes seules (avant le réseau) | `refused: this checkout pins standards <nom> <v> (armadai pack pin); run armadai pack unpin first` (avec un pack d'équipe au pin, le texte existant ne change pas) |
 | S1. note d'une source de normes hors `registries.yaml` | `note: <src> comes from .armadai/project.yaml (standards <nom>), not from your registries.yaml` |
 | S2. tag déplacé | `  warn: tag <tag> of standards <nom> now points to <new12>, .armadai/pack.lock says <old12>: the lock is kept (link uses its commit)` (sous un pin : les variantes existantes, `pack` remplacé par `standards`) |
@@ -241,10 +255,10 @@ Standards rust-std (reference)
 | P4. `pack pin`, une ligne par entrée de normes (après la ligne existante du pack d'équipe) | `pinned standards <nom> <v> for this checkout; pack update is refused here until armadai pack unpin` |
 | P5. `pack pin` déjà épinglé, à normes seules | `this checkout already pins standards <nom> <v>; run armadai pack unpin first` |
 | P6. `pack unpin`, une ligne par entrée de normes | `unpinned standards <nom> (was <v>); this checkout follows .armadai/pack.lock (<maintenant>) again` (`<maintenant>` = l'entrée commitée, ou `missing`) |
-| P7. `pack pin` sans `pack:` ni `standards:` | texte existant, inchangé |
+| P7. `pack pin` sans `pack:` ni `standards:` | texte existant, inchangé. Livré : une entrée de normes inachevée (source ou version vide) est ignorée par `pin`, `status` et `newer` et laissée à `validate` ; un projet dont la seule entrée est inachevée reçoit P7 |
 | N2. `pack new <nom> --kind standards` | `Created pack <nom> in <dossier>: pack.yaml, skills/` |
 | N3. `pack new --from-project` dans un projet à `standards:` | `this project references standards <nom>: its .armadai/ is an overlay, not a pack; create the pack from its source instead` (le premier nom de la liste) |
-| N4. `pack.yaml` d'un `pack new --kind standards` | `format: 1\nname: <nom>\nkind: standards\ndescription: <description>\n` ; description par défaut `A standards pack` |
+| N4. `pack.yaml` d'un `pack new --kind standards` | `format: 1\nname: <nom>\nkind: standards\ndescription: "<description>"\n` : description entre guillemets JSON, même règle que les packs d'équipe ; par défaut `description: "A standards pack"` (amendé, décision de Dimitri « Guillemets, plan amendé », C10) |
 
 ### 5.6 `list`, `inspect`, `skills`
 
@@ -349,6 +363,10 @@ Tests :
 | `pack_test_reads_the_team_entry_of_a_lock_with_standards` (`pack_test.rs`) | prendre `standards[0]` |
 | tests existants de `lock.rs`, `pack_cmd.rs`, `pack_link.rs`, du gate et du hook, adaptés au type seul | — |
 
+Livré (écarts au plan d'origine) :
+- Les tests « `pack update` et `pack add` d'un pack d'équipe gardent les entrées de normes déclarées » sont passés en T2 (réécrire le lock sans perdre les normes en dépend), puis ont été reformulés en T5, quand la décision « L'ôter du lock » a fixé le sort des entrées non déclarées.
+- `check` et `add_in` propagent l'erreur de lecture du lock commité. Un lock commité illisible fait refuser `pack add`, qui n'écrit rien (décision de Dimitri, « Refuser et dire pourquoi », C10).
+
 Commit : `refactor(pack): read the lock as a file of entries`
 
 ### T3 — La vue effective à N couches et les diagnostics de normes (cli-specialist)
@@ -391,7 +409,7 @@ Tests (unitaires dans `effective.rs`, avec `Fx` étendu à une seconde source ; 
 | `team_and_two_standards_are_all_read` : skills des trois couches présentes | ne lire que `standards[0]` |
 | `standards_lock_messages_are_the_planned_texts` : E1, E2, E3, E4, E5, E6, E7, E10, textes entiers | inverser lock et pin dans E4/E5, ou nommer `pack` au lieu de `standards` |
 | `a_team_pack_with_standards_is_refused_by_name` : E8 | — (mutation de T1, rejouée ici) |
-| `a_team_pack_named_in_standards_is_wrong_kind` : `standards-wrong-kind` sur `<snapshot>/pack.yaml`, `load_checked` en erreur | ne pas lire `kind` |
+| `a_team_pack_named_in_standards_is_wrong_kind` : `standards-wrong-kind` sur `<snapshot>/pack.yaml`, plus un `standards-foreign-file` par fichier hors `skills/` (`project.yaml` compris), `load_checked` en erreur (décision de Dimitri « wrong-kind + foreign-file », C10 ; la §2 le disait déjà) | ne pas lire `kind` |
 | `a_foreign_file_of_a_standards_pack_is_an_error` : `standards-foreign-file` sur `<snapshot>/agents/a.md` | ignorer `foreign` |
 | `two_sources_of_one_skill_are_named` : message exact `skill s comes from both standards std-a and standards std-b`, puis `pack demo` et `standards std-a` ; avec `skills/s/` au projet, aucune erreur et `load_checked` lit la skill du projet | inverser l'ordre des noms, ou garder l'erreur malgré la skill du projet |
 | `an_empty_standards_source_is_a_diagnostic_not_a_lock_error` : `validate` rend `standards-empty-source`, aucune erreur d'ouverture | chercher l'entrée vide au lock |
@@ -408,13 +426,14 @@ Fichiers :
 - `crates/armadai/src/compile/claude.rs:413,468`, `compile/opencode.rs:576` et la chaîne d'appel depuis `cli/link.rs` `prepare` : passer `view.skill_packs()`. `legacy_targets.rs` n'appelle pas `slot_lines` (Explore) : pas de changement.
 - `crates/armadai/src/cli/link.rs:861` `report_view` : R1 pour chaque `view.standards`, puis R3. Pour R3, une ligne par (skill de normes, prise) dont la prise (`armadai_model::slots::filled_by`) n'est déclarée par aucun agent du projet ; `report_view` reçoit le `Project`.
 - `docs/wiki/link.md` : les lignes R1, R2 et R3.
+- Livré après le rebase sur le lot 14 (C9) : `check_outgoing_links` s'applique à un projet qui a `pack:` ou `standards:` (`effective::references_packs`) ; `lock::pin_path` passe par `git_dir_checked` et `lock::read` refuse sur un `.git` cassé (T14), donc le gate et le hook `grant` refusent ou se taisent sur ce cas comme sur une vue illisible.
 
 Étapes :
 - [ ] La provenance dans `slot_lines`.
 - [ ] R1 et R3 dans `report_view`.
 - [ ] Les tests du gate et du hook (aucun code à changer, §3).
 
-Tests (intégration `crates/armadai/tests/pack_link.rs`, source git locale en `file://` qui publie deux packs de normes `std-a` et `std-b`, plus le pack d'équipe `demo`) :
+Tests (intégration `crates/armadai/tests/pack_link.rs`, deux packs de normes `std-a` et `std-b` plus le pack d'équipe `demo` ; livré : snapshots posés à la main dans le cache plutôt qu'une source `file://`, équivalent puisque `link` n'accède pas au réseau) :
 
 | Test | Mutation |
 |---|---|
@@ -446,6 +465,13 @@ Comportements :
   est ajouté à la fin du fichier ; avec une liste bloc, l'entrée s'insère après sa dernière ligne ; sinon A3. Viennent ensuite le lock, puis A1. Pas d'inscription aux référents (C6).
 - `update_in` : le pack d'équipe comme aujourd'hui, puis chaque entrée de normes résolue dans sa plage (`resolve_in`, `ensure_snapshot_in`). Un seul `check` et un seul `lock::write` pour le `LockFile` entier, une ligne U1 ou U2 par entrée. `version` donnée sans `pack:` → U3. Projet à pack copié et à normes : voir la question Q1.
 - `sync` : les sources des entrées de normes sont synchronisées comme celle du pack (S1 si elles sont hors `registries.yaml`). `check_lock` boucle sur `team` et `standards` (snapshot, puis S2 et S3 par entrée). `newer` cherche d'abord l'équipe, puis chaque entrée de normes.
+
+Livré (écarts au plan d'origine, décisions de Dimitri en C10) :
+- `check` reçoit le `LockFile` lu une seule fois.
+- `pack update` et `pack add` ôtent du lock les entrées de normes qui ne sont plus déclarées dans `standards:` ; les entrées déclarées sont gardées (tests venus de T2, reformulés ici).
+- Le cas combiné (pack copié et normes) : l'annulation garde le message de la copie (`NOT_APPLIED_COPY`), U4 ne vaut que pour un projet à `pack:` ou à normes seules.
+- Deux textes neufs, U6 et H1 (§5.4), à valider par Dimitri en PR.
+- Une entrée inachevée (source ou version vide) est ignorée par `pin`, `status` et `newer`, et laissée à `validate` (C4) ; seule, elle donne P7.
 
 Étapes :
 - [ ] `pack add --standards` et l'insertion C5.
@@ -482,7 +508,7 @@ Tests :
 | chaînes existantes de `pack status` (`pack_cmd.rs:451,549,561,2476,2514`) | — (garde) |
 | `pin_copies_every_entry_and_a_standards_only_project_pins` : P4, pin égal au lock commité | exiger `pack:` |
 | `unpin_says_each_entry` : P6 | — |
-| `pack_new_kind_standards_validates` (critère 2) : N2, `pack.yaml` exact N4, `armadai validate <dir>` code 0 ; un `agents/a.md` ajouté → code 1 et `standards-foreign-file` | écrire `kind` absent |
+| `pack_new_kind_standards_validates` (critère 2) : N2, `pack.yaml` exact N4 (description entre guillemets, amendé), `armadai validate <dir>` code 0 ; un `agents/a.md` ajouté → code 1 et `standards-foreign-file` | écrire `kind` absent |
 | `new_from_project_refuses_a_project_with_standards` : N3 | — |
 | `list_names_the_standards_pack_of_a_slot_skill` / `inspect_names_the_standards_pack_of_a_slot_skill` : L1, L2 exactes ; et `list_shows_the_commands_and_the_skills_of_each_slot` (existant, inchangé) | ne pas passer la table |
 | `skills_lists_a_standards_skill_with_its_pack` : L3 | — |
@@ -503,6 +529,8 @@ Tests :
 | `rust_standards_validates_without_a_diagnostic` : `armadai validate <starters>/rust-standards` sans aucune ligne | retirer `armadai-slot` d'une skill (rend `standards-skill-no-slot`) |
 | `rust_standards_on_concept_to_code_fills_both_slots` (critère 10, partie automatique) : `init --pack concept-to-code`, puis `init --pack rust-standards --force`, `validate` sans diagnostic ; `link --target claude` : `claude: agent implementer slot code-standards: compiled (rust-conventions)` et `…slot security: compiled (rust-security)`, puis le même à `--target opencode` | changer `armadai-slot` de `rust-security` |
 | `every_embedded_pack_installs_validates_and_links` (existant, `init_pack.rs:335`) couvre `rust-standards` | — |
+
+Livré : les tests de `pack_link.rs` de cette tâche posent les snapshots à la main dans le cache, comme en T4. Le cas `rust-dev` du §8 est mesuré : l'ancienne skill `rust-conventions` est gardée, avec l'avertissement.
 
 Commit : `feat(starters): rust-standards pack`
 
@@ -641,7 +669,7 @@ Les deux textes sont des pratiques Rust publiques et génériques : ils ne nomme
 
 ## 8. Risques
 
-- **Nom `rust-conventions` déjà pris.** Les packs embarqués `rust-dev` et `armadai-dev` ont déjà une skill `rust-conventions`, sans `armadai-slot` (Explore, pour `rust-dev`). Un `init --pack rust-standards --force` sur un projet `rust-dev` garde la skill existante, avec l'avertissement `skills/rust-conventions exists, kept…`. La prise `code-standards` ne reçoit alors rien de `rust-standards`. Le nom est la décision Q5 de Dimitri et n'est pas rouvert : le wiki le dira.
+- **Nom `rust-conventions` déjà pris.** Les packs embarqués `rust-dev` et `armadai-dev` ont déjà une skill `rust-conventions`, sans `armadai-slot` (Explore, pour `rust-dev`). Un `init --pack rust-standards --force` sur un projet `rust-dev` garde la skill existante, avec l'avertissement `skills/rust-conventions exists, kept…`. La prise `code-standards` ne reçoit alors rien de `rust-standards`. Le nom est la décision Q5 de Dimitri et n'est pas rouvert : le wiki le dira. Mesuré en T7 : l'ancienne skill `rust-conventions` est gardée, avec l'avertissement.
 - Deux packs installés par copie (`concept-to-code` puis `rust-standards`) : `pack update` refuse (limite connue, spec §6). C'est la configuration de l'essai réel du critère 10 : il ne passe pas par `pack update`.
 - La provenance (R2) dépend de `view.skill_packs()`. Un appelant de `slot_lines` qui passerait une table vide tairait la provenance en silence. `slot_lines` n'a que trois appelants (Explore) et le test `two_standards_fill_one_slot_and_are_named` couvre Claude et OpenCode.
 
@@ -665,4 +693,6 @@ flowchart LR
 
 Le plan (T5) est écrit pour A. B ou C ne changeraient que T5.
 
-**Q2. Les textes de la §5 et de la §7** sont à valider ligne par ligne (règle du 2026-10-27).
+**Tranchée** par Dimitri le 2026-11-13, avant les tâches (journal du lot C) : « Copie + normes, un link (Recommandé) », soit l'option A. `pack update` fait la copie, puis les normes, puis un seul `link`, et annule les deux si `link` échoue.
+
+**Q2. Les textes de la §5 et de la §7** sont à valider ligne par ligne (règle du 2026-10-27). Amendement du 2026-11-17 : U6 et H1 (§5.4), écrits pendant T5, restent à valider par Dimitri à la relecture de la PR.
