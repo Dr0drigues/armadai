@@ -821,7 +821,13 @@ mod tests {
         assert_eq!(load_state(&path).unwrap(), GrantState::default());
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "version: 2\nactive: {}\n").unwrap();
-        assert!(load_state(&path).is_err());
+        assert_eq!(
+            load_state(&path).unwrap_err().to_string(),
+            format!(
+                "{} does not read (damaged, or written by a later version); delete it and run the command again",
+                path.display()
+            )
+        );
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "version: 2\nactive: {}\n"
