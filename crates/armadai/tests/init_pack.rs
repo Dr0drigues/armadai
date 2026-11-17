@@ -39,6 +39,7 @@ impl Env {
             .current_dir(self.root())
             .env("ARMADAI_CONFIG_DIR", self.dir.path().join("config"))
             .env("HOME", self.dir.path())
+            .env("CLAUDE_CONFIG_DIR", self.dir.path().join("claude"))
             .env("NO_COLOR", "1")
             .args(args)
             .output()
@@ -341,7 +342,7 @@ fn every_embedded_pack_installs_validates_and_links() {
         .filter(|p| p.join("pack.yaml").is_file())
         .collect();
     packs.sort();
-    assert_eq!(packs.len(), 8);
+    assert_eq!(packs.len(), 9);
     for pack in packs {
         let name = pack.file_name().unwrap().to_string_lossy().into_owned();
         let env = Env::new();
@@ -351,7 +352,8 @@ fn every_embedded_pack_installs_validates_and_links() {
         let ds = armadai_model::validate(&env.root());
         assert!(ds.is_empty(), "{name}: {ds:?}");
         let (p, _) = armadai_model::load_checked(&env.root()).unwrap();
-        assert!(!p.agents.is_empty(), "{name}");
+        // a standards pack holds skills only
+        assert_eq!(p.agents.is_empty(), name == "rust-standards", "{name}");
         for (id, a) in &p.agents {
             assert!(
                 a.body.trim().len() > 100,
@@ -777,7 +779,7 @@ fn the_concept_to_code_pack_installs_validates_and_links() {
         err,
         "Error: Starter pack 'no-such-pack' not found. Available packs: armadai-authoring, \
          armadai-dev, code-analysis-rust, code-analysis-web, concept-to-code, fullstack, \
-         pirate-crew, rust-dev\n"
+         pirate-crew, rust-dev, rust-standards\n"
     );
 
     let (ok, out, err) = env.run(&["init", "--pack", "concept-to-code", "--link"]);
@@ -1000,4 +1002,72 @@ fn a_blank_list_in_a_legacy_pack_yaml_says_what_to_write() {
     let (ok, out, err) = env.init(&pack, &[]);
     assert!(!ok, "{out}");
     assert!(err.contains(HINT_SEQ), "{err}");
+}
+
+/// The embedded `rust-standards` pack validates with no line at all (a standards pack
+/// holds skills with a slot, nothing else).
+#[test]
+fn rust_standards_validates_without_a_diagnostic() {
+    let env = Env::new();
+    let pack =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../armadai-core/starters/rust-standards");
+    let (ok, out, err) = env.run(&["validate", pack.to_str().unwrap()]);
+    assert!(ok, "{out}\n{err}");
+    assert_eq!(out, "0 error(s), 0 warning(s)\n");
+    assert_eq!(err, "");
+}
+
+/// Criterion 10, automatic part: on a `concept-to-code` project, `rust-standards`
+/// installs without a diagnostic and fills the `code-standards` and `security` slots of
+/// the agents that declare them, for Claude Code and for OpenCode.
+#[test]
+fn rust_standards_on_concept_to_code_fills_both_slots() {
+    let env = Env::new();
+    let (ok, out, err) = env.run(&["init", "--pack", "concept-to-code"]);
+    assert!(ok, "{out}\n{err}");
+    let (ok, out, err) = env.run(&["init", "--pack", "rust-standards", "--force"]);
+    assert!(ok, "{out}\n{err}");
+    assert!(!format!("{out}{err}").contains("warn"), "{out}\n{err}");
+    assert_eq!(armadai_model::validate(&env.root()), vec![]);
+    for target in ["claude", "opencode"] {
+        let (ok, out, err) = env.run(&["link", "--target", target]);
+        assert!(ok, "{out}\n{err}");
+        let lines: Vec<&str> = out.lines().collect();
+        for slot in [
+            "code-standards: compiled (rust-conventions)",
+            "security: compiled (rust-security)",
+        ] {
+            let (name, _) = slot.split_once(':').unwrap();
+            let line = format!("{target}: agent implementer slot {slot}");
+            assert!(lines.contains(&line.as_str()), "{name}: {line}\n{out}");
+        }
+    }
+}
+
+/// On a project that already holds a `rust-conventions` skill (`rust-dev`), the install
+/// keeps it, says so, and still adds `rust-security`.
+#[test]
+fn rust_standards_keeps_an_existing_rust_conventions_skill() {
+    let env = Env::new();
+    let (ok, out, err) = env.run(&["init", "--pack", "rust-dev"]);
+    assert!(ok, "{out}\n{err}");
+    let old = std::fs::read(env.root().join(".armadai/skills/rust-conventions/SKILL.md")).unwrap();
+    let (ok, out, err) = env.run(&["init", "--pack", "rust-standards", "--force"]);
+    assert!(ok, "{out}\n{err}");
+    assert!(
+        err.lines().any(|l| l.trim_start().starts_with(
+            "warn: skills/rust-conventions exists, kept (the pack's skill is not mixed in)"
+        )),
+        "{out}\n{err}"
+    );
+    assert_eq!(
+        std::fs::read(env.root().join(".armadai/skills/rust-conventions/SKILL.md")).unwrap(),
+        old
+    );
+    assert!(
+        env.root()
+            .join(".armadai/skills/rust-security/SKILL.md")
+            .is_file()
+    );
+    assert_eq!(armadai_model::validate(&env.root()), vec![]);
 }

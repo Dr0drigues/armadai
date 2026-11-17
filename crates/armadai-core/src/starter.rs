@@ -684,10 +684,16 @@ description: Minimal pack
             assert_eq!(dir.file_name().unwrap().to_str(), Some(pack.name.as_str()));
             assert!(pack.agents.is_empty() && pack.prompts.is_empty() && pack.skills.is_empty());
             assert!(!dir.join("prompts").exists(), "{}", dir.display());
-            assert!(dir.join("agents").is_dir(), "{}", dir.display());
+            // a standards pack holds skills only
+            assert_eq!(
+                dir.join("agents").is_dir(),
+                pack.name != "rust-standards",
+                "{}",
+                dir.display()
+            );
         }
         assert_eq!(seen, EMBEDDED_STARTERS.dirs().count());
-        assert_eq!(seen, 8);
+        assert_eq!(seen, 9);
     }
 
     /// A pack extracted by an older binary keeps no stale file (R-B2): a managed

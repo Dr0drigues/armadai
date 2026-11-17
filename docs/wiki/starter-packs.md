@@ -370,7 +370,7 @@ sources (registries.yaml): add it there, with its credentials` otherwise). An SS
 
 ## Available Packs
 
-The eight packs below ship embedded in the binary, all native.
+The nine packs below ship embedded in the binary, all native.
 
 | Pack | Agents | Flows | Skills |
 |---|---|---|---|
@@ -382,6 +382,7 @@ The eight packs below ship embedded in the binary, all native.
 | `armadai-authoring` | `authoring-lead` (coordinator), `authoring-architect`, `agent-builder`, `skill-builder`, `starter-builder`, `authoring-reviewer`, `authoring-tester` | `authoring` (fan-out), `pack` (plan, build, review loop, test) | `armadai-conventions` |
 | `pirate-crew` | `capitaine` (coordinator), `vigie`, `charpentier`, `cartographe` | `mission` (fan-out) | `code-nautique` |
 | `concept-to-code` | `lead` (coordinator), `analyst`, `framer`, `designer`, `architect`, `implementer`, `coach`, `guardian`, `validator` | `deliver`, `guide` | `briefing`, `cadre`, `standards-setup`, `mockups`, `diagrams`, `previewing` |
+| `rust-standards` | none (a standards pack: skills only) | none | `rust-conventions` (slot `code-standards`), `rust-security` (slot `security`) |
 
 `fullstack` has no coordinator, on purpose: a coordinator becomes the main session itself
 (`CLAUDE.md` for Claude Code), and making `code-reviewer` that would turn every conversation in

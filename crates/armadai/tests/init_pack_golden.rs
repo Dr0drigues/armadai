@@ -1,4 +1,4 @@
-//! Golden snapshots of `armadai init --pack <name>` then `armadai link` for the 8 embedded
+//! Golden snapshots of `armadai init --pack <name>` then `armadai link` for the 9 embedded
 //! packs. The `.armadai/` tree is checked against the pack itself (a native pack is copied,
 //! byte for byte, by a white list); the snapshot holds what the user sees and what Claude
 //! Code receives: the init and link outputs, and every file link writes.
@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
 
-const PACKS: [&str; 8] = [
+const PACKS: [&str; 9] = [
     "armadai-authoring",
     "armadai-dev",
     "code-analysis-rust",
@@ -19,6 +19,7 @@ const PACKS: [&str; 8] = [
     "fullstack",
     "pirate-crew",
     "rust-dev",
+    "rust-standards",
 ];
 
 fn files(dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
@@ -88,6 +89,10 @@ fn snapshot(pack: &str) -> String {
     );
     let mut expected = files(&source);
     expected.remove(Path::new("pack.yaml"));
+    // a standards pack has no project.yaml: the install writes the default one
+    if !expected.contains_key(Path::new("project.yaml")) {
+        installed.remove(Path::new("project.yaml")).unwrap();
+    }
     assert_eq!(
         installed, expected,
         "{pack}: the installed tree is not the pack"
@@ -190,7 +195,12 @@ fn every_pack_links_to_opencode_with_known_keys_only() {
         let link = armadai(&root, &config, &["link", "--target", "opencode"]);
 
         let agents = files(&root.join(".opencode/agents"));
-        assert!(!agents.is_empty(), "{pack}: no agent written");
+        // a standards pack holds skills only: no agent to write
+        assert_eq!(
+            agents.is_empty(),
+            pack == "rust-standards",
+            "{pack}: agents"
+        );
         for (rel, bytes) in &agents {
             for k in frontmatter_keys(&String::from_utf8_lossy(bytes)) {
                 assert!(
