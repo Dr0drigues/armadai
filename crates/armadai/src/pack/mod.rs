@@ -317,7 +317,7 @@ pub fn update_in(
     env: Env,
 ) -> anyhow::Result<Done> {
     let team = status::declared(root);
-    let stds = effective::standards_refs(root);
+    let stds = effective::standards_locked_refs(root);
     if team.is_none() && stds.is_empty() {
         return copy::update_in(root, registry, known, version, env);
     }
@@ -384,11 +384,6 @@ fn update_locks(
     team: Option<&status::Declared>,
     stds: &[(String, String, String)],
 ) -> anyhow::Result<Done> {
-    // an entry `validate` reports (bad name, empty source or version) is not looked up
-    let stds: Vec<&(String, String, String)> = stds
-        .iter()
-        .filter(|(n, s, v)| valid_name(n) && !s.is_empty() && !v.is_empty())
-        .collect();
     let mut synced = std::collections::BTreeSet::new();
     let mut sync_once = |source: &RegistrySource| -> anyhow::Result<()> {
         if synced.insert(source.url.clone()) {
@@ -398,6 +393,11 @@ fn update_locks(
     };
     let old_file = lock::read_committed(root)?;
     let mut file = old_file.clone().unwrap_or_default();
+    // a standards pack the project no longer references leaves the lock
+    let (kept, dropped): (Vec<_>, Vec<_>) = std::mem::take(&mut file.standards)
+        .into_iter()
+        .partition(|e| stds.iter().any(|(n, ..)| *n == e.pack));
+    file.standards = kept;
     let mut lines = Vec::new();
     let mut changed = Vec::new();
     // what the first moved entry is called by the message of an undone update
@@ -479,6 +479,14 @@ fn update_locks(
             None => file.standards.push(new),
         }
     }
+    // an entry that only leaves the lock still rewrites it (it prints nothing, as it
+    // moves no version)
+    if first.is_none()
+        && let Some(d) = dropped.first()
+    {
+        first = Some(("standards", d.pack.clone(), d.resolved.version.clone()));
+        changed.push(format!("standards {} {}", d.pack, d.resolved.version));
+    }
     let Some((what, name, v)) = first else {
         if let Some(t) = &team_new {
             record(config, root, t)?;
@@ -505,8 +513,11 @@ fn update_locks(
         &[root.join(lock::LOCK), referents::path_in(config)],
     )?;
     lock::write(root, &file)?;
-    if let Some(t) = &team_new {
-        record(config, root, t)?;
+    if let Some(t) = &team_new
+        && let Err(e) = record(config, root, t)
+    {
+        undo.restore();
+        return Err(e);
     }
     lines.extend(team_lines);
     Ok(Done {
@@ -729,8 +740,12 @@ pub fn add_in(
     // what `.armadai/` and the referent record keep: the source without its secrets
     let shown = source::recorded(&source.url);
     let new = lock_of(name, &shown, &best);
+    // a standards pack the project no longer references leaves the lock
+    let declared = effective::standards_locked_refs(root);
+    locked
+        .standards
+        .retain(|e| e.pack != name && declared.iter().any(|(n, ..)| *n == e.pack));
     if standards {
-        locked.standards.retain(|e| e.pack != name);
         locked.standards.push(new.clone());
     } else {
         locked.team = Some(new.clone());
@@ -765,8 +780,9 @@ pub fn add_in(
         with_pack(text.as_deref(), name, &shown, &range)
     };
     write_project_yaml(root, &written)?;
-    if !standards {
-        record(config, root, &new)?;
+    if !standards && let Err(e) = record(config, root, &new) {
+        undo.restore();
+        return Err(e);
     }
     Ok(Done {
         relink: true,

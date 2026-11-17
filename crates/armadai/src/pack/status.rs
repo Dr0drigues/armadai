@@ -59,7 +59,13 @@ fn cached(registry: &Path, source: &str, pack: &str) -> Vec<Available> {
 /// from a folder or the embedded ones (they have no `versions.yaml`).
 pub fn newer(root: &Path, registry: &Path) -> Option<Newer> {
     let team = declared(root);
-    let stds = super::effective::standards_refs(root);
+    let stds = super::effective::standards_locked_refs(root);
+    // a pack installed by copy: its note comes before the standards' (they are referenced)
+    if team.is_none()
+        && let Some(n) = copy_newer(root, registry)
+    {
+        return Some(n);
+    }
     if team.is_some() || !stds.is_empty() {
         // `pack update`, which this note advises, is refused under a pin
         if lock::read_pin(root).map_or(true, |p| p.is_some()) {
@@ -90,6 +96,10 @@ pub fn newer(root: &Path, registry: &Path) -> Option<Newer> {
             })
         });
     }
+    None
+}
+
+fn copy_newer(root: &Path, registry: &Path) -> Option<Newer> {
     manifest::installed_packs(root)
         .into_iter()
         .find_map(|(name, installed)| {
@@ -193,7 +203,7 @@ pub fn report(root: &Path, registry: &Path, config: &Path) -> anyhow::Result<Str
         }
         blocks.push(b);
     }
-    let stds = super::effective::standards_refs(root);
+    let stds = super::effective::standards_locked_refs(root);
     if !stds.is_empty() {
         let committed = lock::read_committed(root)?;
         let pin = lock::read_pin(root)?;

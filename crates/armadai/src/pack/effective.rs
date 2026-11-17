@@ -108,11 +108,17 @@ pub(crate) fn references_packs(root: &Path) -> bool {
     pack_ref(root).is_some() || !standards_refs(root).is_empty()
 }
 
-/// The entries of `standards:` to look for at the lock: a name that is not an id, an empty
-/// source or an empty version is `validate`'s to report, with its position.
-fn standards_declared(root: &Path) -> Vec<(String, String)> {
+/// The entries of `standards:` to look for at the lock, as (name, source, version): a name
+/// that is not an id, an empty source or an empty version is `validate`'s to report, with
+/// its position.
+pub(crate) fn standards_locked_refs(root: &Path) -> Vec<(String, String, String)> {
     (standards_refs(root).into_iter())
         .filter(|(n, s, v)| valid_name(n) && !s.is_empty() && !v.is_empty())
+        .collect()
+}
+
+fn standards_declared(root: &Path) -> Vec<(String, String)> {
+    (standards_locked_refs(root).into_iter())
         .map(|(n, s, _)| (n, s))
         .collect()
 }

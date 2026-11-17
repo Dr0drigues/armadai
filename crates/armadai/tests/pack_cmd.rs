@@ -1048,38 +1048,6 @@ fn team_lock(url: &str, version: &str, commit: &str) -> String {
 }
 
 #[test]
-fn update_moves_the_team_entry_and_keeps_the_standards_entries() {
-    let (env, _second) = two_projects();
-    let lock = env.text(".armadai/pack.lock");
-    std::fs::write(
-        env.root().join(".armadai/pack.lock"),
-        format!("{lock}{STD_LOCK}"),
-    )
-    .unwrap();
-    let c3 = env.release("1.2.0", &[], &[]);
-    ok(&env.run(&["pack", "update"], &[]));
-    assert_eq!(
-        env.text(".armadai/pack.lock"),
-        format!("{}{STD_LOCK}", team_lock(&env.url(), "1.2.0", &c3))
-    );
-}
-
-#[test]
-fn add_of_a_team_pack_keeps_the_standards_entries_of_the_lock() {
-    let (env, _c1, c2) = released();
-    put(
-        &env.root(),
-        ".armadai/pack.lock",
-        &format!("format: 1\n{STD_LOCK}"),
-    );
-    ok(&env.run(&["pack", "add", "demo@^1.0"], &[]));
-    assert_eq!(
-        env.text(".armadai/pack.lock"),
-        format!("{}{STD_LOCK}", team_lock(&env.url(), "1.1.0", &c2))
-    );
-}
-
-#[test]
 fn add_with_an_unreadable_lock_stops_instead_of_dropping_its_standards() {
     let (env, ..) = released();
     let bad = format!("format: 1\n{STD_LOCK}branch: main\n");
@@ -2991,6 +2959,11 @@ fn update_moves_every_standards_lock() {
         )
     );
     assert_ne!(cb1, cb2);
+    // `link` reads the cache: the origins are gone
+    for name in ["alpha-std", "beta-std"] {
+        let o = env.dir.path().join(format!("origin-{name}"));
+        std::fs::rename(&o, env.dir.path().join(format!("gone-{name}"))).unwrap();
+    }
     let linked = env.run(&["link"], &[]);
     ok(&linked);
     assert!(
@@ -3408,7 +3381,9 @@ fn pack_new_kind_standards_validates() {
     let bad = env.run_in(&made, &["validate", made.to_str().unwrap()], &[]);
     assert_eq!(bad.code, Some(1), "{}{}", bad.out, bad.err);
     assert!(
-        (bad.out.clone() + &bad.err).contains("standards-foreign-file"),
+        (bad.out.clone() + &bad.err)
+            .lines()
+            .any(|l| l.ends_with(": error[standards-foreign-file]: a standards pack holds only skills: `agents/a.md` is not under skills/")),
         "{}{}",
         bad.out,
         bad.err
@@ -3460,4 +3435,129 @@ fn status_of_a_standards_entry_without_a_lock_entry_names_pack_update() {
         "{}",
         some.err
     );
+}
+
+#[test]
+fn add_of_a_team_pack_keeps_the_declared_standards_entries() {
+    let (env, u, ca) = standards_only();
+    env.release("1.0.0", &[], &[]);
+    env.registries(&[&env.url(), &u]);
+    ok(&env.run(&["pack", "add", "demo"], &[]));
+    let lock = env.text(".armadai/pack.lock");
+    assert!(lock.contains(&format!("commit: {ca}")), "{lock}");
+    assert!(lock.contains("- pack: alpha-std\n"), "{lock}");
+    assert!(lock.starts_with("format: 1\npack: demo\n"), "{lock}");
+}
+
+#[test]
+fn update_and_add_leave_the_lock_entry_of_a_standards_pack_the_project_dropped() {
+    let (env, [(ua, ca), (_, _)]) = team_and_two_standards();
+    // beta-std is no longer referenced: it goes from the lock on the next update
+    let yaml = env.text(".armadai/project.yaml");
+    let cut = yaml.find("  - name: beta-std").unwrap();
+    put(&env.root(), ".armadai/project.yaml", &yaml[..cut]);
+    ok(&env.run(&["pack", "update"], &[]));
+    let lock = env.text(".armadai/pack.lock");
+    assert!(!lock.contains("beta-std"), "{lock}");
+    assert!(
+        lock.ends_with(&std_entry(&ua, "alpha-std", "2.0.0", &ca)),
+        "{lock}"
+    );
+    // and the same on `pack add`: gamma-std joins, delta-std (dropped by hand) leaves
+    let (ug, cg) = env.std_release("gamma-std", "3.0.0");
+    let (ud, _) = env.std_release("delta-std", "1.0.0");
+    env.registries(&[&env.url(), &ua, &ug, &ud]);
+    ok(&env.run(&["pack", "add", "delta-std", "--standards"], &[]));
+    let yaml = env.text(".armadai/project.yaml");
+    let cut = yaml.find("  - name: delta-std").unwrap();
+    put(&env.root(), ".armadai/project.yaml", &yaml[..cut]);
+    assert!(env.text(".armadai/pack.lock").contains("delta-std"));
+    ok(&env.run(&["pack", "add", "gamma-std", "--standards"], &[]));
+    let lock = env.text(".armadai/pack.lock");
+    assert!(!lock.contains("delta-std"), "{lock}");
+    assert!(
+        lock.ends_with(&std_entry(&ug, "gamma-std", "3.0.0", &cg)),
+        "{lock}"
+    );
+    assert!(
+        lock.contains(&std_entry(&ua, "alpha-std", "2.0.0", &ca)),
+        "{lock}"
+    );
+}
+
+#[test]
+fn a_copied_pack_keeps_its_newer_version_note_next_to_standards() {
+    let (env, _) = copied_with_standards();
+    env.native("1.1.0", &[], &[]);
+    let r = env.run(&["pack", "sync"], &[]);
+    ok(&r);
+    assert!(
+        r.err_has(
+            "note: pack demo 1.1.0 is in the cache (installed: 1.0.0): run `armadai pack update`"
+        ),
+        "{}",
+        r.err
+    );
+}
+
+#[test]
+fn sync_signals_a_gone_tag_of_a_standards_pack() {
+    let (env, _, c1) = standards_only();
+    git(
+        &env.dir.path().join("origin-alpha-std"),
+        &["tag", "-d", "alpha-std-v1.0.0"],
+    );
+    let r = env.run(&["pack", "sync"], &[]);
+    ok(&r);
+    assert!(
+        r.err_has(&format!(
+            "  warn: tag alpha-std-v1.0.0 of standards alpha-std no longer exists, .armadai/pack.lock keeps {}",
+            id12(&c1)
+        )),
+        "{}",
+        r.err
+    );
+}
+
+#[test]
+fn an_unfinished_standards_entry_is_left_to_validate_by_status_and_pin() {
+    let (env, ..) = standards_only();
+    let yaml = env.text(".armadai/project.yaml");
+    put(
+        &env.root(),
+        ".armadai/project.yaml",
+        &format!("{yaml}  - name: half\n    source: ''\n    version: ''\n"),
+    );
+    let status = env.run(&["pack", "status"], &[]);
+    ok(&status);
+    assert!(
+        status.out.starts_with("Standards alpha-std (reference)\n"),
+        "{}",
+        status.out
+    );
+    assert!(!status.out.contains("half"), "{}", status.out);
+    let pin = env.run(&["pack", "pin"], &[]);
+    ok(&pin);
+    assert_eq!(
+        pin.out,
+        "pinned standards alpha-std 1.0.0 for this checkout; pack update is refused here until armadai pack unpin\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_failed_referent_record_puts_the_lock_back() {
+    use std::os::unix::fs::PermissionsExt;
+    let (env, _second) = two_projects();
+    env.release("1.2.0", &[], &[]);
+    let lock = env.lock_bytes();
+    // as after a clone the record is to be written again, in a config folder that can no
+    // longer take a new file
+    std::fs::remove_file(env.config().join("pack-referents.yaml")).unwrap();
+    let config = env.config();
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let r = env.run(&["pack", "update"], &[]);
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_ne!(r.code, Some(0), "{}{}", r.out, r.err);
+    assert_eq!(env.lock_bytes(), lock, "{}{}", r.out, r.err);
 }
