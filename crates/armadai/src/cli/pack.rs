@@ -6,12 +6,20 @@ use std::path::{Path, PathBuf};
 use armadai_core::registries::{RegistrySource, cache_key};
 use clap::Subcommand;
 
-use crate::cli::new_wizard::{PackAnswers, ask_pack, pack_answers, plan_pack};
+use crate::cli::new_wizard::{PackAnswers, ask_pack, pack_answers_of, plan_pack};
 use crate::pack::cache::{self, Available};
 use crate::pack::lock::{self, TagState};
 use crate::pack::outputs::Outputs;
 use crate::pack::{source, status};
 use crate::starters_registry::{effective_starter_sources, sync_warning};
+use armadai_core::starter::PackKind;
+
+/// The `--kind` values of `pack new`.
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub enum KindArg {
+    Team,
+    Standards,
+}
 
 #[derive(Subcommand)]
 pub enum PackCommand {
@@ -65,6 +73,9 @@ pub enum PackCommand {
         /// Capture this project's .armadai/ (not the link manifest, state or variables)
         #[arg(long)]
         from_project: bool,
+        /// What the pack holds: a whole team (default) or standards (skills only)
+        #[arg(long, value_enum, conflicts_with = "from_project")]
+        kind: Option<KindArg>,
         #[arg(long)]
         description: Option<String>,
         /// Parent folder (default: the current directory)
@@ -78,6 +89,7 @@ pub fn execute(what: PackCommand) -> anyhow::Result<()> {
         name,
         empty,
         from_project,
+        kind,
         description,
         dir,
     } = what
@@ -95,10 +107,14 @@ pub fn execute(what: PackCommand) -> anyhow::Result<()> {
                 description,
             )?
         } else {
+            let kind = match kind {
+                Some(KindArg::Standards) => PackKind::Standards,
+                Some(KindArg::Team) | None => PackKind::Team,
+            };
             let answers = if empty {
-                pack_answers(&name, description.as_deref())
+                pack_answers_of(kind, &name, description.as_deref())
             } else {
-                ask_pack(&name, description.as_deref())?
+                ask_pack(kind, &name, description.as_deref())?
             };
             new_minimal(&parent, &answers)?
         };
@@ -155,11 +171,18 @@ pub fn execute(what: PackCommand) -> anyhow::Result<()> {
         }
         PackCommand::Pin => {
             let pin = lock::pin(&root?)?;
-            let pin = pin.first().expect("a pin holds an entry");
-            println!(
-                "pinned pack {} {} for this checkout; pack update is refused here until armadai pack unpin",
-                pin.pack, pin.resolved.version
-            );
+            if let Some(t) = &pin.team {
+                println!(
+                    "pinned pack {} {} for this checkout; pack update is refused here until armadai pack unpin",
+                    t.pack, t.resolved.version
+                );
+            }
+            for e in &pin.standards {
+                println!(
+                    "pinned standards {} {} for this checkout; pack update is refused here until armadai pack unpin",
+                    e.pack, e.resolved.version
+                );
+            }
             Ok(())
         }
         PackCommand::Unpin => {
@@ -167,15 +190,26 @@ pub fn execute(what: PackCommand) -> anyhow::Result<()> {
             let Some(old) = lock::unpin(&root)? else {
                 anyhow::bail!("this checkout pins no pack");
             };
-            let now = lock::read_committed(&root)?
-                .and_then(|l| l.team)
-                .map_or("missing".to_string(), |l| l.resolved.version);
-            let old = old.first();
-            let (name, was) = old.map_or(("", ""), |o| (&o.pack, &o.resolved.version));
-            println!(
-                "unpinned pack {} (was {}); this checkout follows .armadai/pack.lock ({now}) again",
-                name, was
-            );
+            let now = lock::read_committed(&root)?.unwrap_or_default();
+            let missing = || "missing".to_string();
+            if let Some(t) = &old.team {
+                let now = now
+                    .team
+                    .as_ref()
+                    .map_or_else(missing, |l| l.resolved.version.clone());
+                println!(
+                    "unpinned pack {} (was {}); this checkout follows .armadai/pack.lock ({now}) again",
+                    t.pack, t.resolved.version
+                );
+            }
+            for e in &old.standards {
+                let now = (now.standards_entry(&e.pack))
+                    .map_or_else(missing, |l| l.resolved.version.clone());
+                println!(
+                    "unpinned standards {} (was {}); this checkout follows .armadai/pack.lock ({now}) again",
+                    e.pack, e.resolved.version
+                );
+            }
             Ok(())
         }
         PackCommand::New { .. } | PackCommand::Test { .. } => unreachable!("handled above"),
@@ -445,8 +479,12 @@ fn new_minimal(parent: &Path, a: &PackAnswers) -> anyhow::Result<String> {
         .map(|(r, b)| (r, b, false))
         .collect();
     let dir = write_pack(parent, &parent.join(&a.name), &a.name, files)?;
+    let held = match a.kind {
+        PackKind::Team => "pack.yaml, project.yaml, agents/, skills/, flows/, automations/",
+        PackKind::Standards => "pack.yaml, skills/",
+    };
     Ok(format!(
-        "Created pack {} in {}: pack.yaml, project.yaml, agents/, skills/, flows/, automations/",
+        "Created pack {} in {}: {held}",
         a.name,
         dir.display()
     ))
@@ -467,11 +505,21 @@ fn new_from_project(
             d.name
         );
     }
+    if let Some((n, ..)) = crate::pack::effective::standards_refs(root).first() {
+        anyhow::bail!(
+            "this project references standards {n}: its .armadai/ is an overlay, not a pack; \
+             create the pack from its source instead"
+        );
+    }
     let mut files = crate::cli::native_pack::read_listed(&root.join(".armadai"), true)?;
-    let pack_yaml = plan_pack(&pack_answers(name, description.as_deref()))
-        .into_iter()
-        .find(|(r, _)| r == Path::new("pack.yaml"))
-        .map(|(r, b)| (r, b, false));
+    let pack_yaml = plan_pack(&pack_answers_of(
+        PackKind::Team,
+        name,
+        description.as_deref(),
+    ))
+    .into_iter()
+    .find(|(r, _)| r == Path::new("pack.yaml"))
+    .map(|(r, b)| (r, b, false));
     files.extend(pack_yaml);
     let count = |dir: &str| {
         (files.iter())

@@ -998,3 +998,48 @@ fn unlink_after_a_link_with_standards_restores_the_tree() {
     after.remove(Path::new(".armadai/.gitignore"));
     assert_eq!(after, before);
 }
+
+// `list`, `inspect` and `skills` name the standards pack of a skill that fills a slot.
+
+/// `std-a` holds `a-rule`, the project its own `own`; both fill `code-standards`.
+fn std_env_with_an_own_skill() -> Env {
+    let env = std_env(&[("a-rule", "code-standards")], &[]);
+    put(
+        &env.root(),
+        ".armadai/skills/own/SKILL.md",
+        &slot_skill("own", "code-standards"),
+    );
+    env
+}
+
+#[test]
+fn list_names_the_standards_pack_of_a_slot_skill() {
+    let env = std_env_with_an_own_skill();
+    let out = env.ok(&["list"], &[]);
+    has_line(&out, "  code-standards: a-rule from std-a, own");
+    has_line(&out, "  empty-slot: (none)");
+}
+
+#[test]
+fn inspect_names_the_standards_pack_of_a_slot_skill() {
+    let env = std_env_with_an_own_skill();
+    let out = env.ok(&["inspect", "dev"], &[]);
+    has_line(
+        &out,
+        "  Slots:        code-standards: a-rule from std-a, own",
+    );
+    has_line(&out, "                empty-slot: (none)");
+}
+
+#[test]
+fn skills_lists_a_standards_skill_with_its_pack() {
+    let env = std_env_with_an_own_skill();
+    let out = env.ok(&["skills", "show", "a-rule"], &[]);
+    has_line(&out, "Source: standards std-a, skills/a-rule");
+    // the project's own skill is its own file
+    let own = env.ok(&["skills", "show", "own"], &[]);
+    assert!(
+        !own.lines().any(|l| l.starts_with("Source: standards")),
+        "{own}"
+    );
+}

@@ -137,6 +137,18 @@ pub fn open_in(root: &Path, vars: Vars, registry: &Path) -> anyhow::Result<Effec
     open_locked(root, team, lock.as_ref(), None, vars, registry)
 }
 
+/// E1 (no lock at all) and E2 (a lock without the entry): a `standards:` entry that is not locked.
+pub(crate) fn standards_missing(name: &str, lock_exists: bool) -> String {
+    let what = if lock_exists {
+        "has no entry for it"
+    } else {
+        "is missing"
+    };
+    format!(
+        ".armadai/project.yaml references standards {name} but .armadai/pack.lock {what}: run `armadai pack update`"
+    )
+}
+
 /// M5a.
 pub(crate) fn lock_missing(name: &str) -> String {
     format!(
@@ -202,10 +214,7 @@ fn open_locked(
             bail!(".armadai/project.yaml references standards {name} twice: keep one entry");
         }
         let entry = match lock {
-            None => bail!(
-                ".armadai/project.yaml references standards {name} but .armadai/pack.lock is \
-                 missing: run `armadai pack update`"
-            ),
+            None => bail!("{}", standards_missing(&name, false)),
             Some(l) => l.standards_entry(&name),
         };
         match entry {
@@ -214,10 +223,7 @@ fn open_locked(
                 ".armadai/project.yaml references standards {name} but the pack pin of this \
                  checkout has no entry for it: run armadai pack unpin, then armadai pack update"
             ),
-            None => bail!(
-                ".armadai/project.yaml references standards {name} but .armadai/pack.lock has \
-                 no entry for it: run `armadai pack update`"
-            ),
+            None => bail!("{}", standards_missing(&name, true)),
         }
     }
     build(root, team, &stds, vars, registry)

@@ -4,6 +4,7 @@
 //! tested without a terminal; the `dialoguer` layer only collects the answers. The
 //! write itself is the non-interactive path (guard, validation, undo).
 
+use armadai_core::starter::PackKind;
 use std::io::IsTerminal;
 
 use armadai_model::{Automation, Cap, Capabilities, Event, Flow, FlowTemplate, Tier};
@@ -152,6 +153,7 @@ pub fn plan_command(a: CommandAnswers) -> (String, armadai_model::Command) {
 /// What `armadai pack new` is told, whether by options or by the guide.
 #[derive(Debug, Clone)]
 pub struct PackAnswers {
+    pub kind: PackKind,
     pub name: String,
     pub description: String,
 }
@@ -159,13 +161,24 @@ pub struct PackAnswers {
 /// The description of a pack created without one.
 pub const DEFAULT_PACK_DESCRIPTION: &str = "A starter pack";
 
+/// The description of a standards pack created without one.
+pub const DEFAULT_STANDARDS_DESCRIPTION: &str = "A standards pack";
+
+fn default_description(kind: PackKind) -> &'static str {
+    match kind {
+        PackKind::Team => DEFAULT_PACK_DESCRIPTION,
+        PackKind::Standards => DEFAULT_STANDARDS_DESCRIPTION,
+    }
+}
+
 /// The answers for `name` and a description that may be absent or blank: the one
 /// place the default is applied, for `--empty` and for the guide alike.
-pub fn pack_answers(name: &str, description: Option<&str>) -> PackAnswers {
+pub fn pack_answers_of(kind: PackKind, name: &str, description: Option<&str>) -> PackAnswers {
     let description = description.map(str::trim).filter(|d| !d.is_empty());
     PackAnswers {
+        kind,
         name: name.to_string(),
-        description: description.unwrap_or(DEFAULT_PACK_DESCRIPTION).to_string(),
+        description: description.unwrap_or(default_description(kind)).to_string(),
     }
 }
 
@@ -175,6 +188,20 @@ pub fn pack_answers(name: &str, description: Option<&str>) -> PackAnswers {
 pub fn plan_pack(a: &PackAnswers) -> Vec<(std::path::PathBuf, Vec<u8>)> {
     // a JSON string is a YAML double-quoted scalar
     let description = serde_json::to_string(&a.description).unwrap_or_default();
+    if a.kind == PackKind::Standards {
+        // skills only: nothing else is read from a standards pack
+        return vec![
+            (
+                "pack.yaml".into(),
+                format!(
+                    "format: 1\nname: {}\nkind: standards\ndescription: {description}\n",
+                    a.name
+                )
+                .into_bytes(),
+            ),
+            (std::path::Path::new("skills").join(".gitkeep"), Vec::new()),
+        ];
+    }
     let mut files = vec![
         (
             "pack.yaml".into(),
@@ -192,7 +219,11 @@ pub fn plan_pack(a: &PackAnswers) -> Vec<(std::path::PathBuf, Vec<u8>)> {
 }
 
 /// The guide of `pack new`: the name (the argument is the default) and the description.
-pub fn ask_pack(name: &str, description: Option<&str>) -> anyhow::Result<PackAnswers> {
+pub fn ask_pack(
+    kind: PackKind,
+    name: &str,
+    description: Option<&str>,
+) -> anyhow::Result<PackAnswers> {
     require_terminal("pass --empty or --from-project instead (armadai pack new --help)")?;
     let name: String = dialoguer::Input::<String>::new()
         .with_prompt("Pack name")
@@ -203,11 +234,14 @@ pub fn ask_pack(name: &str, description: Option<&str>) -> anyhow::Result<PackAns
         .interact_text()?;
     // `--description` is the proposal, not ignored
     let description = dialoguer::Input::<String>::new()
-        .with_prompt("Description (empty: A starter pack)")
+        .with_prompt(format!(
+            "Description (empty: {})",
+            default_description(kind)
+        ))
         .with_initial_text(description.unwrap_or_default())
         .allow_empty(true)
         .interact_text()?;
-    Ok(pack_answers(&name, Some(&description)))
+    Ok(pack_answers_of(kind, &name, Some(&description)))
 }
 
 /// The valid id an invalid answer most likely meant (`Mon Agent` → `mon-agent`),
@@ -510,12 +544,12 @@ mod tests {
         // the guide hands `pack_answers` what was typed; `--empty` hands it the flag
         for (typed, flag) in [("", None), ("  ", None), ("Demo pack", Some("Demo pack"))] {
             assert_eq!(
-                plan_pack(&pack_answers("demo", Some(typed))),
-                plan_pack(&pack_answers("demo", flag)),
+                plan_pack(&pack_answers_of(PackKind::Team, "demo", Some(typed))),
+                plan_pack(&pack_answers_of(PackKind::Team, "demo", flag)),
                 "{typed:?}"
             );
         }
-        let files = plan_pack(&pack_answers("demo", Some("Demo pack")));
+        let files = plan_pack(&pack_answers_of(PackKind::Team, "demo", Some("Demo pack")));
         let text = |f: &str| {
             let (_, b) = files
                 .iter()

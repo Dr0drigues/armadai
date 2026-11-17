@@ -143,6 +143,7 @@ lists that folder, so `git status` stays clean, it is not shared with another ch
 gate and the `grant` hook) reads the pin instead, whatever `.armadai/pack.lock` says. The pin is
 never set by another command, and `pack unpin` removes only that file.
 
+- A project with only `standards:` pins too: `pack pin` prints one `pinned standards <name> <version> for this checkout; …` line per standards entry (after the `pinned pack` line when there is one), `pack unpin` one `unpinned standards <name> (was <version>); …` line each, and `pack status` shows `pinned (worktree): <version> (<at>)` under each `Standards` block (`pinned (worktree): no entry (run armadai pack unpin)` when the pin has none).
 - `pack update` and `pack add` are refused before any network access: `refused: this checkout pins pack demo 1.3.0 (armadai pack pin); run armadai pack unpin first`. A second `pack pin` says `this checkout already pins pack demo 1.3.0; run armadai pack unpin first`, and `pack unpin` without a pin `this checkout pins no pack`.
 - `pack status` adds a line under `locked:`, `  pinned (worktree): 1.3.0 (tag demo-v1.3.0, 0123456789ab)`, with the suffix ` (not in cache: run armadai pack sync)` when the snapshot is missing. `locked:` still shows `.armadai/pack.lock`. Without a pin the output does not change.
 - `pack sync` lays the snapshot of the pin, and the "newer version" note is not printed (its advice, `pack update`, is refused). Its tag warnings read `  warn: tag demo-v1.3.0 of pack demo now points to <new12>, the pack pin of this checkout says <old12>: the pin is kept (link uses its commit)` and `  warn: tag demo-v1.3.0 of pack demo no longer exists, the pack pin of this checkout keeps <old12>`.
@@ -163,7 +164,7 @@ never set by another command, and `pack unpin` removes only that file.
 | `armadai pack update [<version>]` | Reference: sync the source, move the lock to the best version of the range (or the one given), link. Copy: apply the new version of the pack to the files (below), link |
 | `armadai pack pin` | Keep this checkout on the pack version it locks now, even when `.armadai/pack.lock` moves (above) |
 | `armadai pack unpin` | Follow `.armadai/pack.lock` again |
-| `armadai pack new <name> [--empty \| --from-project] [--description …] [--dir …]` | Create a native pack folder |
+| `armadai pack new <name> [--empty \| --from-project] [--kind team\|standards] [--description …] [--dir …]` | Create a native pack folder |
 | `armadai pack test [<dir>]` | Run the scripts the pack lists under `tests:` (the project's locked snapshot, or a folder; no network access of its own) |
 
 `pack status` in reference mode:
@@ -196,6 +197,8 @@ armadai pack new demo --empty               # no questions
 armadai pack new demo --from-project        # this project's .armadai/, as a pack
 armadai pack new demo --dir ../packs        # in another parent folder
 ```
+
+`--kind standards` (with `--empty`, or in the guide) writes a pack of skills only: `pack.yaml` (`format: 1`, `kind: standards`, the description, `A standards pack` by default) and `skills/.gitkeep`. `--from-project` refuses a project that references `standards:` (its `.armadai/` is an overlay, not a pack).
 
 `--empty` writes `pack.yaml` (`format: 1`, the description, `A starter pack` by default), a minimal
 `project.yaml`, and `agents/`, `skills/`, `flows/`, `automations/` each holding a `.gitkeep` (the

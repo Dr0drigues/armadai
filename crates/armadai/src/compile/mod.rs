@@ -84,6 +84,17 @@ pub fn merge_native(
     Ok(true)
 }
 
+/// The skills filling a slot, each from a standards pack followed by ` from <pack>`
+/// (`skill_packs`); the others stand alone.
+pub(crate) fn named_fills(fills: &[String], skill_packs: &BTreeMap<String, String>) -> Vec<String> {
+    (fills.iter())
+        .map(|id| match skill_packs.get(id) {
+            Some(pack) => format!("{id} from {pack}"),
+            None => id.clone(),
+        })
+        .collect()
+}
+
 /// One line per slot of agent `id` on target `t`: a filled slot is `compiled` with
 /// its skills (each from a standards pack followed by ` from <pack>`, `skill_packs`), or
 /// `approximated` with the given reason; an empty one `not-compiled`.
@@ -104,14 +115,12 @@ pub(crate) fn slot_lines(
         } else if let Some(why) = approximated {
             r.push(t, element, Status::Approximated, Some(why));
         } else {
-            // a skill of a standards pack is followed by its pack; the others stand alone
-            let named: Vec<String> = (fills.iter())
-                .map(|id| match skill_packs.get(id) {
-                    Some(pack) => format!("{id} from {pack}"),
-                    None => id.clone(),
-                })
-                .collect();
-            r.push(t, element, Status::Compiled, Some(&named.join(", ")));
+            r.push(
+                t,
+                element,
+                Status::Compiled,
+                Some(&named_fills(&fills, skill_packs).join(", ")),
+            );
         }
     }
 }

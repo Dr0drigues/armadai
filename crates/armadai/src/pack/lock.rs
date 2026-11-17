@@ -234,13 +234,16 @@ fn write_file(p: &Path, lock: &LockFile) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `pack pin`: copies `.armadai/pack.lock` to this checkout's pin (T1 to T4).
+/// `pack pin`: copies `.armadai/pack.lock` to this checkout's pin (T1 to T4); the project
+/// references a pack (`pack:`), standards packs (`standards:`) or both.
 pub fn pin(root: &Path) -> anyhow::Result<LockFile> {
-    let Some((name, _)) = super::effective::pack_ref(root) else {
+    let team = super::effective::pack_ref(root);
+    let standards = super::effective::standards_refs(root);
+    if team.is_none() && standards.is_empty() {
         anyhow::bail!(
             "this project references no pack (pack: in .armadai/project.yaml); a pack installed by copy is already in the checkout and needs no pin"
         );
-    };
+    }
     let Some(p) = pin_path(root).map_err(|e| anyhow::anyhow!("pack pin refused: {e}"))? else {
         anyhow::bail!(
             "pack pin needs a git checkout: the pin is kept in its git directory, and there is no .git above {}",
@@ -248,15 +251,34 @@ pub fn pin(root: &Path) -> anyhow::Result<LockFile> {
         );
     };
     if let Some(old) = read_pin(root)? {
+        let (kind, l) = match (&old.team, old.standards.first()) {
+            (Some(t), _) => ("pack", Some(t)),
+            (None, s) => ("standards", s),
+        };
         anyhow::bail!(
-            "this checkout already pins pack {} {}; run armadai pack unpin first",
-            old.first().map_or("", |l| &l.pack),
-            old.first().map_or("", |l| &l.resolved.version)
+            "this checkout already pins {kind} {} {}; run armadai pack unpin first",
+            l.map_or("", |l| &l.pack),
+            l.map_or("", |l| &l.resolved.version)
         );
     }
-    let Some(lock) = read_committed(root)?.filter(|l| l.team.is_some()) else {
-        anyhow::bail!("{}", super::effective::lock_missing(&name));
-    };
+    let committed = read_committed(root)?;
+    if let Some((name, _)) = &team
+        && committed.as_ref().is_none_or(|l| l.team.is_none())
+    {
+        anyhow::bail!("{}", super::effective::lock_missing(name));
+    }
+    for (name, ..) in &standards {
+        if committed
+            .as_ref()
+            .is_none_or(|l| l.standards_entry(name).is_none())
+        {
+            anyhow::bail!(
+                "{}",
+                super::effective::standards_missing(name, committed.is_some())
+            );
+        }
+    }
+    let lock = committed.expect("a referenced pack has a lock");
     write_file(&p, &lock)?;
     Ok(lock)
 }

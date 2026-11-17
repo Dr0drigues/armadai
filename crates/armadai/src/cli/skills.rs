@@ -504,8 +504,20 @@ fn collect_skills() -> Vec<Skill> {
             {
                 let scratch = std::mem::take(&mut s.source);
                 let own = r.join(".armadai/skills").join(&d);
-                let (real, label) = match &v.pack {
-                    Some(p) if !own.is_dir() => (
+                let std_pack = (!own.is_dir())
+                    .then(|| v.skill_packs().get(&*d.to_string_lossy()).cloned())
+                    .flatten()
+                    .and_then(|n| v.standards.iter().find(|p| p.name == n));
+                let (real, label) = match (&v.pack, std_pack) {
+                    (_, Some(p)) => (
+                        p.snapshot.join("skills").join(&d),
+                        Some(format!(
+                            "standards {}, skills/{}",
+                            p.name,
+                            d.to_string_lossy()
+                        )),
+                    ),
+                    (Some(p), None) if !own.is_dir() => (
                         p.snapshot.join("skills").join(&d),
                         // shortcut: the label rides in `source` (a path), only ever displayed
                         Some(format!("pack {}, skills/{}", p.name, d.to_string_lossy())),
