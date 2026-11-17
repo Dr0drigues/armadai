@@ -604,29 +604,56 @@ fn line_text(flow: Option<String>, session: Option<String>) -> String {
 }
 
 /// How long the user's own status bar may take before ours prints alone.
-const CHAIN_LIMIT: std::time::Duration = std::time::Duration::from_secs(1);
+const CHAIN_LIMIT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Printed after the flow line when the user's bar was configured and gave nothing.
+const BAR_FAILED: &str = "[status bar failed]";
 
 /// `armadai __claude-statusline`: the output of the user's own status bar when there is
 /// one (same stdin, at most [`CHAIN_LIMIT`]), then the line of the session Claude Code
-/// names in its JSON, always coloured. Any failure of the user's bar leaves our line
-/// alone; exit 0 always (Claude Code blanks the bar on any other code).
+/// names in its JSON, always coloured. A user bar that fails, is too slow or is missing
+/// (Unix; elsewhere `run_user` never runs) adds the `[status bar failed]` marker after our
+/// line, or alone without one; no bar configured, no marker. Exit 0 always (Claude Code
+/// blanks the bar on any other code).
 pub fn statusline_main() -> anyhow::Result<()> {
     use crate::claude_adapter::statusline_chain as chain;
     anstream::ColorChoice::write_global(anstream::ColorChoice::Always);
     let raw = stdin_raw();
-    let user = chain::user_command(&|k| std::env::var(k).ok())
-        .and_then(|c| chain::run_user(&c, raw.as_deref().unwrap_or("").as_bytes(), CHAIN_LIMIT))
-        .map(|out| out.trim_end_matches(['\n', '\r']).to_string())
-        .filter(|out| !out.is_empty());
-    if let Some(out) = user {
-        anstream::println!("{out}");
+    let mut failed = false;
+    if let Some(command) = chain::user_command(&|k| std::env::var(k).ok()) {
+        match chain::run_user(
+            &command,
+            raw.as_deref().unwrap_or("").as_bytes(),
+            CHAIN_LIMIT,
+        ) {
+            Some(out) => {
+                let out = out.trim_end_matches(['\n', '\r']);
+                if !out.is_empty() {
+                    anstream::println!("{out}");
+                }
+            }
+            None => failed = cfg!(unix),
+        }
     }
+    let marker = if failed {
+        let s = crate::cli::style::warn();
+        format!("{}{BAR_FAILED}{}", s.render(), s.render_reset())
+    } else {
+        String::new()
+    };
     let json = raw.as_deref().and_then(parse_object);
+    let mut line = String::new();
     if let Some((_, runs)) = session_runs(json.as_ref(), None, None, true) {
         let pieces = crate::flow_status::line::line(&runs);
         if !pieces.is_empty() {
-            anstream::println!("{}", painted(&pieces));
+            line = painted(&pieces);
         }
+    }
+    match (line.is_empty(), marker.is_empty()) {
+        (false, false) => anstream::println!("{line}  {marker}"),
+        (false, true) => anstream::println!("{line}"),
+        (true, false) => anstream::println!("{marker}"),
+        (true, true) => {}
     }
     Ok(())
 }
