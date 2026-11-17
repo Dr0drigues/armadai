@@ -348,10 +348,7 @@ fn build(
             });
         }
         let mut layers: Vec<BTreeMap<PathBuf, Vec<u8>>> = Vec::new();
-        // a layer whose pack.yaml is not `kind: standards` is named, not also blamed for
-        // every file a team pack legitimately holds
-        let mut wrong_kind = BTreeSet::new();
-        for (i, lock) in stds.iter().enumerate() {
+        for lock in stds {
             let snap = snapshot(root, lock, Kind::Standards, registry)?;
             let pack = native_pack::files(&snap)?;
             let kind = StarterPack::load(&snap)
@@ -359,7 +356,6 @@ fn build(
                 .kind;
             if kind != PackKind::Standards {
                 extra.push(standards::wrong_kind(&lock.pack, &snap));
-                wrong_kind.insert(i);
             }
             exec_std.push(
                 pack.files
@@ -416,9 +412,6 @@ fn build(
             ));
         }
         for (i, s) in standards.iter().enumerate() {
-            if wrong_kind.contains(&i) {
-                continue;
-            }
             let rels: Vec<PathBuf> = (stacked.foreign.iter())
                 .filter(|(l, _)| *l == i)
                 .map(|(_, p)| p.clone())
@@ -545,7 +538,7 @@ impl Effective {
     /// A layering error fails it, with those diagnostics first.
     pub fn load_checked(&self) -> Result<(Project, Origins), Vec<Diagnostic>> {
         match armadai_model::load_checked(&self.sources) {
-            Ok(_) if !self.extra.is_empty() => Err(self.extra.clone()),
+            Ok(_) if armadai_model::has_errors(&self.extra) => Err(self.extra.clone()),
             Ok((p, mut o)) => {
                 self.remap_origins(&mut o);
                 Ok((p, o))
@@ -1470,19 +1463,31 @@ mod tests {
             C1,
             &[
                 ("pack.yaml", "format: 1\nname: std-a\ndescription: d\n"),
+                ("agents/a.md", AGENT_A),
                 ("skills/s/SKILL.md", &skill_of("s")),
             ],
         );
         let e = sx.open().unwrap();
         let ds = e.validate();
-        let d = ds
-            .iter()
-            .find(|d| d.code == "standards-wrong-kind")
-            .unwrap();
-        assert_eq!(d.file, snap.join("pack.yaml"));
+        // the wrong kind and, as for any standards pack, each file outside skills/
+        let got: Vec<(&str, PathBuf, &str)> = (ds.iter())
+            .filter(|d| d.code.starts_with("standards-"))
+            .map(|d| (d.code, d.file.clone(), d.message.as_str()))
+            .collect();
         assert_eq!(
-            d.message,
-            "standards std-a is a team pack (its pack.yaml has no kind: standards): reference it with pack:, not standards:"
+            got,
+            [
+                (
+                    "standards-wrong-kind",
+                    snap.join("pack.yaml"),
+                    "standards std-a is a team pack (its pack.yaml has no kind: standards): reference it with pack:, not standards:"
+                ),
+                (
+                    "standards-foreign-file",
+                    snap.join("agents/a.md"),
+                    "a standards pack holds only skills: `agents/a.md` is not under skills/"
+                ),
+            ]
         );
         assert!(e.load_checked().is_err());
     }
@@ -1596,7 +1601,7 @@ mod tests {
             &format!("{MANIFEST}standards:\n  - {{ name: std-a, source: '', version: latest }}\n"),
         );
         let e = sx.open().unwrap();
-        assert!(codes(&e.validate()).contains(&"standards-empty-source"));
+        assert_eq!(codes(&e.validate()), ["standards-empty-source"]);
     }
 
     #[test]
