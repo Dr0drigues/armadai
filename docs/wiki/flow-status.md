@@ -425,6 +425,20 @@ a worktree and the one of the main checkout therefore read and write the same fi
 lot goes to `journal.jsonl`, which `show --lot <lot>` reads along with the lot's own file; without `--lot`,
 `show` merges `journal.jsonl` and every `journal-<lot>.jsonl`. `state/` is not versioned.
 
+**`sessions.journal_dir`.** When the `.armadai/project.yaml` of the project holds `sessions.journal_dir`,
+the journal files live in that folder instead, and the rule above no longer applies: `add` and `show`
+use it from any checkout. A relative path starts from the parent of the resolved `.armadai` (links
+followed; the rest of the path is left to the file system, `..` included), so worktrees sharing
+one `.armadai` all reach the same folder; prefer a relative path, an absolute one is specific to a
+machine. The key alone is read as `armadai validate` reads it (a number is its text), and a value that
+`validate` refuses (`invalid-journal-dir`, or a list or a map) is refused by `add` and `show` too,
+with the same rule, and nothing is written. The folder must already exist: `add` does not create it,
+and both commands refuse a path that does not exist or is not a folder, naming it and saying to
+create it or fix `project.yaml`. A symbolic link as that folder is refused like `state/`; a linked
+`.armadai` is allowed. Entries already written under `state/` are not moved. The key is read from the
+project's own `project.yaml` only (not from a pack), and a file that does not read leaves the
+default folder, so `journal` keeps working on a project that does not validate.
+
 **The lot name.** The alphabet and length of the lot of a delegation marker (1 to 40 ASCII letters,
 digits, `.` or `-`), and it must start with a letter or a digit (so `.`, `..` and `.x` name no file).
 The file name is in lowercase and the case is kept in the `lot` field: `Menu-2.1` is written to
@@ -452,9 +466,9 @@ in the middle of a line rather than seeing half of it. The lock is advisory (`fl
 holds against processes that take it, which `armadai journal` does, and nothing takes it off Unix. When the last line of a file was cut (no final newline), the next `add`
 starts on a new line, so the new entry is not lost. `show` skips a line it cannot read and one whose
 `schema` is not `armadai.journal/1` (a version to come), and counts them on stderr (`journal.jsonl: 2 unreadable lines
-skipped`). Neither `add` nor `show` goes through a symbolic link, on `state/` or on a journal file.
+skipped`). Neither `add` nor `show` goes through a symbolic link, on the journal folder (`state/` or the one `sessions.journal_dir` names) or on a journal file.
 
-**Nothing private.** The journal is free text kept in `.armadai/state/`, outside git; `show` output
+**Nothing private.** The journal is free text kept in `.armadai/state/` (outside git) or in the folder `sessions.journal_dir` names, which can be inside a git repository and so be committed or pushed; `show` output
 can end up in a report. Do not write a customer name, a token or a private path in it.
 
 `armadai link --target claude` can write the instructions that make a session use it
