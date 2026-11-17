@@ -17,6 +17,20 @@ fn clean(p: &Path) -> PathBuf {
     out
 }
 
+/// The `gitdir:` value of the file `dot_git` (in folder `d`), resolved to a path.
+fn gitdir_of_file(d: &Path, dot_git: &Path) -> Option<PathBuf> {
+    let raw = std::fs::read_to_string(dot_git).ok()?;
+    let gitdir = raw.lines().next()?.strip_prefix("gitdir:")?.trim();
+    // A relative value is relative to the real folder: reached through a symbolic
+    // link, a lexical `..` would climb the link's parent instead.
+    let base = if Path::new(gitdir).is_absolute() {
+        d.to_path_buf()
+    } else {
+        std::fs::canonicalize(d).ok()?
+    };
+    Some(clean(&base.join(gitdir)))
+}
+
 /// The git directory of the checkout holding `dir`: `<d>/.git` when it is a folder,
 /// the `gitdir:` value of `<d>/.git` resolved against `<d>` when it is a file
 /// (git writes it relative with `worktree.useRelativePaths`). `d` is `dir` or its
@@ -28,35 +42,33 @@ pub(crate) fn git_dir_of(dir: &Path) -> Option<PathBuf> {
             return Some(dot_git);
         }
         if dot_git.is_file() {
-            let raw = std::fs::read_to_string(&dot_git).ok()?;
-            let gitdir = raw.lines().next()?.strip_prefix("gitdir:")?.trim();
-            // A relative value is relative to the real folder: reached through a symbolic
-            // link, a lexical `..` would climb the link's parent instead.
-            let base = if Path::new(gitdir).is_absolute() {
-                d.to_path_buf()
-            } else {
-                std::fs::canonicalize(d).ok()?
-            };
-            return Some(clean(&base.join(gitdir)));
+            return gitdir_of_file(d, &dot_git);
         }
     }
     None
 }
 
-/// Like `git_dir_of`, but tells "outside git" (`Ok(None)`) from a `.git` that does not lead
-/// to a git dir (`Err(that .git)`: an empty file, no `gitdir:` line, a dangling link).
+/// For a caller that must not guess: the nearest ancestor of `dir` with a `.git` (of any
+/// kind, a dangling link included) decides alone, never a `.git` further up. `Ok(None)`
+/// outside git; `Ok(Some)` when that `.git` is a folder, or a file whose `gitdir:` leads to
+/// an existing folder; `Err(that .git)` otherwise (empty file, no `gitdir:` line, dangling
+/// link, `gitdir:` to a folder that is gone, which `git worktree repair` mends).
 pub(crate) fn git_dir_checked(dir: &Path) -> Result<Option<PathBuf>, PathBuf> {
-    if let Some(gd) = git_dir_of(dir) {
-        return Ok(Some(gd));
-    }
-    match dir
+    let Some((d, dot_git)) = dir
         .ancestors()
-        .map(|d| d.join(".git"))
-        .find(|g| g.symlink_metadata().is_ok())
-    {
-        Some(dot_git) => Err(dot_git),
-        None => Ok(None),
-    }
+        .map(|d| (d, d.join(".git")))
+        .find(|(_, g)| g.symlink_metadata().is_ok())
+    else {
+        return Ok(None);
+    };
+    let gd = if dot_git.is_dir() {
+        Some(dot_git.clone())
+    } else if dot_git.is_file() {
+        gitdir_of_file(d, &dot_git).filter(|g| g.is_dir())
+    } else {
+        None
+    };
+    gd.map(Some).ok_or(dot_git)
 }
 
 /// The main checkout behind a linked worktree; `None` in a main checkout, in a
@@ -104,6 +116,7 @@ mod tests {
         );
         // a valid `gitdir:` file, from a subfolder
         let gd = root.join("main/.git/worktrees/wt");
+        fs::create_dir_all(&gd).unwrap();
         dotgit(&root.join("wt"), &format!("gitdir: {}\n", gd.display()));
         fs::create_dir_all(root.join("wt/src")).unwrap();
         assert_eq!(git_dir_checked(&root.join("wt/src")), Ok(Some(gd)));
@@ -121,6 +134,47 @@ mod tests {
         // outside git
         fs::create_dir_all(root.join("free")).unwrap();
         assert_eq!(git_dir_checked(&root.join("free")), Ok(None));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_dir_checked_never_climbs_past_the_nearest_dot_git() {
+        let t = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(t.path()).unwrap();
+        fs::create_dir_all(root.join("main/.git")).unwrap();
+        // a dangling `.git` under a folder that has a valid one
+        fs::create_dir_all(root.join("main/dang")).unwrap();
+        std::os::unix::fs::symlink(root.join("nowhere"), root.join("main/dang/.git")).unwrap();
+        assert_eq!(
+            git_dir_checked(&root.join("main/dang")),
+            Err(root.join("main/dang/.git"))
+        );
+        // a `gitdir:` to a folder that is gone
+        dotgit(
+            &root.join("main/gone"),
+            &format!(
+                "gitdir: {}\n",
+                root.join("absent/.git/worktrees/gone").display()
+            ),
+        );
+        assert_eq!(
+            git_dir_checked(&root.join("main/gone/src")),
+            Err(root.join("main/gone/.git"))
+        );
+        // a `gitdir:` to a folder that exists
+        let gd = root.join("main/.git/worktrees/ok");
+        fs::create_dir_all(&gd).unwrap();
+        dotgit(
+            &root.join("main/ok"),
+            &format!("gitdir: {}\n", gd.display()),
+        );
+        assert_eq!(git_dir_checked(&root.join("main/ok")), Ok(Some(gd)));
+        // control: the folder above is still found when nothing is in between
+        fs::create_dir_all(root.join("main/plain")).unwrap();
+        assert_eq!(
+            git_dir_checked(&root.join("main/plain")),
+            Ok(Some(root.join("main/.git")))
+        );
     }
 
     #[test]

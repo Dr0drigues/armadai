@@ -309,25 +309,35 @@ fn a_level_opened_in_one_worktree_is_not_open_in_another() {
 fn a_dot_git_that_leads_nowhere_refuses_grant_and_revoke_and_writes_nothing() {
     let env = Env::new();
     env.link();
+    let base = env.dir.path().canonicalize().unwrap();
     let dot_git = env.root().canonicalize().unwrap().join(".git");
     std::fs::remove_dir(&dot_git).unwrap();
-    std::fs::write(&dot_git, "").unwrap();
-    for cmd in ["grant", "revoke"] {
-        let args: &[&str] = if cmd == "grant" {
-            &["grant", "read-logs", "--for", "1h"]
-        } else {
-            &["revoke", "--all"]
-        };
-        assert_eq!(
-            refused(env.run(args)),
-            format!(
-                "Error: {cmd} refused: {} does not lead to a git directory, where this checkout keeps its grant levels; repair it (git worktree repair) and run the command again\n",
-                dot_git.display()
-            )
-        );
+    let gone = base.join("gone");
+    // an empty file, and a `gitdir:` to a folder that is gone (what `git worktree repair`
+    // mends): neither may make the command write there
+    for content in [
+        String::new(),
+        format!("gitdir: {}/.git/worktrees/b\n", gone.display()),
+    ] {
+        std::fs::write(&dot_git, &content).unwrap();
+        for cmd in ["grant", "revoke"] {
+            let args: &[&str] = if cmd == "grant" {
+                &["grant", "read-logs", "--for", "1h"]
+            } else {
+                &["revoke", "--all"]
+            };
+            assert_eq!(
+                refused(env.run(args)),
+                format!(
+                    "Error: {cmd} refused: {} does not lead to a git directory, where this checkout keeps its grant levels; repair it (git worktree repair) and run the command again\n",
+                    dot_git.display()
+                ),
+                "{content:?}"
+            );
+        }
+        assert!(!env.root().join(OLD_STATE).exists());
+        assert!(!gone.exists(), "{content:?}");
     }
-    assert!(!env.root().join(OLD_STATE).exists());
-    assert!(!env.root().join(".git/armadai").exists());
 }
 
 #[test]

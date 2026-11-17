@@ -771,13 +771,15 @@ mod tests {
     }
 
     #[test]
-    fn a_path_under_a_git_dir_names_the_grant_machinery() {
+    fn each_clause_of_the_grant_machinery_check_bites_alone() {
+        // a path under a git dir names both
         assert!(names_grant_machinery(
             "cp x .git/worktrees/wt/armadai/grants.yaml"
         ));
-        assert!(names_grant_machinery(
-            "cp x /abs/main/.git/armadai/grants.yaml"
-        ));
+        // `grants.yaml` without `armadai`, and `armadai` without `grants.yaml`
+        assert!(names_grant_machinery("cp x ../gd/grants.yaml"));
+        assert!(names_grant_machinery("cp x ../gd/armadai/other"));
+        assert!(!names_grant_machinery("cp x ../gd/other"));
     }
 
     fn log(root: &Path, name: &str, lines: &[&str]) {
