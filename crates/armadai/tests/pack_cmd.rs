@@ -2473,6 +2473,28 @@ fn pin_needs_a_pack_reference_and_a_git_checkout() {
 }
 
 #[test]
+fn pin_refuses_a_gitdir_that_leads_nowhere_and_creates_no_folder() {
+    let env = Env::new();
+    env.reference(URL, "^1", LOCK_C);
+    let root = std::fs::canonicalize(env.root()).unwrap();
+    let absent = env.dir.path().join("absent");
+    std::fs::remove_dir_all(root.join(".git")).unwrap();
+    std::fs::write(
+        root.join(".git"),
+        format!("gitdir: {}\n", absent.join(".git/worktrees/wt").display()),
+    )
+    .unwrap();
+    let run = env.run(&["pack", "pin"], &[]);
+    assert_eq!(run.code, Some(1), "{}{}", run.out, run.err);
+    assert!(
+        run.err_has(&format!("Error: pack pin refused: {}/.git does not lead to a git directory, where this checkout keeps its pack pin; repair it (git worktree repair) and run the command again", root.display())),
+        "{}",
+        run.err
+    );
+    assert!(!absent.exists());
+}
+
+#[test]
 fn a_pinned_checkout_keeps_its_version_in_status_and_refuses_update_before_the_network() {
     let env = Env::new();
     env.reference(URL, "^1", LOCK_C);

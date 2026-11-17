@@ -955,7 +955,7 @@ mod tests {
         let iso = armadai_core::test_support::IsolatedConfigDir::enter();
         grants_pack(&registry_of(iso.config_dir()));
         let root = pinned_project();
-        let pin = crate::pack::lock::pin_path(root.path()).unwrap();
+        let pin = crate::pack::lock::pin_path(root.path()).unwrap().unwrap();
         std::fs::remove_file(&pin).unwrap();
         std::os::unix::fs::symlink(root.path().join(crate::pack::lock::LOCK), &pin).unwrap();
         assert!(project_rules(&cwd_payload(root.path()), "ops").is_none());

@@ -831,7 +831,7 @@ mod tests {
         let iso = armadai_core::test_support::IsolatedConfigDir::enter();
         two_snapshots(&pinned_fixture::registry_of(iso.config_dir()));
         let root = pinned_fixture::pinned_project();
-        let pin = crate::pack::lock::pin_path(root.path()).unwrap();
+        let pin = crate::pack::lock::pin_path(root.path()).unwrap().unwrap();
         std::fs::remove_file(&pin).unwrap();
         std::os::unix::fs::symlink(root.path().join(crate::pack::lock::LOCK), &pin).unwrap();
         let r = reason(decide(&marked("", "rev", "[f/review]", root.path())));
