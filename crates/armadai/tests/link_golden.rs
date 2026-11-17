@@ -106,6 +106,8 @@ mod tests {
             let mut cmd = Command::cargo_bin("armadai").unwrap();
             cmd.current_dir(&root)
                 .env("ARMADAI_CONFIG_DIR", isolated_config(dir.path()))
+                .env("CLAUDE_CONFIG_DIR", dir.path().join("claude"))
+                .env_remove("CLAUDE_CODE_PLUGIN_CACHE_DIR")
                 .args(["link", "--target", target]);
             let output = cmd.output().unwrap();
             assert!(
@@ -262,6 +264,8 @@ mod tests {
             .unwrap()
             .current_dir(&root)
             .env("ARMADAI_CONFIG_DIR", isolated_config(dir.path()))
+            .env("CLAUDE_CONFIG_DIR", dir.path().join("claude"))
+            .env_remove("CLAUDE_CODE_PLUGIN_CACHE_DIR")
             .env("HOME", dir.path())
             .args(["link", "--target", "claude"])
             .output()
@@ -356,6 +360,8 @@ mod tests {
             .unwrap()
             .current_dir(&root)
             .env("ARMADAI_CONFIG_DIR", isolated_config(dir.path()))
+            .env("CLAUDE_CONFIG_DIR", dir.path().join("claude"))
+            .env_remove("CLAUDE_CODE_PLUGIN_CACHE_DIR")
             .env("HOME", dir.path())
             .args(["link"])
             .output()
@@ -418,6 +424,8 @@ mod tests {
                     .unwrap()
                     .current_dir(&root)
                     .env("ARMADAI_CONFIG_DIR", isolated_config(dir.path()))
+                    .env("CLAUDE_CONFIG_DIR", dir.path().join("claude"))
+                    .env_remove("CLAUDE_CODE_PLUGIN_CACHE_DIR")
                     .env("HOME", dir.path())
                     .args(args)
                     .output()
@@ -469,6 +477,8 @@ mod tests {
             .unwrap()
             .current_dir(&root)
             .env("ARMADAI_CONFIG_DIR", isolated_config(dir.path()))
+            .env("CLAUDE_CONFIG_DIR", dir.path().join("claude"))
+            .env_remove("CLAUDE_CODE_PLUGIN_CACHE_DIR")
             .env("HTTPS_PROXY", &proxy)
             .env("HTTP_PROXY", &proxy)
             .env("ALL_PROXY", &proxy)

@@ -59,6 +59,8 @@ impl Env {
             .current_dir(self.root())
             .env("HOME", self.0.path().join("home"))
             .env("ARMADAI_CONFIG_DIR", self.0.path().join("config"))
+            .env("CLAUDE_CONFIG_DIR", self.0.path().join("claude"))
+            .env_remove("CLAUDE_CODE_PLUGIN_CACHE_DIR")
             .args(args)
             .output()
             .unwrap()
@@ -454,4 +456,83 @@ fn a_conflict_after_a_first_link_removes_the_files_it_wrote() {
         env.settings()["enabledPlugins"],
         json!({"armadai-ui@armadai-ui": false})
     );
+}
+
+// Claude Code's own registry of marketplaces (plan lot 14, B.4).
+
+impl Env {
+    fn put_registry(&self, text: &str) -> PathBuf {
+        let file = self.0.path().join("claude/plugins/known_marketplaces.json");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, text).unwrap();
+        file
+    }
+}
+
+fn marketplace_lines(report: &str) -> Vec<&str> {
+    report
+        .lines()
+        .filter(|l| l.contains("ui marketplace"))
+        .collect()
+}
+
+fn registry_to(path: &std::path::Path) -> String {
+    json!({"armadai-ui": {
+        "source": {"source": "directory", "path": path},
+        "installLocation": path, "lastUpdated": "2026-11-17T08:07:15.375Z"}})
+    .to_string()
+}
+
+#[test]
+fn a_registry_that_leads_away_from_the_plugin_is_warned_and_link_still_succeeds() {
+    let env = Env::new(on(), &[FLOW]);
+    let clean = env.ok(&["link", "--target", "claude"]);
+    assert_eq!(marketplace_lines(&clean), Vec::<&str>::new());
+
+    let env = Env::new(on(), &[FLOW]);
+    let gone = env.0.path().join("gone");
+    let file = env.put_registry(&registry_to(&gone));
+    let out = env.run(&["link", "--target", "claude"]);
+    assert!(out.status.success());
+    let report = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        marketplace_lines(&report),
+        [format!(
+            "claude: ui marketplace: approximated (the armadai-ui marketplace that Claude Code \
+             knows ({}) leads to {}, which does not exist, so this project's plugin may not \
+             load; run claude plugin marketplace remove armadai-ui, then start claude in this \
+             project to register its own)",
+            file.display(),
+            gone.display()
+        )]
+    );
+    // the registry is only read
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), registry_to(&gone));
+    // the rest of the report is the one without a registry
+    assert_eq!(lines(&report), [WRITTEN]);
+}
+
+#[test]
+fn a_registry_that_is_absent_unreadable_or_the_plugins_own_gives_no_line() {
+    let env = Env::new(on(), &[FLOW]);
+    env.put_registry("{ not json");
+    let report = env.ok(&["link", "--target", "claude"]);
+    assert_eq!(marketplace_lines(&report), Vec::<&str>::new(), "unreadable");
+
+    let env = Env::new(on(), &[FLOW]);
+    env.ok(&["link", "--target", "claude"]);
+    let plugin = env.root().canonicalize().unwrap().join(PLUGIN);
+    env.put_registry(&registry_to(&plugin));
+    let report = env.ok(&["link", "--target", "claude"]);
+    assert_eq!(marketplace_lines(&report), Vec::<&str>::new(), "its own");
+}
+
+#[test]
+fn a_registry_naming_the_path_link_is_about_to_write_gives_no_line() {
+    let env = Env::new(on(), &[FLOW]);
+    // first link: the plugin is not written yet, the registry names where it will be
+    let target = env.root().canonicalize().unwrap().join(PLUGIN);
+    env.put_registry(&registry_to(&target));
+    let report = env.ok(&["link", "--target", "claude"]);
+    assert_eq!(marketplace_lines(&report), Vec::<&str>::new());
 }

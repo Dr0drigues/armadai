@@ -69,6 +69,8 @@ impl Env {
             .unwrap()
             .current_dir(self.root())
             .env("ARMADAI_CONFIG_DIR", self.dir.path().join("config"))
+            .env("CLAUDE_CONFIG_DIR", self.dir.path().join("claude"))
+            .env_remove("CLAUDE_CODE_PLUGIN_CACHE_DIR")
             .args(args)
             .output()
             .unwrap();
@@ -1456,6 +1458,8 @@ fn the_grant_hook_allows_only_while_a_level_is_on() {
             .unwrap()
             .args(["__claude-grant", "auto-until-mr"])
             .env("ARMADAI_CONFIG_DIR", env.dir.path().join("config"))
+            .env("CLAUDE_CONFIG_DIR", env.dir.path().join("claude"))
+            .env_remove("CLAUDE_CODE_PLUGIN_CACHE_DIR")
             .write_stdin(payload)
             .output()
             .unwrap();
@@ -1526,8 +1530,9 @@ fn grant_hook_from(env: &Env, cwd: &Path, command: &str) -> String {
         .unwrap()
         .args(["__claude-grant", "auto-until-mr"])
         .env("ARMADAI_CONFIG_DIR", env.dir.path().join("config"))
-        .env("HOME", env.dir.path())
         .env("CLAUDE_CONFIG_DIR", env.dir.path().join("claude"))
+        .env_remove("CLAUDE_CODE_PLUGIN_CACHE_DIR")
+        .env("HOME", env.dir.path())
         .write_stdin(payload)
         .output()
         .unwrap();

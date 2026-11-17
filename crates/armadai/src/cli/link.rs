@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, bail};
 use armadai_model::Project;
 
+use crate::claude_adapter::marketplace_registry;
 use crate::compile::claude_settings::{self, HookEntry};
 use crate::compile::json_keys::JsonKeys;
 use crate::compile::patch::{self, PatchKind, PatchedFile};
@@ -87,6 +88,17 @@ pub fn load_project() -> anyhow::Result<(PathBuf, Effective, Project)> {
             bail!("the project is invalid; nothing was written")
         }
     }
+}
+
+/// The warning when Claude Code's registry sends `armadai-ui` away from this project's
+/// plugin; `None` for any registry that cannot be read or does not say so.
+fn marketplace_warning(root: &Path) -> Option<String> {
+    let file = marketplace_registry::registry_file(&|k| std::env::var(k).ok())?;
+    let text = std::fs::read_to_string(&file).ok()?;
+    // `root` comes from the working directory, already resolved, and link refuses a linked
+    // `.armadai` before it writes the plugin: this path is the resolved one
+    let plugin = root.join(compile::PLUGIN_DIR);
+    marketplace_registry::armadai_ui_warning(&file, &text, &plugin)
 }
 
 /// Every path a plain `link` may write, patch or remove, relative to the project root:
@@ -258,6 +270,7 @@ fn prepare(
                         && e.outcome == Outcome::Created
                 });
             // one line for each key that asks for the plugin: (status, reason) by key
+            let mut plugin_stays = false;
             let (sub, panel, band): ((Status, String), (Status, String), (Status, String)) =
                 match clash {
                     Some(path) => {
@@ -278,6 +291,11 @@ fn prepare(
                         } else {
                             claude_settings::found_plugin(root, existing.as_deref(), ui)?
                         };
+                        plugin_stays = matches!(
+                            found,
+                            claude_settings::FoundPlugin::Absent
+                                | claude_settings::FoundPlugin::Identical
+                        );
                         match found {
                         claude_settings::FoundPlugin::Absent => (
                             (
@@ -334,6 +352,10 @@ fn prepare(
                 if on {
                     p.report.push(target, element, status, Some(&why));
                 }
+            }
+            if plugin_stays && let Some(why) = marketplace_warning(root) {
+                p.report
+                    .push(target, "ui marketplace", Status::Approximated, Some(&why));
             }
         }
         if project.manifest.ui.status_line {
