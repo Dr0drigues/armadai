@@ -182,8 +182,23 @@ pub fn stage(
         ),
     }
     });
+    // a standards pack holds skills only: files elsewhere are errors, and a skill that
+    // fills no slot is a warning
+    let standards = starter
+        .as_ref()
+        .is_some_and(|p| p.kind == armadai_core::starter::PackKind::Standards);
+    let foreign: Vec<PathBuf> = if standards {
+        (files.iter())
+            .map(|f| f.0.clone())
+            .filter(|r| !r.starts_with("skills"))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let foreign = crate::pack::standards::foreign(pack_dir, &foreign);
     let ds = escaping
         .chain(ignored)
+        .chain(foreign)
         .chain(
             armadai_model::validate(tmp.path())
                 .into_iter()
@@ -194,7 +209,12 @@ pub fn stage(
                     d
                 }),
         )
-        .collect();
+        .collect::<Vec<_>>();
+    let no_slot = match armadai_model::load_project(tmp.path()).project {
+        Some(p) if standards => crate::pack::standards::no_slot(pack_dir, &p),
+        _ => Vec::new(),
+    };
+    let ds = ds.into_iter().chain(no_slot).collect();
     Ok((tmp, ds))
 }
 
@@ -515,5 +535,54 @@ mod tests {
         ] {
             assert!(!listed(Path::new(no)), "{no}");
         }
+    }
+
+    fn stage_codes(kind: &str) -> Vec<(&'static str, PathBuf)> {
+        let d = tempfile::tempdir().unwrap();
+        let put = |rel: &str, text: &str| {
+            let p = d.path().join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, text).unwrap();
+        };
+        let kind_line = if kind.is_empty() {
+            String::new()
+        } else {
+            format!("kind: {kind}\n")
+        };
+        put(
+            "pack.yaml",
+            &format!("format: 1\nname: p\n{kind_line}description: d\n"),
+        );
+        put("agents/a.md", "---\ndescription: an agent\n---\nA\n");
+        put(
+            "skills/free/SKILL.md",
+            "---\nname: free\ndescription: d\n---\nF\n",
+        );
+        put(
+            "skills/slotted/SKILL.md",
+            "---\nname: slotted\ndescription: d\nmetadata:\n  armadai-slot: code-standards\n---\nS\n",
+        );
+        let pack = files(d.path()).unwrap();
+        let (_tmp, ds) = stage(d.path(), &pack).unwrap();
+        ds.into_iter()
+            .filter(|x| x.code.starts_with("standards-"))
+            .map(|x| (x.code, x.file.strip_prefix(d.path()).unwrap().to_path_buf()))
+            .collect()
+    }
+
+    #[test]
+    fn stage_of_a_standards_pack() {
+        assert_eq!(
+            stage_codes("standards"),
+            [
+                ("standards-foreign-file", PathBuf::from("agents/a.md")),
+                (
+                    "standards-skill-no-slot",
+                    PathBuf::from("skills/free/SKILL.md")
+                ),
+            ]
+        );
+        // the same files in a team pack: nothing about standards
+        assert_eq!(stage_codes(""), []);
     }
 }

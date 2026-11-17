@@ -1,19 +1,22 @@
 //! The effective project of a directory: its `.armadai/` as the commands must read it.
 //!
 //! With a `pack:` key, the locked snapshot of the pack overlaid by the project's own
-//! files; with variables to resolve, `{{var.name}}` rendered. The result is a scratch
-//! copy that is dropped with the [`Effective`]; `.armadai/` and the cache are never
-//! written. A project with neither is read in place, nothing copied.
+//! files; with `standards:`, the skills of each locked standards pack in between; with
+//! variables to resolve, `{{var.name}}` rendered. The result is a scratch copy that is
+//! dropped with the [`Effective`]; `.armadai/` and the cache are never written. A project
+//! with none of these is read in place, nothing copied.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
+use armadai_core::starter::{PackKind, StarterPack};
 use armadai_model::pack::{Layer, OverlayError};
 use armadai_model::{Diagnostic, Origins, Project};
 
 use super::cache::{Available, valid_id, valid_name};
-use super::lock::{self, PackLock};
+use super::lock::{self, LockFile, PackLock};
+use super::standards;
 use crate::cli::native_pack;
 
 /// What to do with `{{var.name}}`.
@@ -30,15 +33,36 @@ pub struct LockedPack {
     pub snapshot: PathBuf,
 }
 
+/// Which key of `project.yaml` references a pack; only the wording of messages differs.
+#[derive(Clone, Copy)]
+pub(crate) enum Kind {
+    Pack,
+    Standards,
+}
+
+impl Kind {
+    fn word(self) -> &'static str {
+        match self {
+            Kind::Pack => "pack",
+            Kind::Standards => "standards",
+        }
+    }
+}
+
 pub struct Effective {
     /// The directory holding the `.armadai/` to read: `root`, or a scratch copy.
     pub sources: PathBuf,
     pub pack: Option<LockedPack>,
+    /// The standards packs read, in the order of `standards:` (an entry `validate` reports
+    /// as empty or badly named is not read); `Layer::Standards(i)` is `standards[i]`.
+    pub standards: Vec<LockedPack>,
     /// Variables no layer sets (`Vars::Resolve` only): rendered empty.
     pub missing_vars: BTreeSet<String>,
     root: PathBuf,
     /// path relative to `.armadai/` -> (layer, the real file)
     origins: BTreeMap<PathBuf, (Layer, PathBuf)>,
+    /// Diagnostics of the layering itself (clash, foreign file, wrong kind), on real files.
+    extra: Vec<Diagnostic>,
     _scratch: Option<tempfile::TempDir>,
 }
 
@@ -47,16 +71,44 @@ fn id12(id: &str) -> &str {
     &id[..id.len().min(12)]
 }
 
+fn manifest_value(root: &Path) -> Option<serde_json::Value> {
+    let text = std::fs::read_to_string(root.join(".armadai/project.yaml")).ok()?;
+    armadai_model::yaml::from_str_manifest(&text).ok()
+}
+
 /// The `pack:` key of the project's `project.yaml` as (name, source); `None` when
 /// there is none, or the file is not readable (the loader reports that, with a position).
 pub(crate) fn pack_ref(root: &Path) -> Option<(String, String)> {
-    let text = std::fs::read_to_string(root.join(".armadai/project.yaml")).ok()?;
-    let v = armadai_model::yaml::from_str_manifest(&text).ok()?;
+    let v = manifest_value(root)?;
     let p = v.get("pack")?;
     Some((
         p.get("name")?.as_str()?.to_string(),
         p.get("source")?.as_str()?.to_string(),
     ))
+}
+
+/// The `standards:` entries of the project's `project.yaml` as (name, source, version), as
+/// written; an entry that is not a mapping of three strings is left out (the loader reports it).
+pub(crate) fn standards_refs(root: &Path) -> Vec<(String, String, String)> {
+    let Some(v) = manifest_value(root) else {
+        return Vec::new();
+    };
+    let list = v.get("standards").and_then(|s| s.as_array());
+    (list.into_iter().flatten())
+        .filter_map(|e| {
+            let s = |k: &str| e.get(k)?.as_str().map(str::to_string);
+            Some((s("name")?, s("source")?, s("version")?))
+        })
+        .collect()
+}
+
+/// The entries of `standards:` to look for at the lock: a name that is not an id, an empty
+/// source or an empty version is `validate`'s to report, with its position.
+fn standards_declared(root: &Path) -> Vec<(String, String)> {
+    (standards_refs(root).into_iter())
+        .filter(|(n, s, v)| valid_name(n) && !s.is_empty() && !v.is_empty())
+        .map(|(n, s, _)| (n, s))
+        .collect()
 }
 
 pub fn open(root: &Path, vars: Vars) -> anyhow::Result<Effective> {
@@ -65,13 +117,18 @@ pub fn open(root: &Path, vars: Vars) -> anyhow::Result<Effective> {
 
 /// [`open`] with the registry directory given.
 pub fn open_in(root: &Path, vars: Vars, registry: &Path) -> anyhow::Result<Effective> {
-    let Some((name, _)) = pack_ref(root) else {
-        return build(root, None, vars, registry);
+    if pack_ref(root).is_none() && standards_declared(root).is_empty() {
+        return build(root, None, &[], vars, registry);
+    }
+    let lock = lock::read(root)?;
+    let team = match pack_ref(root) {
+        None => None,
+        Some((name, _)) => match lock.as_ref().and_then(|l| l.team.as_ref()) {
+            Some(t) => Some(t),
+            None => bail!("{}", lock_missing(&name)),
+        },
     };
-    let Some(lock) = lock::read(root)?.and_then(|l| l.team) else {
-        bail!("{}", lock_missing(&name));
-    };
-    build(root, Some(&lock), vars, registry)
+    open_locked(root, team, lock.as_ref(), vars, registry)
 }
 
 /// M5a.
@@ -83,7 +140,7 @@ pub(crate) fn lock_missing(name: &str) -> String {
 }
 
 /// Same, with the lock given (`pack add` and `pack update` check a lock before writing it).
-pub fn open_with_lock(root: &Path, lock: &PackLock, vars: Vars) -> anyhow::Result<Effective> {
+pub fn open_with_lock(root: &Path, lock: &LockFile, vars: Vars) -> anyhow::Result<Effective> {
     open_with_lock_in(
         root,
         lock,
@@ -94,18 +151,57 @@ pub fn open_with_lock(root: &Path, lock: &PackLock, vars: Vars) -> anyhow::Resul
 
 pub fn open_with_lock_in(
     root: &Path,
-    lock: &PackLock,
+    lock: &LockFile,
     vars: Vars,
     registry: &Path,
 ) -> anyhow::Result<Effective> {
-    build(root, Some(lock), vars, registry)
+    // the lock given is the team's even before `pack add` has written the `pack:` key
+    open_locked(root, lock.team.as_ref(), Some(lock), vars, registry)
 }
 
-fn snapshot(root: &Path, lock: &PackLock, registry: &Path) -> anyhow::Result<PathBuf> {
-    let (dir, id) = snapshot_path(root, lock, registry)?;
+/// `team` as given, and the standards entries `root` references found in `lock` (E1 to
+/// E3, E7).
+fn open_locked(
+    root: &Path,
+    team: Option<&PackLock>,
+    lock: Option<&LockFile>,
+    vars: Vars,
+    registry: &Path,
+) -> anyhow::Result<Effective> {
+    let mut stds = Vec::new();
+    let mut seen = BTreeSet::new();
+    for (name, _) in standards_declared(root) {
+        if !seen.insert(name.clone()) {
+            bail!(".armadai/project.yaml references standards {name} twice: keep one entry");
+        }
+        let entry = match lock {
+            None => bail!(
+                ".armadai/project.yaml references standards {name} but .armadai/pack.lock is \
+                 missing: run `armadai pack update`"
+            ),
+            Some(l) => l.standards_entry(&name),
+        };
+        match entry {
+            Some(e) => stds.push(e.clone()),
+            None if lock::read_pin(root)?.is_some() => bail!(
+                ".armadai/project.yaml references standards {name} but the pack pin of this \
+                 checkout has no entry for it: run armadai pack unpin, then armadai pack update"
+            ),
+            None => bail!(
+                ".armadai/project.yaml references standards {name} but .armadai/pack.lock has \
+                 no entry for it: run `armadai pack update`"
+            ),
+        }
+    }
+    build(root, team, &stds, vars, registry)
+}
+
+fn snapshot(root: &Path, lock: &PackLock, kind: Kind, registry: &Path) -> anyhow::Result<PathBuf> {
+    let (dir, id) = snapshot_path_of(root, lock, kind, registry)?;
     if !dir.is_dir() {
         bail!(
-            "pack {} {} ({}) is not in the local cache: run `armadai pack sync`",
+            "{} {} {} ({}) is not in the local cache: run `armadai pack sync`",
+            kind.word(),
             lock.pack,
             lock.resolved.version,
             id12(&id)
@@ -114,26 +210,45 @@ fn snapshot(root: &Path, lock: &PackLock, registry: &Path) -> anyhow::Result<Pat
     Ok(dir)
 }
 
-/// Where the locked snapshot is (or would be) in the cache, and its id; the folder
-/// itself may be absent.
+/// Where the locked snapshot of the team pack is (or would be) in the cache, and its id;
+/// the folder itself may be absent.
 pub(crate) fn snapshot_path(
     root: &Path,
     lock: &PackLock,
     registry: &Path,
 ) -> anyhow::Result<(PathBuf, String)> {
-    if let Some((name, source)) = pack_ref(root)
+    snapshot_path_of(root, lock, Kind::Pack, registry)
+}
+
+pub(crate) fn snapshot_path_of(
+    root: &Path,
+    lock: &PackLock,
+    kind: Kind,
+    registry: &Path,
+) -> anyhow::Result<(PathBuf, String)> {
+    let word = kind.word();
+    let referenced = match kind {
+        Kind::Pack => pack_ref(root),
+        Kind::Standards => (standards_declared(root).into_iter()).find(|(n, _)| *n == lock.pack),
+    };
+    if let Some((name, source)) = referenced
         && (name != lock.pack || source != lock.source)
     {
-        if lock::read_pin(root)?.and_then(|p| p.team).as_ref() == Some(lock) {
+        let pin = lock::read_pin(root)?;
+        let pinned = match kind {
+            Kind::Pack => pin.and_then(|p| p.team).as_ref() == Some(lock),
+            Kind::Standards => pin.is_some_and(|p| p.standards_entry(&lock.pack) == Some(lock)),
+        };
+        if pinned {
             bail!(
-                "the pack pin of this checkout is for pack {} from {}, but .armadai/project.yaml \
+                "the pack pin of this checkout is for {word} {} from {}, but .armadai/project.yaml \
                  references {name} from {source}: run armadai pack unpin",
                 lock.pack,
                 lock.source
             );
         }
         bail!(
-            ".armadai/pack.lock is for pack {} from {}, but .armadai/project.yaml references {name} \
+            ".armadai/pack.lock is for {word} {} from {}, but .armadai/project.yaml references {name} \
              from {source}: run `armadai pack update`",
             lock.pack,
             lock.source
@@ -147,12 +262,15 @@ pub(crate) fn snapshot_path(
     };
     let id = available.id();
     if id.is_empty() {
-        bail!("pack {} has a version without commit or digest", lock.pack);
+        bail!(
+            "{word} {} has a version without commit or digest",
+            lock.pack
+        );
     }
     for (bad, ok) in [(&lock.pack, valid_name(&lock.pack)), (&id, valid_id(&id))] {
         if !ok {
             bail!(
-                "pack {} has an invalid name or version id: {bad}",
+                "{word} {} has an invalid name or version id: {bad}",
                 lock.pack
             );
         }
@@ -166,31 +284,35 @@ pub(crate) fn snapshot_path(
 
 fn build(
     root: &Path,
-    lock: Option<&PackLock>,
+    team: Option<&PackLock>,
+    stds: &[PackLock],
     vars: Vars,
     registry: &Path,
 ) -> anyhow::Result<Effective> {
-    let in_place = |pack| Effective {
+    let in_place = || Effective {
         sources: root.to_path_buf(),
-        pack,
+        pack: None,
+        standards: Vec::new(),
         missing_vars: BTreeSet::new(),
         root: root.to_path_buf(),
         origins: BTreeMap::new(),
+        extra: Vec::new(),
         _scratch: None,
     };
-    if lock.is_none() && matches!(vars, Vars::Literal) {
-        return Ok(in_place(None));
+    let plain = team.is_none() && stds.is_empty();
+    if plain && matches!(vars, Vars::Literal) {
+        return Ok(in_place());
     }
     let base = root.join(".armadai");
     // A plain project is only copied when a variable must be rendered: until then a link
     // is no reason to refuse it (the loader reads it as before).
-    if lock.is_none() {
+    if plain {
         let looked: BTreeMap<PathBuf, Vec<u8>> = native_pack::read_listed(&base, false)?
             .into_iter()
             .map(|(p, b, _)| (p, b))
             .collect();
         if !matches!(armadai_model::pack_vars::files_names(&looked), Ok(n) if !n.is_empty()) {
-            return Ok(in_place(None));
+            return Ok(in_place());
         }
     }
     let project = native_pack::read_listed(&base, true)?;
@@ -203,35 +325,106 @@ fn build(
     let project: BTreeMap<PathBuf, Vec<u8>> = project.into_iter().map(|(p, b, _)| (p, b)).collect();
 
     let mut locked = None;
+    let mut extra = Vec::new();
     let mut files: BTreeMap<PathBuf, (Layer, Vec<u8>)> = BTreeMap::new();
-    if let Some(lock) = lock {
-        let snap = snapshot(root, lock, registry)?;
-        let pack = native_pack::files(&snap)?;
-        exec_pack.extend(pack.files.iter().filter(|f| f.2).map(|f| f.0.clone()));
-        let pack: BTreeMap<PathBuf, Vec<u8>> =
-            pack.files.into_iter().map(|(p, b, _)| (p, b)).collect();
-        files = armadai_model::pack::overlay(&pack, &project).map_err(|e| match e {
-            OverlayError::NestedPack => anyhow::anyhow!(
-                "pack {}: its own project.yaml references a pack (pack:), which is not supported",
-                lock.pack
-            ),
-            OverlayError::NestedStandards => anyhow::anyhow!(
-                "pack {}: its own project.yaml references standards packs (standards:), which is not supported",
-                lock.pack
-            ),
-            OverlayError::InvalidYaml { layer, message } => {
-                let file = match layer {
-                    Layer::Pack => snap.join("project.yaml"),
-                    _ => base.join("project.yaml"),
-                };
-                anyhow::anyhow!("{}: {message}", file.display())
+    let mut standards = Vec::new();
+    let mut exec_std: Vec<BTreeSet<PathBuf>> = Vec::new();
+    if !plain {
+        let mut team_files = None;
+        if let Some(lock) = team {
+            let snap = snapshot(root, lock, Kind::Pack, registry)?;
+            let pack = native_pack::files(&snap)?;
+            exec_pack.extend(pack.files.iter().filter(|f| f.2).map(|f| f.0.clone()));
+            team_files = Some(
+                pack.files
+                    .into_iter()
+                    .map(|(p, b, _)| (p, b))
+                    .collect::<BTreeMap<PathBuf, Vec<u8>>>(),
+            );
+            locked = Some(LockedPack {
+                name: lock.pack.clone(),
+                lock: lock.clone(),
+                snapshot: snap,
+            });
+        }
+        let mut layers: Vec<BTreeMap<PathBuf, Vec<u8>>> = Vec::new();
+        // a layer whose pack.yaml is not `kind: standards` is named, not also blamed for
+        // every file a team pack legitimately holds
+        let mut wrong_kind = BTreeSet::new();
+        for (i, lock) in stds.iter().enumerate() {
+            let snap = snapshot(root, lock, Kind::Standards, registry)?;
+            let pack = native_pack::files(&snap)?;
+            let kind = StarterPack::load(&snap)
+                .with_context(|| format!("standards {}", lock.pack))?
+                .kind;
+            if kind != PackKind::Standards {
+                extra.push(standards::wrong_kind(&lock.pack, &snap));
+                wrong_kind.insert(i);
             }
-        })?;
-        locked = Some(LockedPack {
-            name: lock.pack.clone(),
-            lock: lock.clone(),
-            snapshot: snap,
-        });
+            exec_std.push(
+                pack.files
+                    .iter()
+                    .filter(|f| f.2)
+                    .map(|f| f.0.clone())
+                    .collect(),
+            );
+            layers.push(pack.files.into_iter().map(|(p, b, _)| (p, b)).collect());
+            standards.push(LockedPack {
+                name: lock.pack.clone(),
+                lock: lock.clone(),
+                snapshot: snap,
+            });
+        }
+        let refs: Vec<&BTreeMap<PathBuf, Vec<u8>>> = layers.iter().collect();
+        let team_name = team.map_or("", |t| t.pack.as_str());
+        let stacked = armadai_model::pack::overlay_standards(team_files.as_ref(), &refs, &project)
+            .map_err(|e| match e {
+                OverlayError::NestedPack => anyhow::anyhow!(
+                    "pack {team_name}: its own project.yaml references a pack (pack:), which is not supported"
+                ),
+                OverlayError::NestedStandards => anyhow::anyhow!(
+                    "pack {team_name}: its own project.yaml references standards packs (standards:), which is not supported"
+                ),
+                OverlayError::InvalidYaml { layer, message } => {
+                    let file = match layer {
+                        Layer::Pack => locked
+                            .as_ref()
+                            .map_or_else(PathBuf::new, |l| l.snapshot.clone())
+                            .join("project.yaml"),
+                        Layer::Standards(i) => standards[i].snapshot.join("project.yaml"),
+                        _ => base.join("project.yaml"),
+                    };
+                    anyhow::anyhow!("{}: {message}", file.display())
+                }
+            })?;
+        files = stacked.files;
+        let label = |first: Option<usize>| match first {
+            None => format!("pack {team_name}"),
+            Some(j) => format!("standards {}", standards[j].name),
+        };
+        for c in &stacked.clashes {
+            let second = &standards[c.second];
+            extra.push(standards::duplicate(
+                &c.skill,
+                &label(c.first),
+                &label(Some(c.second)),
+                second
+                    .snapshot
+                    .join("skills")
+                    .join(&c.skill)
+                    .join("SKILL.md"),
+            ));
+        }
+        for (i, s) in standards.iter().enumerate() {
+            if wrong_kind.contains(&i) {
+                continue;
+            }
+            let rels: Vec<PathBuf> = (stacked.foreign.iter())
+                .filter(|(l, _)| *l == i)
+                .map(|(_, p)| p.clone())
+                .collect();
+            extra.extend(standards::foreign(&s.snapshot, &rels));
+        }
     } else {
         files.extend(project.into_iter().map(|(p, b)| (p, (Layer::Project, b))));
     }
@@ -258,12 +451,12 @@ fn build(
             }
             Ok(_) => {}
             // an unreadable file is the loader's to report, with its position
-            Err(_) if locked.is_none() => return Ok(in_place(None)),
+            Err(_) if plain => return Ok(in_place()),
             Err(e) => bail!(e),
         }
     }
-    if locked.is_none() && !rendered {
-        return Ok(in_place(None));
+    if plain && !rendered {
+        return Ok(in_place());
     }
 
     let scratch = tempfile::tempdir()?;
@@ -277,14 +470,16 @@ fn build(
         #[cfg(unix)]
         if match layer {
             Layer::Pack => exec_pack.contains(rel),
+            Layer::Standards(i) => exec_std[*i].contains(rel),
             Layer::Project => exec_project.contains(rel),
-            Layer::Standards(_) | Layer::Merged => false,
+            Layer::Merged => false,
         } {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&at, std::fs::Permissions::from_mode(0o755))?;
         }
         let real = match (layer, &locked) {
             (Layer::Pack, Some(l)) => l.snapshot.join(rel),
+            (Layer::Standards(i), _) => standards[*i].snapshot.join(rel),
             (Layer::Merged, _) => base.join("project.yaml"),
             _ => base.join(rel),
         };
@@ -293,9 +488,11 @@ fn build(
     Ok(Effective {
         sources: scratch.path().to_path_buf(),
         pack: locked,
+        standards,
         missing_vars,
         root: root.to_path_buf(),
         origins,
+        extra,
         _scratch: Some(scratch),
     })
 }
@@ -337,14 +534,23 @@ impl Effective {
         }
     }
 
+    /// The diagnostics of the layering, then `rest` on the real files.
+    fn with_extra(&self, rest: Vec<Diagnostic>) -> Vec<Diagnostic> {
+        let mut ds = self.extra.clone();
+        ds.extend(self.remap(rest));
+        ds
+    }
+
     /// `armadai_model::load_checked` of the view; diagnostics and origins on the real files.
+    /// A layering error fails it, with those diagnostics first.
     pub fn load_checked(&self) -> Result<(Project, Origins), Vec<Diagnostic>> {
         match armadai_model::load_checked(&self.sources) {
+            Ok(_) if !self.extra.is_empty() => Err(self.extra.clone()),
             Ok((p, mut o)) => {
                 self.remap_origins(&mut o);
                 Ok((p, o))
             }
-            Err(ds) => Err(self.remap(ds)),
+            Err(ds) => Err(self.with_extra(ds)),
         }
     }
 
@@ -352,13 +558,27 @@ impl Effective {
     /// origins on the real files.
     pub fn load_project(&self) -> armadai_model::Loaded {
         let mut l = armadai_model::load_project(&self.sources);
-        l.diagnostics = self.remap(std::mem::take(&mut l.diagnostics));
+        l.diagnostics = self.with_extra(std::mem::take(&mut l.diagnostics));
         self.remap_origins(&mut l.origins);
         l
     }
 
     pub fn validate(&self) -> Vec<Diagnostic> {
-        self.remap(armadai_model::validate(&self.sources))
+        self.with_extra(armadai_model::validate(&self.sources))
+    }
+
+    /// Skill id -> name of the standards pack its `SKILL.md` comes from; skills of the
+    /// team pack and of the project are not in it.
+    pub fn skill_packs(&self) -> BTreeMap<String, String> {
+        let mut out = BTreeMap::new();
+        for (rel, (layer, _)) in &self.origins {
+            let Layer::Standards(i) = layer else { continue };
+            let c: Vec<_> = rel.iter().filter_map(|s| s.to_str()).collect();
+            if let ["skills", id, "SKILL.md"] = c.as_slice() {
+                out.insert(id.to_string(), self.standards[*i].name.clone());
+            }
+        }
+        out
     }
 }
 
@@ -517,8 +737,13 @@ mod tests {
         lock::write(fx.root.path(), &lock(C2).into()).unwrap();
         assert_eq!(agents(&fx.open(Vars::Literal).unwrap()), ["two"]);
         // a lock given by the caller wins over the file
-        let e = open_with_lock_in(fx.root.path(), &lock(C1), Vars::Literal, fx.registry.path())
-            .unwrap();
+        let e = open_with_lock_in(
+            fx.root.path(),
+            &lock(C1).into(),
+            Vars::Literal,
+            fx.registry.path(),
+        )
+        .unwrap();
         assert_eq!(agents(&e), ["one"]);
     }
 
@@ -943,15 +1168,505 @@ mod tests {
             &format!("{REF}targets: [claude\n"),
         );
         // an unreadable project.yaml hides its pack key: the lock is read alone
-        let e = open_with_lock_in(fx.root.path(), &lock(C1), Vars::Literal, fx.registry.path())
-            .err()
-            .unwrap()
-            .to_string();
+        let e = open_with_lock_in(
+            fx.root.path(),
+            &lock(C1).into(),
+            Vars::Literal,
+            fx.registry.path(),
+        )
+        .err()
+        .unwrap()
+        .to_string();
         let want = format!(
             "{}: ",
             fx.root.path().join(".armadai/project.yaml").display()
         );
         assert!(e.starts_with(&want), "{e}");
         assert_ne!(e, pack_msg);
+    }
+
+    // ---- standards packs ----
+
+    const C3: &str = "3333333333333333333333333333333333333333";
+    const STD_PACK: &str = "format: 1\nname: std\nkind: standards\ndescription: d\n";
+
+    fn std_url(name: &str) -> String {
+        format!("https://example.com/{name}.git")
+    }
+
+    fn std_entry(name: &str) -> String {
+        format!(
+            "  - {{ name: {name}, source: '{}', version: latest }}\n",
+            std_url(name)
+        )
+    }
+
+    fn std_lock(name: &str, commit: &str) -> PackLock {
+        let mut l = lock(commit);
+        l.pack = name.into();
+        l.source = std_url(name);
+        l
+    }
+
+    fn skill_of(id: &str) -> String {
+        format!("---\nname: {id}\ndescription: d {id}\n---\nbody of {id}\n")
+    }
+
+    /// A project with `standards:` entries (and a `pack:` when `team`), a registry, a lock.
+    struct Sx {
+        registry: tempfile::TempDir,
+        root: tempfile::TempDir,
+    }
+
+    impl Sx {
+        fn new(team: bool, standards: &[&str]) -> Sx {
+            let sx = Sx {
+                registry: tempfile::tempdir().unwrap(),
+                root: tempfile::tempdir().unwrap(),
+            };
+            let mut yaml = String::from(MANIFEST);
+            if team {
+                yaml.push_str(REF);
+            }
+            if !standards.is_empty() {
+                yaml.push_str("standards:\n");
+                standards.iter().for_each(|n| yaml.push_str(&std_entry(n)));
+            }
+            put(sx.root.path(), ".armadai/project.yaml", &yaml);
+            sx
+        }
+        fn lock(&self, team: bool, standards: &[PackLock]) {
+            let lf = LockFile {
+                team: team.then(|| lock(C1)),
+                standards: standards.to_vec(),
+            };
+            lock::write(self.root.path(), &lf).unwrap();
+        }
+        fn snap(&self, name: &str, commit: &str, files: &[(&str, &str)]) -> PathBuf {
+            let dir = crate::pack::cache::snapshot_dir_in(
+                self.registry.path(),
+                &std_url(name),
+                name,
+                commit,
+            );
+            for (rel, text) in files {
+                put(&dir, rel, text);
+            }
+            dir
+        }
+        fn team_snap(&self, files: &[(&str, &str)]) -> PathBuf {
+            let dir = crate::pack::cache::snapshot_dir_in(self.registry.path(), URL, "demo", C1);
+            put(&dir, "project.yaml", MANIFEST);
+            for (rel, text) in files {
+                put(&dir, rel, text);
+            }
+            dir
+        }
+        fn open(&self) -> anyhow::Result<Effective> {
+            open_in(self.root.path(), Vars::Literal, self.registry.path())
+        }
+        fn err(&self) -> String {
+            self.open().err().expect("an error").to_string()
+        }
+    }
+
+    fn skill_ids(e: &Effective) -> Vec<String> {
+        let (p, _) = e.load_checked().unwrap();
+        p.skills.keys().cloned().collect()
+    }
+
+    fn codes(ds: &[Diagnostic]) -> Vec<&'static str> {
+        ds.iter().map(|d| d.code).collect()
+    }
+
+    #[test]
+    fn a_standards_only_project_reads_the_standards_skill() {
+        let sx = Sx::new(false, &["std-a"]);
+        sx.lock(false, &[std_lock("std-a", C1)]);
+        let snap = sx.snap(
+            "std-a",
+            C1,
+            &[
+                ("pack.yaml", STD_PACK),
+                ("skills/s/SKILL.md", &skill_of("s")),
+            ],
+        );
+        let e = sx.open().unwrap();
+        assert_ne!(e.sources, sx.root.path());
+        assert!(e.pack.is_none());
+        let (p, o) = e.load_checked().unwrap();
+        assert_eq!(p.skills["s"].body.trim(), "body of s");
+        let files: Vec<&PathBuf> = o.files.values().map(|(f, _)| f).collect();
+        assert!(
+            files.contains(&&snap.join("skills/s/SKILL.md")),
+            "{files:?}"
+        );
+        assert_eq!(e.standards[0].snapshot, snap);
+    }
+
+    #[test]
+    fn team_and_two_standards_are_all_read() {
+        let sx = Sx::new(true, &["std-a", "std-b"]);
+        sx.lock(true, &[std_lock("std-a", C2), std_lock("std-b", C3)]);
+        sx.team_snap(&[("skills/t/SKILL.md", &skill_of("t"))]);
+        for (n, c, id) in [("std-a", C2, "a-s"), ("std-b", C3, "b-s")] {
+            sx.snap(
+                n,
+                c,
+                &[
+                    ("pack.yaml", STD_PACK),
+                    (&format!("skills/{id}/SKILL.md"), &skill_of(id)),
+                ],
+            );
+        }
+        let e = sx.open().unwrap();
+        assert_eq!(skill_ids(&e), ["a-s", "b-s", "t"]);
+        assert_eq!(
+            e.standards
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+            ["std-a", "std-b"]
+        );
+    }
+
+    #[test]
+    fn standards_lock_messages_are_the_planned_texts() {
+        let ym = ".armadai/project.yaml";
+        // E1: no lock at all
+        let sx = Sx::new(false, &["std-a"]);
+        assert_eq!(
+            sx.err(),
+            ".armadai/project.yaml references standards std-a but .armadai/pack.lock is missing: run `armadai pack update`"
+        );
+        // E2: a lock without the entry
+        sx.lock(false, &[std_lock("std-b", C1)]);
+        assert_eq!(
+            sx.err(),
+            ".armadai/project.yaml references standards std-a but .armadai/pack.lock has no entry for it: run `armadai pack update`"
+        );
+        // E4: the lock is for another source
+        let mut other = std_lock("std-a", C1);
+        other.source = "https://example.com/else.git".into();
+        sx.lock(false, &[other]);
+        assert_eq!(
+            sx.err(),
+            ".armadai/pack.lock is for standards std-a from https://example.com/else.git, but .armadai/project.yaml references std-a from https://example.com/std-a.git: run `armadai pack update`"
+        );
+        // E6: the snapshot is not in the cache
+        sx.lock(false, &[std_lock("std-a", C1)]);
+        assert_eq!(
+            sx.err(),
+            "standards std-a 1.0.0 (111111111111) is not in the local cache: run `armadai pack sync`"
+        );
+        // E10: an id that is not a commit name
+        sx.lock(false, &[std_lock("std-a", "../../etc")]);
+        assert_eq!(
+            sx.err(),
+            "standards std-a has an invalid name or version id: ../../etc"
+        );
+        // E7: the same name twice
+        let twice = Sx::new(false, &["std-a", "std-a"]);
+        twice.lock(false, &[std_lock("std-a", C1)]);
+        assert_eq!(
+            twice.err(),
+            ".armadai/project.yaml references standards std-a twice: keep one entry"
+        );
+        // E3 and E5: under a pin of this checkout
+        let pinned = Sx::new(true, &[]);
+        std::fs::create_dir_all(pinned.root.path().join(".git")).unwrap();
+        pinned.lock(true, &[]);
+        lock::pin(pinned.root.path()).unwrap();
+        let committed = {
+            let scratch = tempfile::tempdir().unwrap();
+            let lf = LockFile {
+                team: Some(lock(C1)),
+                standards: vec![std_lock("std-a", C1)],
+            };
+            lock::write(scratch.path(), &lf).unwrap();
+            std::fs::read_to_string(scratch.path().join(lock::LOCK)).unwrap()
+        };
+        std::fs::write(pinned.root.path().join(lock::LOCK), &committed).unwrap();
+        put(
+            pinned.root.path(),
+            ym,
+            &format!("{MANIFEST}{REF}standards:\n{}", std_entry("std-a")),
+        );
+        assert_eq!(
+            pinned.err(),
+            ".armadai/project.yaml references standards std-a but the pack pin of this checkout has no entry for it: run armadai pack unpin, then armadai pack update"
+        );
+        lock::unpin(pinned.root.path()).unwrap();
+        // the pin holds std-a from another source than the project's
+        let mut moved = std_lock("std-a", C1);
+        moved.source = "https://example.com/else.git".into();
+        let moved_text = {
+            let scratch = tempfile::tempdir().unwrap();
+            let lf = LockFile {
+                team: Some(lock(C1)),
+                standards: vec![moved],
+            };
+            lock::write(scratch.path(), &lf).unwrap();
+            std::fs::read_to_string(scratch.path().join(lock::LOCK)).unwrap()
+        };
+        pinned.team_snap(&[]);
+        let pin_file = lock::pin_path(pinned.root.path()).unwrap().unwrap();
+        put(pin_file.parent().unwrap(), "pack.lock", &moved_text);
+        assert_eq!(
+            pinned.err(),
+            "the pack pin of this checkout is for standards std-a from https://example.com/else.git, but .armadai/project.yaml references std-a from https://example.com/std-a.git: run armadai pack unpin"
+        );
+    }
+
+    #[test]
+    fn a_broken_dot_git_refuses_a_standards_project() {
+        let sx = Sx::new(false, &["std-a"]);
+        sx.lock(false, &[std_lock("std-a", C1)]);
+        sx.snap(
+            "std-a",
+            C1,
+            &[
+                ("pack.yaml", STD_PACK),
+                ("skills/s/SKILL.md", &skill_of("s")),
+            ],
+        );
+        let dot_git = sx.root.path().join(".git");
+        std::fs::write(
+            &dot_git,
+            format!("gitdir: {}\n", sx.root.path().join("absent").display()),
+        )
+        .unwrap();
+        assert_eq!(
+            sx.err(),
+            format!(
+                "{} does not lead to a git directory, where this checkout keeps its pack pin; repair it (git worktree repair) and run the command again",
+                dot_git.display()
+            )
+        );
+    }
+
+    #[test]
+    fn a_team_pack_with_standards_is_refused_by_name() {
+        let fx = Fx::new();
+        fx.snapshot(
+            C1,
+            &[(
+                "project.yaml",
+                &format!("{MANIFEST}standards:\n{}", std_entry("std-a")),
+            )],
+        );
+        assert_eq!(
+            fx.err(),
+            "pack demo: its own project.yaml references standards packs (standards:), which is not supported"
+        );
+    }
+
+    #[test]
+    fn a_team_pack_named_in_standards_is_wrong_kind() {
+        let sx = Sx::new(false, &["std-a"]);
+        sx.lock(false, &[std_lock("std-a", C1)]);
+        let snap = sx.snap(
+            "std-a",
+            C1,
+            &[
+                ("pack.yaml", "format: 1\nname: std-a\ndescription: d\n"),
+                ("skills/s/SKILL.md", &skill_of("s")),
+            ],
+        );
+        let e = sx.open().unwrap();
+        let ds = e.validate();
+        let d = ds
+            .iter()
+            .find(|d| d.code == "standards-wrong-kind")
+            .unwrap();
+        assert_eq!(d.file, snap.join("pack.yaml"));
+        assert_eq!(
+            d.message,
+            "standards std-a is a team pack (its pack.yaml has no kind: standards): reference it with pack:, not standards:"
+        );
+        assert!(e.load_checked().is_err());
+    }
+
+    #[test]
+    fn a_foreign_file_of_a_standards_pack_is_an_error_but_pack_yaml_and_readme_are_not() {
+        let sx = Sx::new(false, &["std-a"]);
+        sx.lock(false, &[std_lock("std-a", C1)]);
+        let snap = sx.snap(
+            "std-a",
+            C1,
+            &[
+                ("pack.yaml", STD_PACK),
+                ("README.md", "readme"),
+                ("agents/a.md", AGENT_A),
+                ("skills/s/SKILL.md", &skill_of("s")),
+            ],
+        );
+        let e = sx.open().unwrap();
+        let ds = e.validate();
+        let foreign: Vec<&Diagnostic> = (ds.iter())
+            .filter(|d| d.code == "standards-foreign-file")
+            .collect();
+        assert_eq!(foreign.len(), 1, "{foreign:?}");
+        assert_eq!(foreign[0].file, snap.join("agents/a.md"));
+        assert_eq!(
+            foreign[0].message,
+            "a standards pack holds only skills: `agents/a.md` is not under skills/"
+        );
+        assert!(e.load_checked().is_err());
+    }
+
+    #[test]
+    fn two_sources_of_one_skill_are_named() {
+        // two standards packs
+        let sx = Sx::new(false, &["std-a", "std-b"]);
+        sx.lock(false, &[std_lock("std-a", C2), std_lock("std-b", C3)]);
+        sx.snap(
+            "std-a",
+            C2,
+            &[
+                ("pack.yaml", STD_PACK),
+                ("skills/s/SKILL.md", &skill_of("s")),
+            ],
+        );
+        let b = sx.snap(
+            "std-b",
+            C3,
+            &[
+                ("pack.yaml", STD_PACK),
+                ("skills/s/SKILL.md", &skill_of("s")),
+            ],
+        );
+        let e = sx.open().unwrap();
+        let ds = e.validate();
+        let d = ds
+            .iter()
+            .find(|d| d.code == "duplicate-standards-skill")
+            .unwrap();
+        assert_eq!(
+            d.message,
+            "skill s comes from both standards std-a and standards std-b"
+        );
+        assert_eq!(d.file, b.join("skills/s/SKILL.md"));
+        assert_eq!(
+            codes(&ds)
+                .iter()
+                .filter(|c| **c == "duplicate-standards-skill")
+                .count(),
+            1
+        );
+        assert!(e.load_checked().is_err());
+        // the project's own folder lifts it, and its skill is the one read
+        put(
+            sx.root.path(),
+            ".armadai/skills/s/SKILL.md",
+            "---\nname: s\ndescription: mine\n---\nmine\n",
+        );
+        let e = sx.open().unwrap();
+        let (p, _) = e.load_checked().unwrap();
+        assert_eq!(p.skills["s"].body.trim(), "mine");
+        // the team pack and a standards pack
+        let tm = Sx::new(true, &["std-a"]);
+        tm.lock(true, &[std_lock("std-a", C2)]);
+        tm.team_snap(&[("skills/s/SKILL.md", &skill_of("s"))]);
+        tm.snap(
+            "std-a",
+            C2,
+            &[
+                ("pack.yaml", STD_PACK),
+                ("skills/s/SKILL.md", &skill_of("s")),
+            ],
+        );
+        let ds = tm.open().unwrap().validate();
+        let d = ds
+            .iter()
+            .find(|d| d.code == "duplicate-standards-skill")
+            .unwrap();
+        assert_eq!(
+            d.message,
+            "skill s comes from both pack demo and standards std-a"
+        );
+    }
+
+    #[test]
+    fn an_empty_standards_source_is_a_diagnostic_not_a_lock_error() {
+        let sx = Sx::new(false, &[]);
+        put(
+            sx.root.path(),
+            ".armadai/project.yaml",
+            &format!("{MANIFEST}standards:\n  - {{ name: std-a, source: '', version: latest }}\n"),
+        );
+        let e = sx.open().unwrap();
+        assert!(codes(&e.validate()).contains(&"standards-empty-source"));
+    }
+
+    #[test]
+    fn skill_packs_names_only_standards_skills() {
+        let sx = Sx::new(true, &["std-a"]);
+        sx.lock(true, &[std_lock("std-a", C2)]);
+        sx.team_snap(&[("skills/t/SKILL.md", &skill_of("t"))]);
+        sx.snap(
+            "std-a",
+            C2,
+            &[
+                ("pack.yaml", STD_PACK),
+                ("skills/a-s/SKILL.md", &skill_of("a-s")),
+            ],
+        );
+        put(sx.root.path(), ".armadai/skills/p/SKILL.md", &skill_of("p"));
+        let e = sx.open().unwrap();
+        assert_eq!(
+            e.skill_packs(),
+            BTreeMap::from([("a-s".to_string(), "std-a".to_string())])
+        );
+    }
+
+    #[test]
+    fn a_lock_given_is_the_teams_before_the_pack_key_exists() {
+        let fx = Fx::new();
+        put(fx.root.path(), ".armadai/project.yaml", MANIFEST);
+        fx.snapshot(
+            C1,
+            &[("project.yaml", MANIFEST), ("agents/one.md", AGENT_A)],
+        );
+        let e = open_with_lock_in(
+            fx.root.path(),
+            &lock(C1).into(),
+            Vars::Literal,
+            fx.registry.path(),
+        )
+        .unwrap();
+        assert_eq!(agents(&e), ["one"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_executable_bit_of_a_standards_script_is_kept() {
+        use std::os::unix::fs::PermissionsExt;
+        let sx = Sx::new(false, &["std-a"]);
+        sx.lock(false, &[std_lock("std-a", C1)]);
+        let snap = sx.snap(
+            "std-a",
+            C1,
+            &[
+                ("pack.yaml", STD_PACK),
+                ("skills/s/SKILL.md", &skill_of("s")),
+                ("skills/s/run.sh", "#!/bin/sh\n"),
+            ],
+        );
+        std::fs::set_permissions(
+            snap.join("skills/s/run.sh"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        let e = sx.open().unwrap();
+        let mode = |f: &str| {
+            std::fs::metadata(e.sources.join(f))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o111
+        };
+        assert_ne!(mode(".armadai/skills/s/run.sh"), 0);
+        assert_eq!(mode(".armadai/skills/s/SKILL.md"), 0);
     }
 }

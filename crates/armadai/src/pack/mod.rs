@@ -10,6 +10,7 @@ pub mod outputs;
 pub mod referents;
 pub mod resolve;
 pub mod source;
+pub mod standards;
 pub mod status;
 pub mod vars;
 
@@ -224,7 +225,15 @@ fn check(
     retry: &str,
 ) -> anyhow::Result<()> {
     refuse_invalid(root, registry, env, retry)?;
-    let view = effective::open_with_lock_in(root, lock, effective::Vars::Resolve(env), registry)?;
+    // the standards entries stay as the lock has them: only the team entry moves here
+    let mut locked: lock::LockFile = lock.clone().into();
+    locked.standards = lock::read_committed(root)
+        .ok()
+        .flatten()
+        .map(|l| l.standards)
+        .unwrap_or_default();
+    let view =
+        effective::open_with_lock_in(root, &locked, effective::Vars::Resolve(env), registry)?;
     if let Err(ds) = view.load_checked() {
         for d in &ds {
             eprintln!("{}", d.render());
