@@ -743,3 +743,303 @@ fn validate_keeps_pack_variables_literal_and_reports_no_error() {
     assert_eq!(out.status.code(), Some(0), "{text}{}", stderr(&out));
     assert_eq!(text, "0 error(s), 0 warning(s)\n");
 }
+
+// Standards packs: the report of `link`, the stop on a clash or an unlocked entry, `unlink`.
+
+const C3: &str = "3333333333333333333333333333333333333333";
+const TEAM_REF: &str =
+    "pack: { name: demo, source: 'https://example.com/packs.git', version: latest }\n";
+const STD_REFS: &str = "standards:\n  - { name: std-a, source: 'https://example.com/packs.git', version: latest }\n  - { name: std-b, source: 'https://example.com/packs.git', version: latest }\n";
+const DEV: &str = "---\ndescription: d\nslots: [code-standards, empty-slot]\n---\nDev\n";
+
+fn std_pack(name: &str) -> String {
+    format!("format: 1\nname: {name}\nkind: standards\ndescription: d\n")
+}
+
+fn slot_skill(id: &str, slots: &str) -> String {
+    format!(
+        "---\nname: {id}\ndescription: d {id}\nmetadata:\n  armadai-slot: {slots}\n---\nbody of {id}\n"
+    )
+}
+
+impl Env {
+    /// The standards pack `name` at `commit` in this machine's cache.
+    fn std_snapshot(&self, name: &str, commit: &str, skills: &[(&str, &str)]) {
+        let key = armadai_core::registries::cache_key(URL);
+        let dir = (self.dir.path().join("config/registry/packs"))
+            .join(key)
+            .join(name)
+            .join(commit);
+        put(&dir, "pack.yaml", &std_pack(name));
+        for (id, slots) in skills {
+            put(
+                &dir,
+                &format!("skills/{id}/SKILL.md"),
+                &slot_skill(id, slots),
+            );
+        }
+    }
+
+    /// The committed lock: `team` (a `pack:` entry) then `std-a` 1.0.0 at `C1` and `std-b`
+    /// 2.0.0 at `C2`.
+    fn std_lock(&self, team: bool) {
+        let team = if team {
+            format!("pack: demo\nsource: '{URL}'\nresolved:\n  version: 3.0.0\n  commit: '{C3}'\n")
+        } else {
+            String::new()
+        };
+        let entry = |n: &str, v: &str, c: &str| {
+            format!(
+                "- pack: {n}\n  source: '{URL}'\n  resolved:\n    version: {v}\n    commit: '{c}'\n"
+            )
+        };
+        put(
+            &self.root(),
+            ".armadai/pack.lock",
+            &format!(
+                "format: 1\n{team}standards:\n{}{}",
+                entry("std-a", "1.0.0", C1),
+                entry("std-b", "2.0.0", C2)
+            ),
+        );
+    }
+}
+
+/// `dev` declares `code-standards` and the empty `empty-slot`; `std-a` and `std-b` are
+/// locked. `a_skills` / `b_skills` are the (id, slots) of each pack.
+fn std_env(a_skills: &[(&str, &str)], b_skills: &[(&str, &str)]) -> Env {
+    let manifest = format!("schema_version: 1\ntargets: [claude]\n{STD_REFS}");
+    let env = Env::new(&[
+        (".armadai/project.yaml", &manifest),
+        (".armadai/agents/dev.md", DEV),
+    ]);
+    env.std_snapshot("std-a", C1, a_skills);
+    env.std_snapshot("std-b", C2, b_skills);
+    env.std_lock(false);
+    env
+}
+
+fn has_line(text: &str, line: &str) {
+    assert!(
+        text.lines().any(|l| l == line),
+        "no line {line:?} in\n{text}"
+    );
+}
+
+#[test]
+fn link_reports_each_standards_pack() {
+    let env = std_env(
+        &[("a-rule", "code-standards")],
+        &[("b-rule", "code-standards")],
+    );
+    let text = env.ok(&["link"], &[]);
+    has_line(
+        &text,
+        "claude: standards std-a: compiled (1.0.0 (111111111111), from the cache)",
+    );
+    has_line(
+        &text,
+        "claude: standards std-b: compiled (2.0.0 (222222222222), from the cache)",
+    );
+}
+
+#[test]
+fn two_standards_fill_one_slot_and_are_named() {
+    // the id order (a-rule, b-rule) is the reverse of the pack order (std-b, std-a)
+    let env = std_env(
+        &[("b-rule", "code-standards")],
+        &[("a-rule", "code-standards")],
+    );
+    let text = env.ok(&["link"], &[]);
+    has_line(
+        &text,
+        "claude: agent dev slot code-standards: compiled (a-rule from std-b, b-rule from std-a)",
+    );
+    has_line(
+        &text,
+        "claude: agent dev slot empty-slot: not-compiled (no skill fills it)",
+    );
+    let agent = env.read(".claude/agents/dev.md");
+    assert!(
+        agent
+            .lines()
+            .collect::<Vec<_>>()
+            .windows(3)
+            .any(|w| w == ["skills:", "- a-rule", "- b-rule"]),
+        "{agent}"
+    );
+}
+
+#[test]
+fn the_slot_line_of_a_team_pack_skill_is_unchanged() {
+    let manifest = format!("schema_version: 1\ntargets: [claude]\n{TEAM_REF}{STD_REFS}");
+    let env = Env::new(&[
+        (".armadai/project.yaml", &manifest),
+        (
+            ".armadai/agents/dev.md",
+            "---\ndescription: d\nslots: [team-slot, code-standards]\n---\nDev\n",
+        ),
+        (
+            ".armadai/skills/mine/SKILL.md",
+            &slot_skill("mine", "team-slot"),
+        ),
+    ]);
+    env.snapshot(
+        C3,
+        &[
+            ("project.yaml", PACK_MANIFEST),
+            ("skills/t-rule/SKILL.md", &slot_skill("t-rule", "team-slot")),
+        ],
+    );
+    env.std_snapshot("std-a", C1, &[("a-rule", "code-standards")]);
+    env.std_snapshot("std-b", C2, &[]);
+    env.std_lock(true);
+    let text = env.ok(&["link"], &[]);
+    // the team pack's and the project's skills stand alone, the standards one is named
+    has_line(
+        &text,
+        "claude: agent dev slot team-slot: compiled (mine, t-rule)",
+    );
+    has_line(
+        &text,
+        "claude: agent dev slot code-standards: compiled (a-rule from std-a)",
+    );
+}
+
+#[test]
+fn an_undeclared_slot_of_a_standards_skill_is_reported() {
+    // the first slot is declared, the next two are not
+    let env = std_env(&[("a-rule", "code-standards, lonely, other")], &[]);
+    let text = env.ok(&["link"], &[]);
+    has_line(
+        &text,
+        "claude: standards std-a skill a-rule: not-compiled (no agent declares slot lonely)",
+    );
+    has_line(
+        &text,
+        "claude: standards std-a skill a-rule: not-compiled (no agent declares slot other)",
+    );
+    has_line(
+        &text,
+        "claude: agent dev slot empty-slot: not-compiled (no skill fills it)",
+    );
+    assert_eq!(
+        text.lines()
+            .filter(|l| l.contains("standards std-a skill"))
+            .count(),
+        2,
+        "{text}"
+    );
+}
+
+#[test]
+fn a_clash_stops_link_before_writing() {
+    let env = std_env(&[("dup", "code-standards")], &[("dup", "code-standards")]);
+    let out = env.run(&["link"], &[], "");
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.lines().any(|l| l.ends_with(
+            "error[duplicate-standards-skill]: skill dup comes from both standards std-a and standards std-b"
+        )),
+        "{err}"
+    );
+    assert!(!env.root().join(".claude").exists());
+    // the project's own folder lifts it, and its skill is the one compiled
+    put(
+        &env.root(),
+        ".armadai/skills/dup/SKILL.md",
+        &slot_skill("dup", "code-standards"),
+    );
+    env.ok(&["link"], &[]);
+    assert_eq!(
+        env.read(".claude/skills/dup/SKILL.md"),
+        slot_skill("dup", "code-standards")
+    );
+}
+
+#[test]
+fn link_without_the_standards_snapshot_stops() {
+    let env = std_env(&[("a-rule", "code-standards")], &[]);
+    let key = armadai_core::registries::cache_key(URL);
+    std::fs::remove_dir_all(
+        env.dir
+            .path()
+            .join("config/registry/packs")
+            .join(key)
+            .join("std-a")
+            .join(C1),
+    )
+    .unwrap();
+    let out = env.run(&["link"], &[], "");
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.lines().any(|l| l
+            == "Error: standards std-a 1.0.0 (111111111111) is not in the local cache: run `armadai pack sync`"),
+        "{err}"
+    );
+    assert!(!env.root().join(".claude").exists());
+}
+
+#[test]
+fn unlink_after_a_link_with_standards_restores_the_tree() {
+    let env = std_env(
+        &[("a-rule", "code-standards")],
+        &[("b-rule", "code-standards")],
+    );
+    let before = tree(&env.root());
+    env.ok(&["link"], &[]);
+    assert!(env.root().join(".claude/skills/a-rule/SKILL.md").exists());
+    assert!(env.root().join(".claude/skills/b-rule/SKILL.md").exists());
+    env.ok(&["unlink"], &[]);
+    let mut after = tree(&env.root());
+    // left on purpose: it keeps the link manifest out of git
+    after.remove(Path::new(".armadai/.gitignore"));
+    assert_eq!(after, before);
+}
+
+// `list`, `inspect` and `skills` name the standards pack of a skill that fills a slot.
+
+/// `std-a` holds `a-rule`, the project its own `own`; both fill `code-standards`.
+fn std_env_with_an_own_skill() -> Env {
+    let env = std_env(&[("a-rule", "code-standards")], &[]);
+    put(
+        &env.root(),
+        ".armadai/skills/own/SKILL.md",
+        &slot_skill("own", "code-standards"),
+    );
+    env
+}
+
+#[test]
+fn list_names_the_standards_pack_of_a_slot_skill() {
+    let env = std_env_with_an_own_skill();
+    let out = env.ok(&["list"], &[]);
+    has_line(&out, "  code-standards: a-rule from std-a, own");
+    has_line(&out, "  empty-slot: (none)");
+}
+
+#[test]
+fn inspect_names_the_standards_pack_of_a_slot_skill() {
+    let env = std_env_with_an_own_skill();
+    let out = env.ok(&["inspect", "dev"], &[]);
+    has_line(
+        &out,
+        "  Slots:        code-standards: a-rule from std-a, own",
+    );
+    has_line(&out, "                empty-slot: (none)");
+}
+
+#[test]
+fn skills_lists_a_standards_skill_with_its_pack() {
+    let env = std_env_with_an_own_skill();
+    let out = env.ok(&["skills", "show", "a-rule"], &[]);
+    has_line(&out, "Source: standards std-a, skills/a-rule");
+    // the project's own skill is its own file
+    let own = env.ok(&["skills", "show", "own"], &[]);
+    assert!(
+        !own.lines().any(|l| l.starts_with("Source: standards")),
+        "{own}"
+    );
+}

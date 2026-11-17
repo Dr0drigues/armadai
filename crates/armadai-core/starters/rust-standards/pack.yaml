@@ -1,0 +1,4 @@
+format: 1
+name: rust-standards
+kind: standards
+description: "Rust standards: code conventions (slot code-standards) and security rules (slot security)"

@@ -63,7 +63,10 @@ pub fn execute(id: String) -> anyhow::Result<()> {
     }
     for (i, slot) in f.slots.iter().enumerate() {
         let name = if i == 0 { "Slots:" } else { "" };
-        field(name, crate::cli::list::slot_line(&project, slot));
+        field(
+            name,
+            crate::cli::list::slot_line(&project, slot, &view.skill_packs()),
+        );
     }
     let caps = armadai_model::yaml::to_string(&f.capabilities)?;
     if caps.trim() != "{}" {

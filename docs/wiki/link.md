@@ -47,11 +47,14 @@ Every target is planned and checked before the first write.
 
 A project with a `pack:` key is compiled from its effective view: the locked snapshot of the pack
 (`.armadai/pack.lock`, read from the local cache, never the network) overlaid by the project's own
-files. `link` adds two kinds of line to the report:
+files. A project can also reference standards packs (`standards:`, skills only), locked and read the
+same way, with or without a `pack:`. `link` adds these lines to the report:
 
 | Element | Status | Reason |
 |---|---|---|
 | `pack <name>` | `compiled` | `<version> (<id12>), from the cache` |
+| `standards <name>` | `compiled` | `<version> (<id12>), from the cache` |
+| `standards <name> skill <id>` | `not-compiled` | `no agent declares slot <slot>` (one line per slot of the skill that no agent of the project declares) |
 | `var <name>` | `approximated` | `set by none of ARMADAI_VAR_<NAME>, .armadai/vars.local.yaml, .armadai/vars.yaml: replaced by an empty value` |
 
 When the cache holds a newer version than the lock, `link` also writes a `note:` on stderr that
@@ -78,7 +81,7 @@ checkout; link writes through it`. `link` refuses a `.claude` leading out with o
 |---|---|
 | agent `<id>` | `.claude/agents/<id>.md`: `name`, `description`, `model` (tier `fast`/`pro`/`max` -> `haiku`/`sonnet`/`opus`, or `native.claude.model`; omitted without a tier), `disallowedTools` for `deny` capabilities, `skills`, then `native.claude` keys |
 | skill `<id>` | `.claude/skills/<id>/`, every file byte for byte (executable bit kept) |
-| `slots:` of an agent | the skills filling them added to its `skills` (preloaded); report `agent <id> slot <s>: compiled (<skills>)`, or `not-compiled (no skill fills it)`. For the coordinator (main session, no preloading) a filled slot is `approximated`, like its `skills:` |
+| `slots:` of an agent | the skills filling them added to its `skills` (preloaded); report `agent <id> slot <s>: compiled (<skills>)`, or `not-compiled (no skill fills it)`; a skill that comes from a standards pack is followed by ` from <pack>` (`compiled (a-rule from std-a, b-rule)`). For the coordinator (main session, no preloading) a filled slot is `approximated`, like its `skills:`, and names no pack |
 | command `<id>` | `.claude/commands/<id>.md`: `description`, `argument-hint` (from `argument_hint`), then `native.claude` keys (a key colliding with a generated one is an error); the body as is. Report `command <id>: compiled` |
 | coordinator | the root `CLAUDE.md`: the coordinator's prompt and a generated `## Delegation` section (agents, flows, steps, states, transitions), between `<!-- armadai:begin -->` and `<!-- armadai:end -->`. An existing `CLAUDE.md` keeps its content; the block is appended or replaced in place |
 | automation | `.claude/settings.json` hooks: `session-start` -> `SessionStart`, `session-end` -> `SessionEnd`, `before-tool` -> `PreToolUse`, `after-tool` -> `PostToolUse`, `on-prompt` -> `UserPromptSubmit`, `on-stop` -> `Stop`; `native.claude.matcher` is the group matcher, other `native.claude` keys go into the handler |
@@ -295,7 +298,7 @@ version, is no longer produced (a previous one is removed as a stale file while 
 | team and flows | `.opencode/armadai-team.md` (in the output folder), listed under `instructions` in `opencode.json`: the agents by id and the flows (steps, states, transitions), described neutrally since every agent reads it. Written when there is a coordinator or a flow | `team file: compiled` |
 | skill `<id>` | `.opencode/skills/<id>/`, every file byte for byte | `compiled` |
 | `skills:` of an agent | `permission.skill`: `"*": deny`, then `<id>: allow` for each; the prompt says to load them with the `skill` tool | `compiled` |
-| `slots:` of an agent (coordinator included) | the skills filling them are added to the loading prescription. A slot never restricts: only an agent with declared `skills:` gets `permission.skill` (`"*": deny`, then its skills and its slot skills as `allow`); an agent without `skills:` gets no `permission.skill`, slots or not, and keeps every skill, as under Claude Code where a slot preloads without restricting | `agent <id> slot <s>: compiled (<skills>)`, or `not-compiled (no skill fills it)` |
+| `slots:` of an agent (coordinator included) | the skills filling them are added to the loading prescription. A slot never restricts: only an agent with declared `skills:` gets `permission.skill` (`"*": deny`, then its skills and its slot skills as `allow`); an agent without `skills:` gets no `permission.skill`, slots or not, and keeps every skill, as under Claude Code where a slot preloads without restricting | `agent <id> slot <s>: compiled (<skills>)` (a skill of a standards pack followed by ` from <pack>`), or `not-compiled (no skill fills it)` |
 | command `<id>` | `<output>/commands/<id>.md` (`.opencode/commands/` by default): `description`, then `native.opencode` keys; the body is the template | `compiled`; `approximated (argument_hint has no OpenCode equivalent)` when it has an `argument_hint` |
 | flow | guidance in the team file | `approximated (guidance only)`, `compiled` under `strict` |
 | `policy.delegation: strict` | `permission.task` of each agent: `"*": deny`, then `allow` for each target the flows permit (same rule as the Claude [policy gate](policy-gate.md)) and the `free_agents`; the main-thread rule on the built-in `build` and `plan` agents (`agent.build.permission.task`, `agent.plan.permission.task` in `opencode.json`); `experimental.subagent_depth` the longest delegation chain of the flows (1 to 8) | `compiled (enforced by OpenCode permissions)`; primary agents of your own outside `.armadai/` are not covered |

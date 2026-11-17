@@ -1,7 +1,7 @@
 //! OpenCode 2.x adapter: agents (`.opencode/agents/<id>.md`), commands, skills, models and
 //! capabilities as per-agent permissions.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
@@ -64,12 +64,19 @@ impl OpencodeCompiler {
 }
 
 impl Compiler for OpencodeCompiler {
-    fn compile(&self, project: &Project, _root: &Path, sources: &Path) -> anyhow::Result<Plan> {
+    fn compile_with_origins(
+        &self,
+        project: &Project,
+        _root: &Path,
+        sources: &Path,
+        skill_packs: &BTreeMap<String, String>,
+    ) -> anyhow::Result<Plan> {
         compile_with(
             project,
             sources,
             &armadai_core::config::try_load_user_config_for(T)?,
             &self.team,
+            skill_packs,
         )
     }
 }
@@ -79,11 +86,11 @@ fn compile_with(
     sources: &Path,
     config: &UserConfig,
     team: &str,
+    skill_packs: &BTreeMap<String, String>,
 ) -> anyhow::Result<Plan> {
     let mut plan = Plan::default();
     let coordinator = project.manifest.coordinator.as_deref();
     let strict = project.manifest.policy.delegation == Delegation::Strict;
-    let has_flows = !project.flows.is_empty();
     informational(&mut plan.report, project);
     for id in project.agents.keys() {
         if BUILTIN_AGENTS.contains(&id.as_str()) {
@@ -101,9 +108,9 @@ fn compile_with(
                 project,
                 id,
                 is_lead.then_some(team),
-                has_flows,
                 targets,
                 config,
+                skill_packs,
                 &mut plan.report,
             )?
             .into_bytes(),
@@ -484,9 +491,9 @@ fn agent_file(
     id: &str,
     // the team file, for the coordinator only
     lead: Option<&str>,
-    has_flows: bool,
     targets: Option<BTreeSet<String>>,
     config: &UserConfig,
+    skill_packs: &BTreeMap<String, String>,
     r: &mut Report,
 ) -> anyhow::Result<String> {
     let agent = &project.agents[id];
@@ -531,7 +538,7 @@ fn agent_file(
     }
     let mut body = agent.body.clone();
     if let Some(team) = lead {
-        let (what, how) = if has_flows {
+        let (what, how) = if !project.flows.is_empty() {
             ("the team and the flows", "Delegate each step to its agent")
         } else {
             ("the team", "Delegate")
@@ -573,7 +580,7 @@ fn agent_file(
         );
         r.push(T, format!("agent {id} skills"), Status::Compiled, Some(why));
     }
-    super::slot_lines(r, T, project, id, f, None);
+    super::slot_lines(r, T, project, id, f, None, skill_packs);
     if let Some(v) = super::verdict_instruction(project, id) {
         body = format!("{}{v}", body.trim_end());
     }
@@ -655,7 +662,13 @@ mod tests {
         let p = armadai_model::load_checked(dir.path())
             .unwrap_or_else(|ds| panic!("{:?}", ds.iter().map(|d| d.render()).collect::<Vec<_>>()))
             .0;
-        compile_with(&p, dir.path(), config, ".opencode/armadai-team.md")
+        compile_with(
+            &p,
+            dir.path(),
+            config,
+            ".opencode/armadai-team.md",
+            &BTreeMap::new(),
+        )
     }
 
     fn compile(files: &[(&str, &[u8])]) -> anyhow::Result<Plan> {

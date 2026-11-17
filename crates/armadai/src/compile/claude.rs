@@ -1,5 +1,6 @@
 //! Claude Code adapter: subagents, skills and the root `CLAUDE.md` block.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
@@ -33,7 +34,13 @@ const NO_PRELOAD: &str =
 pub struct ClaudeCompiler;
 
 impl Compiler for ClaudeCompiler {
-    fn compile(&self, project: &Project, root: &Path, sources: &Path) -> anyhow::Result<Plan> {
+    fn compile_with_origins(
+        &self,
+        project: &Project,
+        root: &Path,
+        sources: &Path,
+        skill_packs: &BTreeMap<String, String>,
+    ) -> anyhow::Result<Plan> {
         let mut plan = Plan::default();
         let coordinator = project.manifest.coordinator.as_deref();
         let strict = project.manifest.policy.delegation == Delegation::Strict;
@@ -46,7 +53,8 @@ impl Compiler for ClaudeCompiler {
             }
             plan.artifacts.push(Artifact {
                 path: PathBuf::from(format!("agents/{id}.md")),
-                content: agent_file(project, id, agent, &mut plan.report)?.into_bytes(),
+                content: agent_file(project, id, agent, skill_packs, &mut plan.report)?
+                    .into_bytes(),
                 kind: ArtifactKind::Agent,
                 produced_by: ProducedBy::agent(id),
             });
@@ -410,7 +418,7 @@ fn coordinator_lines(r: &mut Report, project: &Project, id: &str, f: &AgentFront
             Some(NO_PRELOAD),
         );
     }
-    super::slot_lines(r, T, project, id, f, Some(NO_PRELOAD));
+    super::slot_lines(r, T, project, id, f, Some(NO_PRELOAD), &BTreeMap::new());
     for field in fields {
         r.push(
             T,
@@ -425,6 +433,7 @@ fn agent_file(
     project: &Project,
     id: &str,
     agent: &Agent,
+    skill_packs: &BTreeMap<String, String>,
     r: &mut Report,
 ) -> anyhow::Result<String> {
     let f = &agent.front;
@@ -465,7 +474,7 @@ fn agent_file(
             Some("preloaded through the subagent `skills` field"),
         );
     }
-    super::slot_lines(r, T, project, id, f, None);
+    super::slot_lines(r, T, project, id, f, None, skill_packs);
     if super::merge_native(&mut m, &f.native, T, &format!("agent `{id}`"), &["model"])? {
         r.push(
             T,

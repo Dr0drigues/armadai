@@ -143,6 +143,7 @@ lists that folder, so `git status` stays clean, it is not shared with another ch
 gate and the `grant` hook) reads the pin instead, whatever `.armadai/pack.lock` says. The pin is
 never set by another command, and `pack unpin` removes only that file.
 
+- A project with only `standards:` pins too: `pack pin` prints one `pinned standards <name> <version> for this checkout; …` line per standards entry (after the `pinned pack` line when there is one), `pack unpin` one `unpinned standards <name> (was <version>); …` line each, and `pack status` shows `pinned (worktree): <version> (<at>)` under each `Standards` block (`pinned (worktree): no entry (run armadai pack unpin)` when the pin has none).
 - `pack update` and `pack add` are refused before any network access: `refused: this checkout pins pack demo 1.3.0 (armadai pack pin); run armadai pack unpin first`. A second `pack pin` says `this checkout already pins pack demo 1.3.0; run armadai pack unpin first`, and `pack unpin` without a pin `this checkout pins no pack`.
 - `pack status` adds a line under `locked:`, `  pinned (worktree): 1.3.0 (tag demo-v1.3.0, 0123456789ab)`, with the suffix ` (not in cache: run armadai pack sync)` when the snapshot is missing. `locked:` still shows `.armadai/pack.lock`. Without a pin the output does not change.
 - `pack sync` lays the snapshot of the pin, and the "newer version" note is not printed (its advice, `pack update`, is refused). Its tag warnings read `  warn: tag demo-v1.3.0 of pack demo now points to <new12>, the pack pin of this checkout says <old12>: the pin is kept (link uses its commit)` and `  warn: tag demo-v1.3.0 of pack demo no longer exists, the pack pin of this checkout keeps <old12>`.
@@ -150,20 +151,197 @@ never set by another command, and `pack unpin` removes only that file.
 - A pin that is a symbolic link (or sits in a symbolic link) is refused, not read through.
 - A worktree whose `.claude` or `.armadai` is a symbolic link leading out of the checkout (into another checkout already linked) is refused by `link` and `unlink` once it is pinned: see [Link](link.md#packs-and-variables). Give a pinned worktree its own `.claude/`.
 - Not concerned: a pack installed by copy (the files are in the checkout; `pack pin` says so). Limit: outside a git checkout there is nowhere to keep a pin, `pack pin` refuses with `pack pin needs a git checkout: the pin is kept in its git directory, and there is no .git above <root>`.
-- A checkout whose nearest `.git` leads nowhere (a worktree whose `.git` file points at a folder that is gone, an empty or dangling `.git`) has no place to keep a pin, and the pin of the checkout above is never borrowed: `pack pin` and `pack unpin` refuse (`pack pin refused: <dir>/.git does not lead to a git directory, where this checkout keeps its pack pin; repair it (git worktree repair) and run the command again`, and the same with the prefix `pack unpin refused: …`), nothing is created, and every command that reads the lock of a project that references a pack (`link`, `list`, the policy gate, `pack status`, ...) stops with the same message minus the prefix (the gate denies, the `grant` hook gives no opinion), except `unlink`, which warns with that message and goes on with the project alone (unless the project references a pack and its `.claude` or `.armadai` is a symbolic link out of the checkout: then it refuses). Run `git worktree repair`. A project without `pack:` is not concerned.
+- A checkout whose nearest `.git` leads nowhere (a worktree whose `.git` file points at a folder that is gone, an empty or dangling `.git`) has no place to keep a pin, and the pin of the checkout above is never borrowed: `pack pin` and `pack unpin` refuse (`pack pin refused: <dir>/.git does not lead to a git directory, where this checkout keeps its pack pin; repair it (git worktree repair) and run the command again`, and the same with the prefix `pack unpin refused: …`), nothing is created, and every command that reads the lock of a project that references a pack (`link`, `list`, the policy gate, `pack status`, ...) stops with the same message minus the prefix (the gate denies, the `grant` hook gives no opinion), except `unlink`, which warns with that message and goes on with the project alone (unless the project references a pack and its `.claude` or `.armadai` is a symbolic link out of the checkout: then it refuses). Run `git worktree repair`. A project that references neither `pack:` nor `standards:` is not concerned (a project with only `standards:` is: it has a lock too).
 - Limit: the pin is kept per git directory, so two `.armadai` projects in one git checkout (a monorepo, say) share the one `<git dir>/armadai/pack.lock`; `pack pin` in one of them is read by the other.
+
+## Standards packs
+
+A standards pack holds skills only: the rules a team shares (code conventions, security) without
+the agents that apply them. A project references one or more of them next to, or without, its
+team pack, and the agents receive their skills through [slots](project-format.md#slots).
+
+**`kind` and content.** The `pack.yaml` of a standards pack says `kind: standards` (`kind: team`
+is the default, and what every pack written before this key is):
+
+```yaml
+format: 1
+name: rust-std
+kind: standards
+description: "Rust conventions and security rules"
+```
+
+A standards pack is read through the white list of the project format: `skills/`, and the files
+outside it that the format would read (`project.yaml`, `agents/*.md`, `templates/*.md`,
+`commands/*.md`, `flows/*.yaml`, `automations/*.yaml`). Each of those outside `skills/` is the error
+`standards-foreign-file`: ``a standards pack holds only skills: `<rel>` is not under skills/``.
+`pack.yaml`, a README and any other file are not read, so they are fine; a file in a
+subfolder that the white list does not name gets the existing warning `ignored-pack-file` from
+`validate <pack>`. A skill that fills no slot
+is the warning `standards-skill-no-slot` (`validate <pack>` reports it). Each skill says what it
+fills with `metadata: { armadai-slot: code-standards }`. `armadai pack new <name> --kind standards`
+writes the minimal pack (`pack.yaml` and `skills/.gitkeep`, description `A standards pack` by
+default, `--empty` for no questions):
+
+```
+Created pack rust-std in <dir>/rust-std: pack.yaml, skills/
+```
+
+**`standards:` in `project.yaml`.** A list of entries with the fields of `pack:` (`name`,
+`source`, `version`; same ranges). Layers stack in this order: the team pack (`pack:`), then each
+standards pack in the order of the list (skills only), then your own files. Between pack sources
+the skills are told apart by their folder: your `skills/<id>/` replaces the folder of the same id
+**whole** (never file by file), and two pack sources holding the same skill id are the error
+`duplicate-standards-skill` (``skill <id> comes from both <a> and <b>``, each naming its source as
+`pack <name>` or `standards <name>`, in layer order), cured by removing one of the two packs or by putting your own
+`skills/<id>/` in `.armadai/`. For the team pack the rule is unchanged: files merge by path.
+
+A pack named in `standards:` that is a team pack (its `pack.yaml` has no `kind: standards`) is
+refused with `standards-wrong-kind` (`standards <name> is a team pack (its pack.yaml has no kind:
+standards): reference it with pack:, not standards:`) **and**, since its agents, flows and
+`project.yaml` are not skills, one `standards-foreign-file` per file outside `skills/`. The other
+way round is accepted: a `kind: standards` pack referenced by `pack:` is a team pack that holds
+only skills.
+
+**Commands.**
+
+```bash
+armadai pack add rust-std --standards            # a pack of skills, into standards:
+armadai pack add rust-std@^1.2 --standards --source https://example.com/standards.git
+armadai pack update                              # the team pack and every standards entry
+armadai pack status                              # one block per entry
+armadai pack new rust-std --kind standards --empty
+```
+
+- `pack add <name>[@<range>] --standards` needs a project that has an
+  `.armadai/project.yaml`: in a folder without one it fails (`missing-manifest`,
+  `standards <name> <version> would make the project invalid; nothing was changed`), where `pack add`
+  of a team pack creates the file. It adds the entry at the end of the block list of
+  `standards:` (a new block when there is none; your comments stay), locks it, and links:
+  `Added standards rust-std 1.0.0 (0123456789ab): .armadai/project.yaml (version: ^1.0.0) and
+  .armadai/pack.lock`. It does not register the project as a referent (see the limits below). A name
+  already in `standards:` is ``.armadai/project.yaml already references standards <name>: use
+  `armadai pack update` ``. A `standards:` that is not a block list (`[]`, an inline list, an empty key)
+  is never rewritten: ``.armadai/project.yaml has a standards: key that pack add cannot extend (not a
+  block list): add the entry by hand, then run `armadai pack update` ``. A team pack given to
+  `--standards` prints `standards-wrong-kind` and its `standards-foreign-file` lines, then
+  `standards <name> <version> would make the project invalid; nothing was changed`.
+- `pack update` moves the team pack and every `standards:` entry in one lock write, one check and
+  one `link`: `Standards <name>: <old> -> <new> (<id12>), .armadai/pack.lock updated` (`(none)` when
+  the entry was not locked yet) or `Standards <name> is up to date: <version> (<id12>)`. A project
+  whose team pack was installed by copy gets the copy update first, then its standards, then a
+  single `link`; if the link fails, both are put back (the message is the one of the copy:
+  `pack <name> <version> was not applied: link failed, so the files of .armadai/, the record of the
+  pack and the files link had written are back as they were`). When only standards moved and the link
+  fails: `standards <name> <version> was not applied: link failed, so .armadai/pack.lock, the
+  referent record and the files link had written are back as they were`.
+  `pack update <version>` moves the `pack:` only: with none (and no pack installed by copy) it
+  stops with `pack update <version> moves the pack: of .armadai/project.yaml, and this project has
+  none; armadai pack update alone moves its standards`. A range no cached version matches reads
+  `no cached version of standards <name> matches <range> (cached: …): run `armadai pack sync`, or
+  change the version of standards <name> in .armadai/project.yaml`.
+- A standards pack removed from `standards:` leaves the lock on the next `pack update` or
+  `pack add` (the lock keeps only what the project still references); with nothing referenced any
+  more, `pack update` empties the entries and leaves `format: 1`.
+- `pack sync` syncs the source of each entry and lays its snapshot. A source that is not in your
+  `registries.yaml` is said: `note: <url> comes from .armadai/project.yaml (standards <name>), not from
+  your registries.yaml`. The tag warnings read like the team pack's: `  warn: tag <tag> of standards
+  <name> now points to <new12>, .armadai/pack.lock says <old12>: the lock is kept (link uses its
+  commit)` and `  warn: tag <tag> of standards <name> no longer exists, .armadai/pack.lock keeps <old12>`.
+  When the cache holds a newer version than the lock, `pack sync`, `list`, `inspect` and `link`
+  print one note, ``note: standards <name> <version> is in the cache (locked: <old>): run `armadai pack update` ``:
+  the team pack's note when it has one, else the one of the first entry of `standards:`, in list
+  order, that has a newer version; none for referenced packs under a [pin](#pinning-a-pack-per-checkout). A team
+  pack installed by copy keeps its own note, which comes first and is printed under a pin too.
+- `pack status` shows one block per entry after the `Pack … (reference)` block, each separated by a
+  blank line (and before a `Pack … (copy)` block):
+
+  ```
+  Standards rust-std (reference)
+    source:    https://example.com/standards.git
+    range:     ^1.0.0
+    locked:    1.0.0 (tag rust-std-v1.0.0, 0123456789ab)
+    in cache:  1.0.0 matches the range (newest: 1.1.0)
+  ```
+
+  There is no `Projects referencing it:` section for a standards entry.
+- `pack pin` and `pack unpin` take the whole lock: see [Pinning](#pinning-a-pack-per-checkout). A
+  project with only `standards:` pins too (`pinned standards <name> <version> for this checkout; pack
+  update is refused here until armadai pack unpin`, one line per entry after the team pack's).
+  Under such a pin `pack update` is refused before any network access (`refused: this checkout pins
+  standards <name> <version> (armadai pack pin); run armadai pack unpin first`), and `pack status` marks
+  each entry (`  pinned (worktree): <version> (<at>)`, or `  pinned (worktree): no entry (run armadai
+  pack unpin)`).
+- `pack new --from-project` refuses a project that references `standards:`: `this project references
+  standards <name>: its .armadai/ is an overlay, not a pack; create the pack from its source instead`
+  (the first name of the list).
+- `list` and `inspect` name the pack of a skill of a standards pack in a slot line
+  (`code-standards: project-standards, rust-conventions from rust-std`), `skills show` its origin
+  (`standards rust-std, skills/rust-conventions`), and `link` its report lines
+  (see [Link](link.md#packs-and-variables)).
+
+**What stops, and says what to do.** Like the team pack, a standards entry that is not locked is
+refused by every command that reads the project, with the cure named:
+
+- no lock at all: ``.armadai/project.yaml references standards <name> but .armadai/pack.lock is
+  missing: run `armadai pack update` ``;
+- a lock without the entry: the same with `has no entry for it`; under a pin,
+  `… but the pack pin of this checkout has no entry for it: run armadai pack unpin, then armadai pack
+  update`;
+- a lock or a pin for another source: ``.armadai/pack.lock is for standards <name> from <lock source>,
+  but .armadai/project.yaml references <name> from <source>: run `armadai pack update` `` (the pin:
+  `the pack pin of this checkout is for standards …: run armadai pack unpin`);
+- a snapshot missing from the cache: ``standards <name> <version> (<id12>) is not in the local cache:
+  run `armadai pack sync` ``;
+- the same name twice: `.armadai/project.yaml references standards <name> twice: keep one entry`;
+- a team pack whose own `project.yaml` has `standards:`: `pack <name>: its own project.yaml
+  references standards packs (standards:), which is not supported`;
+- an entry whose name, source or version is not usable (`bad-id`, `standards-empty-source`,
+  `standards-empty-version`) is left to `armadai validate`: `pack status`, `pack pin` and
+  `pack update` skip it, and when it is all `standards:` holds (and there is no `pack:`) they say
+  `.armadai/project.yaml has a standards: entry that is not complete: fix the errors `armadai validate`
+  reports in standards:, then run `armadai pack <status|pin|update>` again`;
+- an unreadable committed `pack.lock`: `pack add` stops with the read error (the message begins with `Error:
+  .armadai/pack.lock: …`, for example `unknown field `branch``) and writes nothing; it never overwrites a lock it
+  cannot read;
+- a `.git` that leads nowhere (the lot-14 rule): `pack pin` and `pack unpin` refuse with `pack pin
+  refused: …` and `pack unpin refused: …`, and every command that reads the lock of a project with
+  `standards:` stops with the same message minus the prefix, as for `pack:`.
+
+**`rust-standards`.** The pack of this name ships embedded (see [Available Packs](#available-packs)):
+`rust-conventions` (slot `code-standards`) and `rust-security` (slot `security`). It is installed by
+copy like the others (`armadai init --pack rust-standards`), so its two skills land in
+`.armadai/skills/`, and any team that declares those slots receives them: on `concept-to-code`,
+`implementer` gets both. On a project that already holds a `rust-conventions` skill (the `rust-dev`
+pack ships one) the install keeps yours and says `  warn: skills/rust-conventions exists, kept (the
+pack's skill is not mixed in)` (two spaces in front); `rust-security` is still added. Publish it in a source of your own
+and reference it with `standards:` to have it by reference instead.
+
+**Limits.**
+
+- Standards packs are not in `pack-referents.yaml` (the registry reads `pack:` only): `pack status`
+  has no `Projects referencing it:` for an entry, and `pack update` does not list the other projects
+  on the same standards pack.
+- `pack test` without a folder tests the team pack only. A standards pack is tested with `armadai
+  pack test <dir>`; a project with only `standards:` gets `this project references no pack: give a pack
+  folder, armadai pack test <dir>`.
+- A binary older than this key reads a `kind: standards` pack as a team pack that holds only skills
+  (harmless), but it cannot read a project that uses the feature: a `project.yaml` with `standards:` and
+  a `pack.lock` with a `standards:` list are refused by it (their types reject unknown keys). The
+  project is refused, not corrupted: upgrade the binary.
+- Two standards packs fill one slot together: both skills reach the agent, each named in the link
+  report (`a-rule from std-b, b-rule from std-a`); they do not replace each other.
 
 ## Pack commands
 
 | Command | Does |
 |---|---|
 | `armadai pack sync [--source <url>]` | Refresh the sources now (network): the ones of `registries.yaml`, and the project's own, registered or not. Prints `Synced <url>: <n> pack(s), <v> version(s)` per source; a source that fails is a warning and a non-zero exit |
-| `armadai pack add <name>[@<range>] [--source <url>]` | Reference mode: see above |
+| `armadai pack add <name>[@<range>] [--source <url>] [--standards]` | Reference mode: see above; `--standards` adds a [standards pack](#standards-packs) |
 | `armadai pack status` | Locked and newest cached versions, and the projects referencing the pack (no network). In copy mode: the installed version and what is in the cache |
-| `armadai pack update [<version>]` | Reference: sync the source, move the lock to the best version of the range (or the one given), link. Copy: apply the new version of the pack to the files (below), link |
+| `armadai pack update [<version>]` | Reference: sync the source, move the lock to the best version of the range (or the one given), and the lock entry of each standards pack to the best version of its own range, link. Copy: apply the new version of the pack to the files (below), link |
 | `armadai pack pin` | Keep this checkout on the pack version it locks now, even when `.armadai/pack.lock` moves (above) |
 | `armadai pack unpin` | Follow `.armadai/pack.lock` again |
-| `armadai pack new <name> [--empty \| --from-project] [--description …] [--dir …]` | Create a native pack folder |
+| `armadai pack new <name> [--empty \| --from-project] [--kind team\|standards] [--description …] [--dir …]` | Create a native pack folder |
 | `armadai pack test [<dir>]` | Run the scripts the pack lists under `tests:` (the project's locked snapshot, or a folder; no network access of its own) |
 
 `pack status` in reference mode:
@@ -196,6 +374,8 @@ armadai pack new demo --empty               # no questions
 armadai pack new demo --from-project        # this project's .armadai/, as a pack
 armadai pack new demo --dir ../packs        # in another parent folder
 ```
+
+`--kind standards` (with `--empty`, or in the guide) writes a pack of skills only: `pack.yaml` (`format: 1`, `kind: standards`, the description, `A standards pack` by default) and `skills/.gitkeep`. `--from-project` refuses a project that references `standards:` (its `.armadai/` is an overlay, not a pack).
 
 `--empty` writes `pack.yaml` (`format: 1`, the description, `A starter pack` by default), a minimal
 `project.yaml`, and `agents/`, `skills/`, `flows/`, `automations/` each holding a `.gitkeep` (the
@@ -367,7 +547,7 @@ sources (registries.yaml): add it there, with its credentials` otherwise). An SS
 
 ## Available Packs
 
-The eight packs below ship embedded in the binary, all native.
+The nine packs below ship embedded in the binary, all native.
 
 | Pack | Agents | Flows | Skills |
 |---|---|---|---|
@@ -379,6 +559,7 @@ The eight packs below ship embedded in the binary, all native.
 | `armadai-authoring` | `authoring-lead` (coordinator), `authoring-architect`, `agent-builder`, `skill-builder`, `starter-builder`, `authoring-reviewer`, `authoring-tester` | `authoring` (fan-out), `pack` (plan, build, review loop, test) | `armadai-conventions` |
 | `pirate-crew` | `capitaine` (coordinator), `vigie`, `charpentier`, `cartographe` | `mission` (fan-out) | `code-nautique` |
 | `concept-to-code` | `lead` (coordinator), `analyst`, `framer`, `designer`, `architect`, `implementer`, `coach`, `guardian`, `validator` | `deliver`, `guide` | `briefing`, `cadre`, `standards-setup`, `mockups`, `diagrams`, `previewing` |
+| `rust-standards` | none (a standards pack: skills only) | none | `rust-conventions` (slot `code-standards`), `rust-security` (slot `security`) |
 
 `fullstack` has no coordinator, on purpose: a coordinator becomes the main session itself
 (`CLAUDE.md` for Claude Code), and making `code-reviewer` that would turn every conversation in

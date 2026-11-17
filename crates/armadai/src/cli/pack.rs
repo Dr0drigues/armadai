@@ -6,12 +6,20 @@ use std::path::{Path, PathBuf};
 use armadai_core::registries::{RegistrySource, cache_key};
 use clap::Subcommand;
 
-use crate::cli::new_wizard::{PackAnswers, ask_pack, pack_answers, plan_pack};
+use crate::cli::new_wizard::{PackAnswers, ask_pack, pack_answers_of, plan_pack};
 use crate::pack::cache::{self, Available};
 use crate::pack::lock::{self, TagState};
 use crate::pack::outputs::Outputs;
 use crate::pack::{source, status};
 use crate::starters_registry::{effective_starter_sources, sync_warning};
+use armadai_core::starter::PackKind;
+
+/// The `--kind` values of `pack new`.
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub enum KindArg {
+    Team,
+    Standards,
+}
 
 #[derive(Subcommand)]
 pub enum PackCommand {
@@ -30,6 +38,9 @@ pub enum PackCommand {
         /// The source holding the pack, when more than one of yours does
         #[arg(long)]
         source: Option<String>,
+        /// Add it to `standards:` (a pack of skills only) instead of making it the project's pack
+        #[arg(long)]
+        standards: bool,
     },
     /// Move the pack to the best cached version of its range (or the one given), then link
     Update {
@@ -62,6 +73,9 @@ pub enum PackCommand {
         /// Capture this project's .armadai/ (not the link manifest, state or variables)
         #[arg(long)]
         from_project: bool,
+        /// What the pack holds: a whole team (default) or standards (skills only)
+        #[arg(long, value_enum, conflicts_with = "from_project")]
+        kind: Option<KindArg>,
         #[arg(long)]
         description: Option<String>,
         /// Parent folder (default: the current directory)
@@ -75,6 +89,7 @@ pub fn execute(what: PackCommand) -> anyhow::Result<()> {
         name,
         empty,
         from_project,
+        kind,
         description,
         dir,
     } = what
@@ -92,10 +107,14 @@ pub fn execute(what: PackCommand) -> anyhow::Result<()> {
                 description,
             )?
         } else {
+            let kind = match kind {
+                Some(KindArg::Standards) => PackKind::Standards,
+                Some(KindArg::Team) | None => PackKind::Team,
+            };
             let answers = if empty {
-                pack_answers(&name, description.as_deref())
+                pack_answers_of(kind, &name, description.as_deref())
             } else {
-                ask_pack(&name, description.as_deref())?
+                ask_pack(kind, &name, description.as_deref())?
             };
             new_minimal(&parent, &answers)?
         };
@@ -113,7 +132,11 @@ pub fn execute(what: PackCommand) -> anyhow::Result<()> {
     }
     match what {
         PackCommand::Sync { source } => sync(root.ok().as_deref(), &registry, source),
-        PackCommand::Add { pack, source } => {
+        PackCommand::Add {
+            pack,
+            source,
+            standards,
+        } => {
             let cwd = std::env::current_dir()?;
             let root = match crate::compile::find_project(&cwd) {
                 Ok(r) => r,
@@ -128,6 +151,7 @@ pub fn execute(what: PackCommand) -> anyhow::Result<()> {
                 &effective_starter_sources(),
                 &pack,
                 source.as_deref(),
+                standards,
                 &env,
             )?;
             finish(&root, done)
@@ -147,10 +171,18 @@ pub fn execute(what: PackCommand) -> anyhow::Result<()> {
         }
         PackCommand::Pin => {
             let pin = lock::pin(&root?)?;
-            println!(
-                "pinned pack {} {} for this checkout; pack update is refused here until armadai pack unpin",
-                pin.pack, pin.resolved.version
-            );
+            if let Some(t) = &pin.team {
+                println!(
+                    "pinned pack {} {} for this checkout; pack update is refused here until armadai pack unpin",
+                    t.pack, t.resolved.version
+                );
+            }
+            for e in &pin.standards {
+                println!(
+                    "pinned standards {} {} for this checkout; pack update is refused here until armadai pack unpin",
+                    e.pack, e.resolved.version
+                );
+            }
             Ok(())
         }
         PackCommand::Unpin => {
@@ -158,12 +190,26 @@ pub fn execute(what: PackCommand) -> anyhow::Result<()> {
             let Some(old) = lock::unpin(&root)? else {
                 anyhow::bail!("this checkout pins no pack");
             };
-            let now =
-                lock::read_committed(&root)?.map_or("missing".to_string(), |l| l.resolved.version);
-            println!(
-                "unpinned pack {} (was {}); this checkout follows .armadai/pack.lock ({now}) again",
-                old.pack, old.resolved.version
-            );
+            let now = lock::read_committed(&root)?.unwrap_or_default();
+            let missing = || "missing".to_string();
+            if let Some(t) = &old.team {
+                let now = now
+                    .team
+                    .as_ref()
+                    .map_or_else(missing, |l| l.resolved.version.clone());
+                println!(
+                    "unpinned pack {} (was {}); this checkout follows .armadai/pack.lock ({now}) again",
+                    t.pack, t.resolved.version
+                );
+            }
+            for e in &old.standards {
+                let now = (now.standards_entry(&e.pack))
+                    .map_or_else(missing, |l| l.resolved.version.clone());
+                println!(
+                    "unpinned standards {} (was {}); this checkout follows .armadai/pack.lock ({now}) again",
+                    e.pack, e.resolved.version
+                );
+            }
             Ok(())
         }
         PackCommand::New { .. } | PackCommand::Test { .. } => unreachable!("handled above"),
@@ -211,31 +257,59 @@ fn finish(root: &Path, done: crate::pack::Done) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// One reference of the project to a source: the `pack:` or a `standards:` entry.
+struct Entry {
+    what: &'static str,
+    name: String,
+    /// as recorded in `project.yaml` (masked)
+    source: String,
+    real: Option<String>,
+}
+
 fn sync(root: Option<&Path>, registry: &Path, only: Option<String>) -> anyhow::Result<()> {
-    let declared = root.and_then(status::declared);
+    let mut entries: Vec<Entry> = Vec::new();
+    if let Some(root) = root {
+        if let Some(d) = status::declared(root) {
+            entries.push(Entry {
+                what: "pack",
+                name: d.name,
+                source: d.source,
+                real: None,
+            });
+        }
+        for (name, source, _) in crate::pack::effective::standards_refs(root) {
+            entries.push(Entry {
+                what: "standards",
+                name,
+                source,
+                real: None,
+            });
+        }
+    }
     // the project records its source masked: the entry of the user's it stands for
     let mut failed = 0;
-    let declared_real = declared
-        .as_ref()
-        .and_then(|d| match source::real_url(&d.source) {
-            Ok(u) => Some(u),
-            Err(e) => {
-                eprintln!("  warn: {e}");
+    for e in &mut entries {
+        match source::real_url(&e.source) {
+            Ok(u) => e.real = Some(u),
+            Err(err) => {
+                eprintln!("  warn: {err}");
                 failed += 1;
-                None
             }
-        });
+        }
+    }
     let mut sources = effective_starter_sources();
-    // The project's own source is synced too, registered or not.
-    let mut unregistered = None;
-    if let (Some(d), Some(real)) = (&declared, &declared_real)
-        && !sources.iter().any(|s| &s.url == real)
-    {
-        unregistered = Some(d);
-        sources.push(RegistrySource {
-            url: real.clone(),
-            kind: None,
-        });
+    // The project's own sources are synced too, registered or not.
+    let mut unregistered = Vec::new();
+    for e in &entries {
+        if let Some(real) = &e.real
+            && !sources.iter().any(|s| &s.url == real)
+        {
+            unregistered.push(e);
+            sources.push(RegistrySource {
+                url: real.clone(),
+                kind: None,
+            });
+        }
     }
     if let Some(url) = &only {
         sources.retain(|s| &s.url == url);
@@ -246,14 +320,17 @@ fn sync(root: Option<&Path>, registry: &Path, only: Option<String>) -> anyhow::R
             });
         }
     }
-    if let (Some(d), Some(real)) = (unregistered, &declared_real)
-        && sources.iter().any(|s| &s.url == real)
-    {
-        eprintln!(
-            "note: {} comes from .armadai/project.yaml (pack {}), not from your registries.yaml",
-            source::recorded(&d.source),
-            d.name
-        );
+    let mut noted = BTreeSet::new();
+    for e in unregistered {
+        let real = e.real.as_ref().expect("only resolved entries are listed");
+        if sources.iter().any(|s| &s.url == real) && noted.insert((e.what, e.name.clone())) {
+            eprintln!(
+                "note: {} comes from .armadai/project.yaml ({} {}), not from your registries.yaml",
+                source::recorded(&e.source),
+                e.what,
+                e.name
+            );
+        }
     }
 
     let mut synced = BTreeSet::new();
@@ -278,16 +355,16 @@ fn sync(root: Option<&Path>, registry: &Path, only: Option<String>) -> anyhow::R
     }
 
     if let Some(root) = root
-        && declared_real.is_some()
+        && entries.iter().any(|e| e.real.is_some())
     {
         failed += check_lock(root, registry, &sources, &synced);
     }
     // a source that failed keeps its old `versions.yaml` (already warned about): no
     // signal read from it, one from a source that just synced stays
     if let Some(root) = root
-        && !declared
-            .as_ref()
-            .is_some_and(|_| declared_real.as_ref().is_some_and(|r| unsynced.contains(r)))
+        && !entries
+            .iter()
+            .any(|e| e.real.as_ref().is_some_and(|r| unsynced.contains(r)))
         && !crate::linker::manifest::installed_packs(root)
             .values()
             .any(|p| unsynced.contains(&p.source))
@@ -301,22 +378,40 @@ fn sync(root: Option<&Path>, registry: &Path, only: Option<String>) -> anyhow::R
     Ok(())
 }
 
-/// The locked snapshot (M5c's cure) and the lock's tag (M3, M3b), once its source is fresh.
-/// The lock is never written. Returns the number of failures, each already warned.
+/// The locked snapshot (M5c's cure) and the lock's tag (M3, M3b) of the team pack and of each
+/// standards pack, once its source is fresh. The lock is never written. Returns the number
+/// of failures, each already warned.
 fn check_lock(
     root: &Path,
     registry: &Path,
     sources: &[RegistrySource],
     synced: &BTreeSet<String>,
 ) -> usize {
-    let lock = match lock::read(root) {
-        Ok(Some(l)) => l,
+    let file = match lock::read(root) {
+        Ok(Some(file)) => file,
         Ok(None) => return 0,
         Err(e) => {
             eprintln!("  warn: {e}");
             return 1;
         }
     };
+    // the lock read above is the pin when this checkout has one
+    let pinned = lock::read_pin(root).is_ok_and(|p| p.is_some());
+    let entries = (file.team.iter().map(|l| ("pack", l)))
+        .chain(file.standards.iter().map(|l| ("standards", l)));
+    entries
+        .map(|(what, l)| check_entry(registry, sources, synced, what, l, pinned))
+        .sum()
+}
+
+fn check_entry(
+    registry: &Path,
+    sources: &[RegistrySource],
+    synced: &BTreeSet<String>,
+    what: &str,
+    lock: &lock::PackLock,
+    pinned: bool,
+) -> usize {
     let Ok(real) = source::real_url(&lock.source) else {
         return 0;
     };
@@ -343,8 +438,6 @@ fn check_lock(
         }
     }
     let clone = registry.join("starters").join(cache_key(&source.url));
-    // the lock read above is the pin when this checkout has one
-    let pinned = lock::read_pin(root).is_ok_and(|p| p.is_some());
     let (says, keeps) = if pinned {
         ("the pack pin of this checkout says", "the pin is kept")
     } else {
@@ -357,14 +450,14 @@ fn check_lock(
     };
     match lock::tag_moved(&clone, &lock.pack, r) {
         Ok(Some(TagState::Moved(now))) => eprintln!(
-            "  warn: tag {} of pack {} now points to {}, {says} {}: {keeps} (link uses its commit)",
+            "  warn: tag {} of {what} {} now points to {}, {says} {}: {keeps} (link uses its commit)",
             r.tag.as_deref().unwrap_or_default(),
             lock.pack,
             status::id12(&now),
             status::id12(&r.id())
         ),
         Ok(Some(TagState::Gone)) => eprintln!(
-            "  warn: tag {} of pack {} no longer exists, {keeps_id} {}",
+            "  warn: tag {} of {what} {} no longer exists, {keeps_id} {}",
             r.tag.as_deref().unwrap_or_default(),
             lock.pack,
             status::id12(&r.id())
@@ -386,8 +479,12 @@ fn new_minimal(parent: &Path, a: &PackAnswers) -> anyhow::Result<String> {
         .map(|(r, b)| (r, b, false))
         .collect();
     let dir = write_pack(parent, &parent.join(&a.name), &a.name, files)?;
+    let held = match a.kind {
+        PackKind::Team => "pack.yaml, project.yaml, agents/, skills/, flows/, automations/",
+        PackKind::Standards => "pack.yaml, skills/",
+    };
     Ok(format!(
-        "Created pack {} in {}: pack.yaml, project.yaml, agents/, skills/, flows/, automations/",
+        "Created pack {} in {}: {held}",
         a.name,
         dir.display()
     ))
@@ -408,11 +505,21 @@ fn new_from_project(
             d.name
         );
     }
+    if let Some((n, ..)) = crate::pack::effective::standards_refs(root).first() {
+        anyhow::bail!(
+            "this project references standards {n}: its .armadai/ is an overlay, not a pack; \
+             create the pack from its source instead"
+        );
+    }
     let mut files = crate::cli::native_pack::read_listed(&root.join(".armadai"), true)?;
-    let pack_yaml = plan_pack(&pack_answers(name, description.as_deref()))
-        .into_iter()
-        .find(|(r, _)| r == Path::new("pack.yaml"))
-        .map(|(r, b)| (r, b, false));
+    let pack_yaml = plan_pack(&pack_answers_of(
+        PackKind::Team,
+        name,
+        description.as_deref(),
+    ))
+    .into_iter()
+    .find(|(r, _)| r == Path::new("pack.yaml"))
+    .map(|(r, b)| (r, b, false));
     files.extend(pack_yaml);
     let count = |dir: &str| {
         (files.iter())

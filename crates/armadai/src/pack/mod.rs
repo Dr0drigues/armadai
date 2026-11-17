@@ -10,6 +10,7 @@ pub mod outputs;
 pub mod referents;
 pub mod resolve;
 pub mod source;
+pub mod standards;
 pub mod status;
 pub mod vars;
 
@@ -35,6 +36,8 @@ pub struct Done {
 /// The files a command is about to write, as they are now: put back when the link that
 /// follows fails, so that a failed `pack add` or `pack update` changes nothing.
 pub struct Undo {
+    /// `pack` or `standards`: what the message calls the thing that was not applied.
+    what: &'static str,
     pack: String,
     version: String,
     files: Vec<(std::path::PathBuf, Option<Vec<u8>>)>,
@@ -45,7 +48,12 @@ pub struct Undo {
 }
 
 impl Undo {
-    fn new(pack: &str, version: &str, paths: &[std::path::PathBuf]) -> anyhow::Result<Undo> {
+    fn new(
+        what: &'static str,
+        pack: &str,
+        version: &str,
+        paths: &[std::path::PathBuf],
+    ) -> anyhow::Result<Undo> {
         let mut files = Vec::new();
         for p in paths {
             let bytes = match std::fs::read(p) {
@@ -56,6 +64,7 @@ impl Undo {
             files.push((p.clone(), bytes));
         }
         Ok(Undo {
+            what,
             pack: pack.to_string(),
             version: version.to_string(),
             files,
@@ -104,9 +113,9 @@ impl Undo {
             );
         }
         format!(
-            "pack {} {} was not applied: link failed, so .armadai/pack.lock, the referent \
+            "{} {} {} was not applied: link failed, so .armadai/pack.lock, the referent \
              record and the files link had written are back as they were",
-            self.pack, self.version
+            self.what, self.pack, self.version
         )
     }
 }
@@ -135,6 +144,7 @@ fn sync_or_stop(registry: &Path, source: &RegistrySource) -> anyhow::Result<()> 
 fn resolve_in(
     registry: &Path,
     source: &RegistrySource,
+    what: &str,
     name: &str,
     range_text: &str,
     in_project_yaml: bool,
@@ -152,13 +162,15 @@ fn resolve_in(
                 .join(", ")
         };
         // `pack add` has no `pack.version` to change yet
-        let way_out = if in_project_yaml {
-            ", or change pack.version in .armadai/project.yaml"
-        } else {
-            ""
+        let way_out = match (in_project_yaml, what) {
+            (false, _) => String::new(),
+            (true, "pack") => ", or change pack.version in .armadai/project.yaml".to_string(),
+            (true, _) => {
+                format!(", or change the version of {what} {name} in .armadai/project.yaml")
+            }
         };
         bail!(
-            "no cached version of pack {name} matches {range_text} (cached: {cached}): run \
+            "no cached version of {what} {name} matches {range_text} (cached: {cached}): run \
              `armadai pack sync`{way_out}"
         );
     };
@@ -217,22 +229,24 @@ fn refuse_invalid(root: &Path, registry: &Path, env: Env, retry: &str) -> anyhow
 /// between the writes and the end of the link.
 fn check(
     root: &Path,
-    lock: &PackLock,
+    locked: &lock::LockFile,
+    adding: Option<&str>,
     registry: &Path,
     env: Env,
-    version: &str,
+    subject: &str,
     retry: &str,
 ) -> anyhow::Result<()> {
     refuse_invalid(root, registry, env, retry)?;
-    let view = effective::open_with_lock_in(root, lock, effective::Vars::Resolve(env), registry)?;
+    let vars = effective::Vars::Resolve(env);
+    let view = match adding {
+        None => effective::open_with_lock_in(root, locked, vars, registry)?,
+        Some(name) => effective::open_adding_standards_in(root, locked, name, vars, registry)?,
+    };
     if let Err(ds) = view.load_checked() {
         for d in &ds {
             eprintln!("{}", d.render());
         }
-        bail!(
-            "pack {} {version} would make the project invalid; nothing was changed",
-            lock.pack
-        );
+        bail!("{subject} would make the project invalid; nothing was changed");
     }
     Ok(())
 }
@@ -291,8 +305,9 @@ fn in_range(d: &status::Declared, version: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `pack update`: a project that references a pack is moved on its lock, one that
-/// installed a pack by copy goes through [`copy::update_in`].
+/// `pack update`: a project that references a pack (`pack:`) or standards packs
+/// (`standards:`) is moved on its lock, one that installed a pack by copy goes through
+/// [`copy::update_in`] (and its standards, if it has any, move after it, under one link).
 pub fn update_in(
     root: &Path,
     config: &Path,
@@ -301,67 +316,220 @@ pub fn update_in(
     version: Option<&str>,
     env: Env,
 ) -> anyhow::Result<Done> {
-    let Some(d) = status::declared(root) else {
+    let team = status::declared(root);
+    let stds = effective::standards_locked_refs(root);
+    if team.is_none() && effective::only_unfinished_standards(root) {
+        bail!("{}", effective::unfinished_standards("update"));
+    }
+    // nothing referenced, but the lock still holds standards: the update drops them
+    let leftover = team.is_none()
+        && stds.is_empty()
+        && lock::read_committed(root)
+            .ok()
+            .flatten()
+            .is_some_and(|l| !l.standards.is_empty());
+    if team.is_none() && stds.is_empty() && !leftover {
         return copy::update_in(root, registry, known, version, env);
-    };
+    }
     // before any network access
     if let Some(pin) = lock::read_pin(root)? {
         anyhow::bail!("{}", lock::pinned_refusal(&pin));
     }
-    let source = source_of(known, &source::real_url_in(&d.source, known)?);
-    sync_or_stop(registry, &source)?;
-    // The range comes first: an exact version outside it is refused cached or not.
-    if let Some(v) = version.filter(|v| semver::Version::parse(v.trim()).is_ok()) {
-        in_range(&d, v)?;
+    let copied = team.is_none() && !crate::linker::manifest::installed_packs(root).is_empty();
+    if version.is_some() && team.is_none() && !copied {
+        bail!(
+            "pack update <version> moves the pack: of .armadai/project.yaml, and this project \
+             has none; armadai pack update alone moves its standards"
+        );
     }
-    let (best, path) = resolve_in(
+    let copy_done = if copied {
+        Some(copy::update_in(root, registry, known, version, env)?)
+    } else {
+        None
+    };
+    let moved = update_locks(
+        root,
+        config,
         registry,
-        &source,
-        &d.name,
-        version.unwrap_or(&d.version),
-        true,
-    )?;
-    if version.is_some() {
-        in_range(&d, &best.version)?;
-    }
-    cache::ensure_snapshot_in(registry, &source, &d.name, &path, &best)?;
-    let new = lock_of(&d.name, &d.source, &best);
-    let old = lock::read_committed(root)?;
-    let id12 = status::id12(&best.id()).to_string();
-    if old.as_ref().is_some_and(|l| {
-        l.pack == new.pack && l.source == new.source && l.resolved.id() == best.id()
-    }) {
-        record(config, root, &new)?;
-        return Ok(Done {
-            relink: true,
-            lines: vec![format!(
+        known,
+        version.filter(|_| team.is_some()),
+        env,
+        team.as_ref(),
+        &stds,
+    );
+    let Some(mut done) = copy_done else {
+        return moved;
+    };
+    // the copy is applied already: what follows it failing puts it back
+    let moved = match moved {
+        Ok(m) => m,
+        Err(e) => {
+            if let Some(u) = &done.undo {
+                u.restore();
+            }
+            return Err(e);
+        }
+    };
+    done.lines.extend(moved.lines);
+    done.undo = match (done.undo.take(), moved.undo) {
+        (Some(mut copy), Some(locks)) => {
+            copy.files.extend(locks.files);
+            Some(copy)
+        }
+        (copy, locks) => copy.or(locks),
+    };
+    Ok(done)
+}
+
+/// The `pack:` entry (when declared) and each `standards:` entry moved to the best cached
+/// version of its range, in one lock, one check and one `Undo`.
+#[allow(clippy::too_many_arguments)]
+fn update_locks(
+    root: &Path,
+    config: &Path,
+    registry: &Path,
+    known: &[RegistrySource],
+    version: Option<&str>,
+    env: Env,
+    team: Option<&status::Declared>,
+    stds: &[(String, String, String)],
+) -> anyhow::Result<Done> {
+    let mut synced = std::collections::BTreeSet::new();
+    let mut sync_once = |source: &RegistrySource| -> anyhow::Result<()> {
+        if synced.insert(source.url.clone()) {
+            sync_or_stop(registry, source)?;
+        }
+        Ok(())
+    };
+    let old_file = lock::read_committed(root)?;
+    let mut file = old_file.clone().unwrap_or_default();
+    // a standards pack the project no longer references leaves the lock
+    let (kept, dropped): (Vec<_>, Vec<_>) = std::mem::take(&mut file.standards)
+        .into_iter()
+        .partition(|e| stds.iter().any(|(n, ..)| *n == e.pack));
+    file.standards = kept;
+    let mut lines = Vec::new();
+    let mut changed = Vec::new();
+    // what the first moved entry is called by the message of an undone update
+    let mut first: Option<(&'static str, String, String)> = None;
+    let mut team_new = None;
+    let mut team_lines = Vec::new();
+    if let Some(d) = team {
+        let source = source_of(known, &source::real_url_in(&d.source, known)?);
+        sync_once(&source)?;
+        // The range comes first: an exact version outside it is refused cached or not.
+        if let Some(v) = version.filter(|v| semver::Version::parse(v.trim()).is_ok()) {
+            in_range(d, v)?;
+        }
+        let (best, path) = resolve_in(
+            registry,
+            &source,
+            "pack",
+            &d.name,
+            version.unwrap_or(&d.version),
+            true,
+        )?;
+        if version.is_some() {
+            in_range(d, &best.version)?;
+        }
+        cache::ensure_snapshot_in(registry, &source, &d.name, &path, &best)?;
+        let new = lock_of(&d.name, &d.source, &best);
+        let id12 = status::id12(&best.id()).to_string();
+        let old = file.team.take();
+        if old.as_ref().is_some_and(|l| {
+            l.pack == new.pack && l.source == new.source && l.resolved.id() == best.id()
+        }) {
+            lines.push(format!(
                 "Pack {} is up to date: {} ({id12})",
                 d.name, best.version
-            )],
+            ));
+        } else {
+            let was = old.map_or("(none)".to_string(), |l| l.resolved.version);
+            lines.push(format!(
+                "Pack {}: {was} -> {} ({id12}), .armadai/pack.lock updated",
+                d.name, best.version
+            ));
+            changed.push(format!("pack {} {}", d.name, best.version));
+            first = Some(("pack", d.name.clone(), best.version.clone()));
+            team_lines = others_lines(config, root, &new)?;
+        }
+        file.team = Some(new.clone());
+        team_new = Some(new);
+    }
+    for (name, src, range) in stds {
+        let source = source_of(known, &source::real_url_in(src, known)?);
+        sync_once(&source)?;
+        let (best, path) = resolve_in(registry, &source, "standards", name, range, true)?;
+        cache::ensure_snapshot_in(registry, &source, name, &path, &best)?;
+        let new = lock_of(name, src, &best);
+        let id12 = status::id12(&best.id()).to_string();
+        let old = file.standards.iter().position(|e| e.pack == *name);
+        let same = old.is_some_and(|i| {
+            let l = &file.standards[i];
+            l.source == new.source && l.resolved.id() == best.id()
+        });
+        if same {
+            lines.push(format!(
+                "Standards {name} is up to date: {} ({id12})",
+                best.version
+            ));
+            continue;
+        }
+        let was = old.map_or("(none)".to_string(), |i| {
+            file.standards[i].resolved.version.clone()
+        });
+        lines.push(format!(
+            "Standards {name}: {was} -> {} ({id12}), .armadai/pack.lock updated",
+            best.version
+        ));
+        changed.push(format!("standards {name} {}", best.version));
+        first.get_or_insert(("standards", name.clone(), best.version.clone()));
+        match old {
+            Some(i) => file.standards[i] = new,
+            None => file.standards.push(new),
+        }
+    }
+    // an entry that only leaves the lock still rewrites it (it prints nothing, as it
+    // moves no version)
+    if first.is_none()
+        && let Some(d) = dropped.first()
+    {
+        first = Some(("standards", d.pack.clone(), d.resolved.version.clone()));
+        changed.push(format!("standards {} {}", d.pack, d.resolved.version));
+    }
+    let Some((what, name, v)) = first else {
+        if let Some(t) = &team_new {
+            record(config, root, t)?;
+        }
+        return Ok(Done {
+            relink: true,
+            lines,
             undo: None,
         });
-    }
+    };
     check(
         root,
-        &new,
+        &file,
+        None,
         registry,
         env,
-        &best.version,
+        &changed.join(" and "),
         "armadai pack update",
     )?;
     let undo = Undo::new(
-        &d.name,
-        &best.version,
+        what,
+        &name,
+        &v,
         &[root.join(lock::LOCK), referents::path_in(config)],
     )?;
-    lock::write(root, &new)?;
-    record(config, root, &new)?;
-    let was = old.map_or("(none)".to_string(), |l| l.resolved.version);
-    let mut lines = vec![format!(
-        "Pack {}: {was} -> {} ({id12}), .armadai/pack.lock updated",
-        d.name, best.version
-    )];
-    lines.extend(others_lines(config, root, &new)?);
+    lock::write(root, &file)?;
+    if let Some(t) = &team_new
+        && let Err(e) = record(config, root, t)
+    {
+        undo.restore();
+        return Err(e);
+    }
+    lines.extend(team_lines);
     Ok(Done {
         relink: true,
         lines,
@@ -389,6 +557,74 @@ fn with_pack(text: Option<&str>, name: &str, source: &str, range: &str) -> Strin
     out
 }
 
+/// `project.yaml` with an entry added to `standards:`: after the last line of the key's block
+/// list (the user's comments stay where they are), or as a new block at the end of the text
+/// when there is no such key. `None` for a `standards:` of any other form (inline list,
+/// empty, scalar): it is never rewritten.
+fn with_standards(text: Option<&str>, name: &str, source: &str, range: &str) -> Option<String> {
+    let entry = |ind: &str| {
+        format!(
+            "{ind}- name: {name}\n{ind}  source: {}\n{ind}  version: {}\n",
+            single_quoted(source),
+            single_quoted(range)
+        )
+    };
+    let Some(t) = text else {
+        return Some(format!("schema_version: 1\nstandards:\n{}", entry("  ")));
+    };
+    let has_key = armadai_model::yaml::from_str_manifest(t)
+        .ok()?
+        .get("standards")
+        .is_some();
+    if !has_key {
+        let mut out = if t.is_empty() || t.ends_with('\n') {
+            t.to_string()
+        } else {
+            format!("{t}\n")
+        };
+        out.push_str(&format!("standards:\n{}", entry("  ")));
+        return Some(out);
+    }
+    let lines: Vec<&str> = t.split_inclusive('\n').collect();
+    let key = lines.iter().position(|l| {
+        l.trim_end()
+            .strip_prefix("standards:")
+            .is_some_and(|rest| rest.trim().is_empty() || rest.trim_start().starts_with('#'))
+    })?;
+    let inert = |l: &str| l.trim().is_empty() || l.trim_start().starts_with('#');
+    let mut indent = None;
+    let mut last = None;
+    for (i, l) in lines.iter().enumerate().skip(key + 1) {
+        if inert(l) {
+            continue;
+        }
+        let ws = &l[..l.len() - l.trim_start().len()];
+        let item = l.trim_start().starts_with("- ");
+        if indent.is_none() {
+            // the first line after the key must open a block list
+            if !item {
+                return None;
+            }
+            indent = Some(ws.to_string());
+        } else if ws.is_empty() && !item {
+            break;
+        }
+        last = Some(i);
+    }
+    let (indent, last) = (indent?, last?);
+    let mut out = String::new();
+    for (i, l) in lines.iter().enumerate() {
+        out.push_str(l);
+        if i == last {
+            if !l.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str(&entry(&indent));
+        }
+    }
+    Some(out)
+}
+
 fn write_project_yaml(root: &Path, text: &str) -> anyhow::Result<()> {
     let p = root.join(".armadai/project.yaml");
     let tmp = p.with_extension("yaml.tmp");
@@ -406,6 +642,8 @@ fn write_project_yaml(root: &Path, text: &str) -> anyhow::Result<()> {
 }
 
 /// `pack add <name>[@<range>]`: `root` is the project, or the directory to make one in.
+/// With `standards`, the pack is added to `standards:` instead of being the project's `pack:`.
+#[allow(clippy::too_many_arguments)]
 pub fn add_in(
     root: &Path,
     config: &Path,
@@ -413,6 +651,7 @@ pub fn add_in(
     known: &[RegistrySource],
     spec: &str,
     only: Option<&str>,
+    standards: bool,
     env: Env,
 ) -> anyhow::Result<Done> {
     let (name, given) = match spec.split_once('@') {
@@ -436,13 +675,30 @@ pub fn add_in(
     if let Some(t) = &text {
         let v = armadai_model::yaml::from_str_manifest(t)
             .map_err(|e| anyhow::anyhow!("{}: {e}", file.display()))?;
-        if let Some(p) = v.get("pack") {
+        if standards {
+            let listed = v.get("standards").and_then(|s| s.as_array());
+            let there = (listed.into_iter().flatten())
+                .any(|e| e.get("name").and_then(|n| n.as_str()) == Some(name));
+            if there {
+                bail!(
+                    ".armadai/project.yaml already references standards {name}: use `armadai pack update`"
+                );
+            }
+        } else if let Some(p) = v.get("pack") {
             let there = p.get("name").and_then(|n| n.as_str()).unwrap_or(name);
             bail!(
                 ".armadai/project.yaml already references pack {there}: use `armadai pack update`"
             );
         }
     }
+    if standards && with_standards(text.as_deref(), name, "", "").is_none() {
+        bail!(
+            ".armadai/project.yaml has a standards: key that pack add cannot extend (not a block \
+             list): add the entry by hand, then run `armadai pack update`"
+        );
+    }
+    // the lock as it is now, read once: an unreadable one stops the command
+    let mut locked = lock::read_committed(root)?.unwrap_or_default();
 
     let source = match only {
         Some(url) => {
@@ -480,21 +736,44 @@ pub fn add_in(
         }
     };
 
-    let (best, path) = resolve_in(registry, &source, name, given.unwrap_or("latest"), false)?;
+    let what = if standards { "standards" } else { "pack" };
+    let (best, path) = resolve_in(
+        registry,
+        &source,
+        what,
+        name,
+        given.unwrap_or("latest"),
+        false,
+    )?;
     let range = given.map_or_else(|| format!("^{}", best.version), str::to_string);
     cache::ensure_snapshot_in(registry, &source, name, &path, &best)?;
     // what `.armadai/` and the referent record keep: the source without its secrets
     let shown = source::recorded(&source.url);
     let new = lock_of(name, &shown, &best);
+    // a standards pack the project no longer references leaves the lock
+    let declared = effective::standards_locked_refs(root);
+    locked
+        .standards
+        .retain(|e| e.pack != name && declared.iter().any(|(n, ..)| *n == e.pack));
+    if standards {
+        locked.standards.push(new.clone());
+    } else {
+        locked.team = Some(new.clone());
+    }
     check(
         root,
-        &new,
+        &locked,
+        standards.then_some(name),
         registry,
         env,
-        &best.version,
-        &format!("armadai pack add {name}"),
+        &format!("{what} {name} {}", best.version),
+        &format!(
+            "armadai pack add {name}{}",
+            if standards { " --standards" } else { "" }
+        ),
     )?;
     let undo = Undo::new(
+        what,
         name,
         &best.version,
         &[
@@ -504,13 +783,21 @@ pub fn add_in(
         ],
     )?;
     // the lock first: a lock without the key is ignored, the key without a lock is not
-    lock::write(root, &new)?;
-    write_project_yaml(root, &with_pack(text.as_deref(), name, &shown, &range))?;
-    record(config, root, &new)?;
+    lock::write(root, &locked)?;
+    let written = if standards {
+        with_standards(text.as_deref(), name, &shown, &range).expect("checked above")
+    } else {
+        with_pack(text.as_deref(), name, &shown, &range)
+    };
+    write_project_yaml(root, &written)?;
+    if !standards && let Err(e) = record(config, root, &new) {
+        undo.restore();
+        return Err(e);
+    }
     Ok(Done {
         relink: true,
         lines: vec![format!(
-            "Added pack {name} {} ({}): .armadai/project.yaml (version: {range}) and .armadai/pack.lock",
+            "Added {what} {name} {} ({}): .armadai/project.yaml (version: {range}) and .armadai/pack.lock",
             best.version,
             status::id12(&best.id())
         )],

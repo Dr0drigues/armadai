@@ -109,7 +109,15 @@ pub fn touched_paths() -> anyhow::Result<Vec<PathBuf>> {
     let (root, view, project) = load_project()?;
     let mut out: BTreeSet<PathBuf> = BTreeSet::new();
     for t in targets_of(&[], &project) {
-        let p = prepare(&project, &root, &view.sources, &t, None, None)?;
+        let p = prepare(
+            &project,
+            &root,
+            &view.sources,
+            &t,
+            None,
+            None,
+            &view.skill_packs(),
+        )?;
         out.extend(p.artifacts.iter().map(|a| p.rel(a)));
         out.extend(p.all_produced.iter().cloned());
         out.extend(p.blocks.iter().map(|(rel, _)| rel.clone()));
@@ -170,10 +178,16 @@ fn prepare(
     target: &str,
     output: Option<&Path>,
     agents: Option<&[String]>,
+    skill_packs: &BTreeMap<String, String>,
 ) -> anyhow::Result<Prepared> {
     compile::check_output(root, &output_of(target, output, project), output.is_some())?;
     let output_dir = output_of(target, output, project);
-    let plan = compile::compiler_for(target, &output_dir)?.compile(project, root, sources)?;
+    let plan = compile::compiler_for(target, &output_dir)?.compile_with_origins(
+        project,
+        root,
+        sources,
+        skill_packs,
+    )?;
     let mut p = Prepared {
         target: target.to_string(),
         output_dir,
@@ -881,23 +895,56 @@ fn write(
     Ok(())
 }
 
-/// The report lines of the effective view: the locked pack, and each variable no layer sets.
-fn report_view(view: &Effective, p: &mut Prepared) {
+/// `<version> (<id12>), from the cache`: how the report names a locked pack.
+fn locked_reason(l: &effective::LockedPack) -> String {
+    let r = &l.lock.resolved;
+    let id = r.id();
+    let id = id.strip_prefix("sha256-").unwrap_or(&id);
+    format!(
+        "{} ({}), from the cache",
+        r.version,
+        &id[..id.len().min(12)]
+    )
+}
+
+/// The report lines of the effective view: the locked pack, each standards pack, the
+/// skills of those that fill a slot no agent declares, and each variable no layer sets.
+fn report_view(view: &Effective, project: &Project, p: &mut Prepared) {
     if let Some(l) = &view.pack {
-        let r = &l.lock.resolved;
-        let id = r.id();
-        let id = id.strip_prefix("sha256-").unwrap_or(&id);
-        let reason = format!(
-            "{} ({}), from the cache",
-            r.version,
-            &id[..id.len().min(12)]
-        );
+        let reason = locked_reason(l);
         p.report.push(
             &p.target,
             format!("pack {}", l.name),
             Status::Compiled,
             Some(&reason),
         );
+    }
+    for l in &view.standards {
+        let reason = locked_reason(l);
+        p.report.push(
+            &p.target,
+            format!("standards {}", l.name),
+            Status::Compiled,
+            Some(&reason),
+        );
+    }
+    let declared: BTreeSet<&str> = (project.agents.values())
+        .flat_map(|a| a.front.slots.iter().map(String::as_str))
+        .collect();
+    for (id, pack) in view.skill_packs() {
+        let Some(skill) = project.skills.get(&id) else {
+            continue;
+        };
+        for slot in armadai_model::slots::filled_by(skill) {
+            if !declared.contains(slot) {
+                p.report.push(
+                    &p.target,
+                    format!("standards {pack} skill {id}"),
+                    Status::NotCompiled,
+                    Some(&format!("no agent declares slot {slot}")),
+                );
+            }
+        }
     }
     for name in &view.missing_vars {
         p.report.push(
@@ -941,10 +988,11 @@ pub(crate) fn check_outgoing_links(root: &Path, verb: &str, note: bool) -> anyho
             continue;
         }
         let target = target.display();
-        // a project without `pack:` has no pin to keep: a `.git` that leads nowhere is not its concern
+        // a project without `pack:` nor `standards:` has no pin to keep: a `.git` that leads
+        // nowhere is not its concern
         let pinned = match crate::pack::lock::read_pin(root) {
             Ok(pin) => pin.is_some(),
-            Err(_) if crate::pack::effective::pack_ref(root).is_none() => false,
+            Err(_) if !crate::pack::effective::references_packs(root) => false,
             Err(e) => return Err(e),
         };
         if pinned {
@@ -979,6 +1027,7 @@ pub fn execute(
         true,
     )?;
     let (root, view, project) = load_project()?;
+    let skill_packs = view.skill_packs();
     let targets = targets_of(&targets, &project);
     if output.is_some() && targets.len() > 1 {
         bail!("--output names one directory: link one target at a time with it");
@@ -994,11 +1043,12 @@ pub fn execute(
                 t,
                 output.as_deref(),
                 agents.as_deref(),
+                &skill_packs,
             )
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
     for p in &mut prepared {
-        report_view(&view, p);
+        report_view(&view, &project, p);
     }
     if let Some(note) = newer_pack_note(&root) {
         eprintln!("{note}");

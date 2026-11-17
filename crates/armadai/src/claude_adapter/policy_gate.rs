@@ -294,7 +294,7 @@ pub(crate) mod pinned_fixture {
             ".armadai/project.yaml",
             "pack: { name: demo, source: 'https://example.com/packs.git', version: latest }\n",
         );
-        lock::write(root.path(), &lock_at("1.3.0", C1)).unwrap();
+        lock::write(root.path(), &lock_at("1.3.0", C1).into()).unwrap();
         lock::pin(root.path()).unwrap();
         std::fs::write(
             root.path().join(lock::LOCK),
@@ -306,6 +306,49 @@ pub(crate) mod pinned_fixture {
 
     pub fn registry_of(config: &Path) -> PathBuf {
         config.join("registry")
+    }
+
+    pub const STD_URL: &str = "https://example.com/std-a.git";
+
+    /// A project with no `pack:` and one `standards: std-a` entry, `manifest` after it. The
+    /// committed lock holds `std-a` at `C1` (its snapshot cached under `registry`) when
+    /// `locked`; otherwise it holds only an unrelated standards entry, `other`.
+    pub fn standards_project(manifest: &str, locked: bool, registry: &Path) -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join(".git")).unwrap();
+        put(
+            root.path(),
+            ".armadai/project.yaml",
+            &format!(
+                "schema_version: 1\n{manifest}standards:\n  - {{ name: std-a, source: '{STD_URL}', version: latest }}\n"
+            ),
+        );
+        let name = if locked { "std-a" } else { "other" };
+        let mut entry = lock_at("1.0.0", C1);
+        entry.pack = name.into();
+        entry.source = STD_URL.into();
+        lock::write(
+            root.path(),
+            &lock::LockFile {
+                team: None,
+                standards: vec![entry],
+            },
+        )
+        .unwrap();
+        if locked {
+            let dir = crate::pack::cache::snapshot_dir_in(registry, STD_URL, "std-a", C1);
+            put(
+                &dir,
+                "pack.yaml",
+                "format: 1\nname: std-a\nkind: standards\ndescription: d\n",
+            );
+            put(
+                &dir,
+                "skills/s/SKILL.md",
+                "---\nname: s\ndescription: d\n---\nbody\n",
+            );
+        }
+        root
     }
 
     /// A checkout `<parent>/dang` of the same pack whose `.git` is a dangling link, under
@@ -847,6 +890,36 @@ mod tests {
             r,
             "the project's pack cannot be read, so the delegation policy cannot be checked: pack demo 1.3.0 (111111111111) is not in the local cache: run `armadai pack sync`"
         );
+    }
+
+    /// A project that only references standards packs: the gate reads the same view, so a
+    /// standards entry missing from the lock is refused, and a locked one is judged.
+    #[test]
+    fn the_gate_denies_when_a_standards_entry_is_not_locked() {
+        let iso = armadai_core::test_support::IsolatedConfigDir::enter();
+        let registry = pinned_fixture::registry_of(iso.config_dir());
+        let manifest = "coordinator: lead\npolicy:\n  delegation: strict\n";
+        for locked in [false, true] {
+            let root = pinned_fixture::standards_project(manifest, locked, &registry);
+            pinned_fixture::put(root.path(), ".armadai/agents/lead.md", LEAD);
+            pinned_fixture::put(root.path(), ".armadai/agents/qa.md", LEAD);
+            pinned_fixture::put(root.path(), ".armadai/agents/rev.md", LEAD);
+            pinned_fixture::put(
+                root.path(),
+                ".armadai/flows/f.yaml",
+                "steps:\n  review: { agent: qa }\nlinks: []\n",
+            );
+            let allowed = decide(&marked("", "qa", "[f/review]", root.path()));
+            let refused = decide(&marked("", "rev", "[f/review]", root.path()));
+            if locked {
+                assert!(allowed.is_none());
+                assert!(reason(refused).contains("rev"));
+            } else {
+                let why = "the project's pack cannot be read, so the delegation policy cannot be checked: .armadai/project.yaml references standards std-a but .armadai/pack.lock has no entry for it: run `armadai pack update`";
+                assert_eq!(reason(allowed), why);
+                assert_eq!(reason(refused), why);
+            }
+        }
     }
 
     #[cfg(unix)]

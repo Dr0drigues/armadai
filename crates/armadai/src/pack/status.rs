@@ -18,6 +18,8 @@ pub enum Mode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Newer {
+    /// `pack` or `standards`
+    pub what: &'static str,
     pub pack: String,
     pub current: String,
     pub available: String,
@@ -56,22 +58,48 @@ fn cached(registry: &Path, source: &str, pack: &str) -> Vec<Available> {
 /// the installed version (copy mode, a registry source). `None` otherwise, and for a pack
 /// from a folder or the embedded ones (they have no `versions.yaml`).
 pub fn newer(root: &Path, registry: &Path) -> Option<Newer> {
-    if let Some(d) = declared(root) {
+    let team = declared(root);
+    let stds = super::effective::standards_locked_refs(root);
+    // a pack installed by copy: its note comes before the standards' (they are referenced)
+    if team.is_none()
+        && let Some(n) = copy_newer(root, registry)
+    {
+        return Some(n);
+    }
+    if team.is_some() || !stds.is_empty() {
         // `pack update`, which this note advises, is refused under a pin
         if lock::read_pin(root).map_or(true, |p| p.is_some()) {
             return None;
         }
-        let lock = lock::read_committed(root).ok()??;
-        let range = resolve::parse_range(&d.version).ok()?;
-        let all = cached(registry, &source::real_url(&d.source).ok()?, &d.name);
-        let best = resolve::best(&range, &all)?;
-        return (best.version != lock.resolved.version).then(|| Newer {
-            pack: d.name,
-            current: lock.resolved.version,
-            available: best.version.clone(),
-            mode: Mode::Reference,
+        let file = lock::read_committed(root).ok()??;
+        let in_reference =
+            |what, name: String, source: &str, range: &str, locked: &lock::PackLock| {
+                let range = resolve::parse_range(range).ok()?;
+                let all = cached(registry, &source::real_url(source).ok()?, &name);
+                let best = resolve::best(&range, &all)?;
+                (best.version != locked.resolved.version).then(|| Newer {
+                    what,
+                    pack: name,
+                    current: locked.resolved.version.clone(),
+                    available: best.version.clone(),
+                    mode: Mode::Reference,
+                })
+            };
+        let team_newer = team.and_then(|d| {
+            let locked = file.team.as_ref()?;
+            in_reference("pack", d.name, &d.source, &d.version, locked)
+        });
+        return team_newer.or_else(|| {
+            stds.into_iter().find_map(|(name, source, range)| {
+                let locked = file.standards_entry(&name)?;
+                in_reference("standards", name, &source, &range, locked)
+            })
         });
     }
+    None
+}
+
+fn copy_newer(root: &Path, registry: &Path) -> Option<Newer> {
     manifest::installed_packs(root)
         .into_iter()
         .find_map(|(name, installed)| {
@@ -79,6 +107,7 @@ pub fn newer(root: &Path, registry: &Path) -> Option<Newer> {
             let all = cached(registry, &installed.source, &name);
             let newest = resolve::best(&Range::Latest, &all)?;
             (newest.version != current).then(|| Newer {
+                what: "pack",
                 pack: name,
                 current,
                 available: newest.version.clone(),
@@ -89,13 +118,13 @@ pub fn newer(root: &Path, registry: &Path) -> Option<Newer> {
 
 /// M4.
 pub fn note(n: &Newer) -> String {
-    let what = match n.mode {
+    let locked = match n.mode {
         Mode::Reference => "locked",
         Mode::Copy => "installed",
     };
     format!(
-        "note: pack {} {} is in the cache ({what}: {}): run `armadai pack update`",
-        n.pack, n.available, n.current
+        "note: {} {} {} is in the cache ({locked}: {}): run `armadai pack update`",
+        n.what, n.pack, n.available, n.current
     )
 }
 
@@ -115,26 +144,34 @@ fn at_of(r: &lock::Resolved) -> String {
     }
 }
 
+/// The `in cache:` value: the best version of the range, and the newest one.
+fn in_cache_text(all: &[Available], range: &str) -> String {
+    let newest = resolve::best(&Range::Latest, all);
+    let best = resolve::parse_range(range)
+        .ok()
+        .and_then(|r| resolve::best(&r, all).map(|a| a.version.clone()));
+    match (best, newest) {
+        (Some(b), Some(n)) => format!("{b} matches the range (newest: {})", n.version),
+        (None, Some(n)) => format!("none matches the range (newest: {})", n.version),
+        (_, None) => "nothing (run `armadai pack sync`)".to_string(),
+    }
+}
+
 /// M17: the text of `pack status`.
 pub fn report(root: &Path, registry: &Path, config: &Path) -> anyhow::Result<String> {
     let mut blocks = Vec::new();
+    if declared(root).is_none() && super::effective::only_unfinished_standards(root) {
+        return Err(anyhow!(super::effective::unfinished_standards("status")));
+    }
     if let Some(d) = declared(root) {
-        let Some(lock) = lock::read_committed(root)? else {
+        let Some(lock) = lock::read_committed(root)?.and_then(|l| l.team) else {
             return Err(anyhow!(super::effective::lock_missing(&d.name)));
         };
         let all = cached(registry, &source::real_url(&d.source)?, &d.name);
-        let newest = resolve::best(&Range::Latest, &all);
-        let best = resolve::parse_range(&d.version)
-            .ok()
-            .and_then(|r| resolve::best(&r, &all).map(|a| a.version.clone()));
-        let in_cache = match (best, newest) {
-            (Some(b), Some(n)) => format!("{b} matches the range (newest: {})", n.version),
-            (None, Some(n)) => format!("none matches the range (newest: {})", n.version),
-            (_, None) => "nothing (run `armadai pack sync`)".to_string(),
-        };
+        let in_cache = in_cache_text(&all, &d.version);
         let r = &lock.resolved;
         let at = at_of(r);
-        let pinned = match lock::read_pin(root)? {
+        let pinned = match lock::read_pin(root)?.and_then(|p| p.team) {
             None => String::new(),
             Some(pin) => {
                 let r = &pin.resolved;
@@ -168,6 +205,49 @@ pub fn report(root: &Path, registry: &Path, config: &Path) -> anyhow::Result<Str
             }
         }
         blocks.push(b);
+    }
+    let stds = super::effective::standards_locked_refs(root);
+    if !stds.is_empty() {
+        let committed = lock::read_committed(root)?;
+        let pin = lock::read_pin(root)?;
+        for (name, source, range) in &stds {
+            let Some(locked) = committed.as_ref().and_then(|l| l.standards_entry(name)) else {
+                return Err(anyhow!(super::effective::standards_missing(
+                    name,
+                    committed.is_some()
+                )));
+            };
+            let all = cached(registry, &source::real_url(source)?, name);
+            let in_cache = in_cache_text(&all, range);
+            let pinned = match &pin {
+                None => String::new(),
+                Some(pin) => match pin.standards_entry(name) {
+                    None => "  pinned (worktree): no entry (run armadai pack unpin)\n".to_string(),
+                    Some(e) => {
+                        let gone = match super::effective::snapshot_path_of(
+                            root,
+                            e,
+                            super::effective::Kind::Standards,
+                            registry,
+                        ) {
+                            Ok((dir, _)) if dir.is_dir() => "",
+                            _ => " (not in cache: run armadai pack sync)",
+                        };
+                        format!(
+                            "  pinned (worktree): {} ({}){gone}\n",
+                            e.resolved.version,
+                            at_of(&e.resolved)
+                        )
+                    }
+                },
+            };
+            blocks.push(format!(
+                "Standards {name} (reference)\n  source:    {}\n  range:     {range}\n  locked:    {} ({})\n{pinned}  in cache:  {in_cache}\n",
+                source::recorded(source),
+                locked.resolved.version,
+                at_of(&locked.resolved)
+            ));
+        }
     }
     for (name, p) in manifest::installed_packs(root) {
         let installed = match (&p.version, &p.id) {

@@ -27,7 +27,7 @@ pub use graph::{EdgeKind, FlowGraph, GraphEdge, GraphNode, flow_graph};
 pub use load::*;
 pub use mermaid::{flow_graph_to_mermaid, flow_to_mermaid, team_to_mermaid};
 pub use schema::schemas;
-pub use slots::{agent_skills, slot_fills};
+pub use slots::{agent_skills, filled_by, slot_fills};
 pub use templates::{FLOW_TEMPLATES, FlowTemplate, TemplateError, flow_from_template};
 pub use types::*;
 pub use write::*;

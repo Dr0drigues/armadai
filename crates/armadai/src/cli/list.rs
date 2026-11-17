@@ -35,13 +35,19 @@ pub fn load_with_origins() -> anyhow::Result<(
     Ok((project, loaded.origins, view, root))
 }
 
-/// `<slot>: <the skills filling it>`, or `(none)`.
-pub fn slot_line(project: &Project, slot: &str) -> String {
+/// `<slot>: <the skills filling it>`, or `(none)`; a skill of a standards pack
+/// (`skill_packs`) is followed by ` from <pack>`.
+pub fn slot_line(
+    project: &Project,
+    slot: &str,
+    skill_packs: &std::collections::BTreeMap<String, String>,
+) -> String {
     let fills = armadai_model::slots::slot_fills(project, slot);
     if fills.is_empty() {
         format!("{slot}: (none)")
     } else {
-        format!("{slot}: {}", fills.join(", "))
+        let named = crate::compile::named_fills(&fills, skill_packs);
+        format!("{slot}: {}", named.join(", "))
     }
 }
 
@@ -55,7 +61,7 @@ pub fn tier_str(t: Option<Tier>) -> &'static str {
 }
 
 pub fn execute(tags: Option<Vec<String>>) -> anyhow::Result<()> {
-    let (project, _, _, root) = load_with_origins()?;
+    let (project, _, view, root) = load_with_origins()?;
     let agents: Vec<_> = (project.agents.iter())
         .filter(|(_, a)| {
             tags.as_ref()
@@ -119,7 +125,7 @@ pub fn execute(tags: Option<Vec<String>>) -> anyhow::Result<()> {
     if !slots.is_empty() {
         anstream::println!("{h}Slots:{h:#}");
         for slot in slots {
-            anstream::println!("  {}", slot_line(&project, slot));
+            anstream::println!("  {}", slot_line(&project, slot, &view.skill_packs()));
         }
     }
     if let Some(note) = crate::cli::link::newer_pack_note(&root) {

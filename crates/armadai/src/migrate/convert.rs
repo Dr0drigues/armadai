@@ -89,6 +89,7 @@ pub fn convert(old: &OldProject) -> (Project, Vec<SkillCopy>, Report) {
         schema_version: armadai_model::SCHEMA_VERSION,
         name: None,
         pack: None,
+        standards: Vec::new(),
         targets: Vec::new(),
         outputs: BTreeMap::new(),
         coordinator: None,

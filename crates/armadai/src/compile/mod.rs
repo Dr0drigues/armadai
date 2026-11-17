@@ -12,6 +12,7 @@ pub mod opencode;
 pub mod patch;
 pub mod report;
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
@@ -83,8 +84,20 @@ pub fn merge_native(
     Ok(true)
 }
 
+/// The skills filling a slot, each from a standards pack followed by ` from <pack>`
+/// (`skill_packs`); the others stand alone.
+pub(crate) fn named_fills(fills: &[String], skill_packs: &BTreeMap<String, String>) -> Vec<String> {
+    (fills.iter())
+        .map(|id| match skill_packs.get(id) {
+            Some(pack) => format!("{id} from {pack}"),
+            None => id.clone(),
+        })
+        .collect()
+}
+
 /// One line per slot of agent `id` on target `t`: a filled slot is `compiled` with
-/// its skills, or `approximated` with the given reason; an empty one `not-compiled`.
+/// its skills (each from a standards pack followed by ` from <pack>`, `skill_packs`), or
+/// `approximated` with the given reason; an empty one `not-compiled`.
 pub(crate) fn slot_lines(
     r: &mut Report,
     t: &str,
@@ -92,6 +105,7 @@ pub(crate) fn slot_lines(
     id: &str,
     f: &armadai_model::AgentFront,
     approximated: Option<&str>,
+    skill_packs: &BTreeMap<String, String>,
 ) {
     for s in &f.slots {
         let fills = armadai_model::slot_fills(project, s);
@@ -101,7 +115,12 @@ pub(crate) fn slot_lines(
         } else if let Some(why) = approximated {
             r.push(t, element, Status::Approximated, Some(why));
         } else {
-            r.push(t, element, Status::Compiled, Some(&fills.join(", ")));
+            r.push(
+                t,
+                element,
+                Status::Compiled,
+                Some(&named_fills(&fills, skill_packs).join(", ")),
+            );
         }
     }
 }
@@ -397,7 +416,21 @@ pub trait Compiler {
     /// `root`: the project root, where files are written and the user's files read
     /// (the root `CLAUDE.md`; `opencode.json` is read by `patch.rs`, not here). `sources`: the directory holding the
     /// `.armadai/` to compile — `root` itself, or the effective view of task 9.
-    fn compile(&self, project: &Project, root: &Path, sources: &Path) -> anyhow::Result<Plan>;
+    ///
+    /// `skill_packs`: skill id -> the standards pack it comes from (`Effective::skill_packs`),
+    /// named in the report lines of the slots.
+    fn compile_with_origins(
+        &self,
+        project: &Project,
+        root: &Path,
+        sources: &Path,
+        skill_packs: &BTreeMap<String, String>,
+    ) -> anyhow::Result<Plan>;
+
+    /// `compile_with_origins` for a project with no standards pack.
+    fn compile(&self, project: &Project, root: &Path, sources: &Path) -> anyhow::Result<Plan> {
+        self.compile_with_origins(project, root, sources, &BTreeMap::new())
+    }
 }
 
 #[cfg(test)]

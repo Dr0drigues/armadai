@@ -13,6 +13,15 @@ static EMBEDDED_STARTERS: Dir = include_dir!("$CARGO_MANIFEST_DIR/starters");
 // Data model
 // ---------------------------------------------------------------------------
 
+/// What a pack holds: a whole team, or standards (skills only, referenced by `standards:`).
+#[derive(Default, Deserialize, PartialEq, Eq, Debug, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+pub enum PackKind {
+    #[default]
+    Team,
+    Standards,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct StarterPack {
     pub name: String,
@@ -21,6 +30,8 @@ pub struct StarterPack {
     /// (`agents:`/`prompts:` lists, converted by `migrate`), whatever its origin.
     #[serde(default)]
     pub format: Option<u32>,
+    #[serde(default)]
+    pub kind: PackKind,
     #[serde(default)]
     pub agents: Vec<String>,
     #[serde(default)]
@@ -529,6 +540,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pack_kind_defaults_to_team_and_reads_standards() {
+        let kind = |extra: &str| {
+            armadai_model::yaml::from_str::<StarterPack>(&format!(
+                "name: p\ndescription: d\n{extra}"
+            ))
+            .map(|p| p.kind)
+        };
+        assert_eq!(kind("").unwrap(), PackKind::Team);
+        assert_eq!(kind("kind: team\n").unwrap(), PackKind::Team);
+        assert_eq!(kind("kind: standards\n").unwrap(), PackKind::Standards);
+        assert!(kind("kind: other\n").is_err());
+    }
+
+    #[test]
     fn bad_test_paths_flags_each_escaping_form() {
         let pack = |tests: &[&str]| {
             let dir = tempfile::tempdir().unwrap();
@@ -659,10 +684,16 @@ description: Minimal pack
             assert_eq!(dir.file_name().unwrap().to_str(), Some(pack.name.as_str()));
             assert!(pack.agents.is_empty() && pack.prompts.is_empty() && pack.skills.is_empty());
             assert!(!dir.join("prompts").exists(), "{}", dir.display());
-            assert!(dir.join("agents").is_dir(), "{}", dir.display());
+            // a standards pack holds skills only
+            assert_eq!(
+                dir.join("agents").is_dir(),
+                pack.name != "rust-standards",
+                "{}",
+                dir.display()
+            );
         }
         assert_eq!(seen, EMBEDDED_STARTERS.dirs().count());
-        assert_eq!(seen, 8);
+        assert_eq!(seen, 9);
     }
 
     /// A pack extracted by an older binary keeps no stale file (R-B2): a managed

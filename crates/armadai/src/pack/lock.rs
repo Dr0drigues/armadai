@@ -41,6 +41,102 @@ impl Resolved {
     }
 }
 
+/// What `.armadai/pack.lock` holds: the team pack's entry, and one per standards pack.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LockFile {
+    pub team: Option<PackLock>,
+    pub standards: Vec<PackLock>,
+}
+
+impl LockFile {
+    /// The team entry, else the first standards entry.
+    pub fn first(&self) -> Option<&PackLock> {
+        self.team.as_ref().or(self.standards.first())
+    }
+
+    pub fn standards_entry(&self, name: &str) -> Option<&PackLock> {
+        self.standards.iter().find(|e| e.pack == name)
+    }
+}
+
+impl From<PackLock> for LockFile {
+    fn from(team: PackLock) -> Self {
+        LockFile {
+            team: Some(team),
+            standards: Vec::new(),
+        }
+    }
+}
+
+/// The on-disk shape; field order is the file's order, so an rc.13 lock is the same text.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawLock {
+    format: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pack: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resolved: Option<Resolved>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    standards: Vec<RawEntry>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawEntry {
+    pack: String,
+    source: String,
+    resolved: Resolved,
+}
+
+impl RawLock {
+    fn into_file(self, shown: &str) -> anyhow::Result<LockFile> {
+        let format = self.format;
+        let team = match (self.pack, self.source, self.resolved) {
+            (Some(pack), Some(source), Some(resolved)) => Some(PackLock {
+                format,
+                pack,
+                source,
+                resolved,
+            }),
+            (None, None, None) => None,
+            _ => anyhow::bail!("{shown}: pack, source and resolved go together"),
+        };
+        let standards = self
+            .standards
+            .into_iter()
+            .map(|e| PackLock {
+                format,
+                pack: e.pack,
+                source: e.source,
+                resolved: e.resolved,
+            })
+            .collect();
+        Ok(LockFile { team, standards })
+    }
+
+    fn from_file(lock: &LockFile) -> Self {
+        let format = lock.first().map_or(1, |l| l.format);
+        RawLock {
+            format,
+            pack: lock.team.as_ref().map(|t| t.pack.clone()),
+            source: lock.team.as_ref().map(|t| t.source.clone()),
+            resolved: lock.team.as_ref().map(|t| t.resolved.clone()),
+            standards: lock
+                .standards
+                .iter()
+                .map(|e| RawEntry {
+                    pack: e.pack.clone(),
+                    source: e.source.clone(),
+                    resolved: e.resolved.clone(),
+                })
+                .collect(),
+        }
+    }
+}
+
 fn path(root: &Path) -> PathBuf {
     root.join(LOCK)
 }
@@ -59,20 +155,20 @@ pub fn pin_path(root: &Path) -> anyhow::Result<Option<PathBuf>> {
     }
 }
 
-fn read_file(p: &Path, shown: &str) -> anyhow::Result<Option<PackLock>> {
+fn read_file(p: &Path, shown: &str) -> anyhow::Result<Option<LockFile>> {
     let text = match std::fs::read_to_string(p) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => anyhow::bail!("{}: {e}", p.display()),
     };
-    armadai_model::yaml::from_str(&text)
-        .map(Some)
-        .map_err(|e| anyhow::anyhow!("{shown}: {e}"))
+    let raw: RawLock =
+        armadai_model::yaml::from_str(&text).map_err(|e| anyhow::anyhow!("{shown}: {e}"))?;
+    raw.into_file(shown).map(Some)
 }
 
 /// The pin of this checkout, if any. A symbolic link (on the file or on `armadai/`) is
 /// refused, not read through.
-pub fn read_pin(root: &Path) -> anyhow::Result<Option<PackLock>> {
+pub fn read_pin(root: &Path) -> anyhow::Result<Option<LockFile>> {
     let Some(p) = pin_path(root)? else {
         return Ok(None);
     };
@@ -85,12 +181,12 @@ pub fn read_pin(root: &Path) -> anyhow::Result<Option<PackLock>> {
 }
 
 /// `.armadai/pack.lock` only; `None` when it is absent.
-pub fn read_committed(root: &Path) -> anyhow::Result<Option<PackLock>> {
+pub fn read_committed(root: &Path) -> anyhow::Result<Option<LockFile>> {
     read_file(&path(root), LOCK)
 }
 
 /// The lock this checkout uses: its pin when it has one, else `.armadai/pack.lock`.
-pub fn read(root: &Path) -> anyhow::Result<Option<PackLock>> {
+pub fn read(root: &Path) -> anyhow::Result<Option<LockFile>> {
     match read_pin(root)? {
         Some(pin) => Ok(Some(pin)),
         None => read_committed(root),
@@ -98,15 +194,19 @@ pub fn read(root: &Path) -> anyhow::Result<Option<PackLock>> {
 }
 
 /// T7: what `pack update` and `pack add` say when the checkout is pinned.
-pub fn pinned_refusal(pin: &PackLock) -> String {
+pub fn pinned_refusal(pin: &LockFile) -> String {
+    let (kind, l) = match (&pin.team, pin.standards.first()) {
+        (Some(t), _) => ("pack", Some(t)),
+        (None, s) => ("standards", s),
+    };
+    let (name, version) = l.map_or(("", ""), |l| (&l.pack, &l.resolved.version));
     format!(
-        "refused: this checkout pins pack {} {} (armadai pack pin); run armadai pack unpin first",
-        pin.pack, pin.resolved.version
+        "refused: this checkout pins {kind} {name} {version} (armadai pack pin); run armadai pack unpin first"
     )
 }
 
 /// Refused while this checkout pins its pack (T7): the lock a pin masks is not rewritten.
-pub fn write(root: &Path, lock: &PackLock) -> anyhow::Result<()> {
+pub fn write(root: &Path, lock: &LockFile) -> anyhow::Result<()> {
     if let Some(pin) = read_pin(root)? {
         anyhow::bail!("{}", pinned_refusal(&pin));
     }
@@ -114,7 +214,7 @@ pub fn write(root: &Path, lock: &PackLock) -> anyhow::Result<()> {
 }
 
 /// Written whole (`.tmp` then rename), never through a symbolic link.
-fn write_file(p: &Path, lock: &PackLock) -> anyhow::Result<()> {
+fn write_file(p: &Path, lock: &LockFile) -> anyhow::Result<()> {
     let tmp = p.with_extension("lock.tmp");
     for f in [p, &tmp] {
         if std::fs::symlink_metadata(f).is_ok_and(|m| m.file_type().is_symlink()) {
@@ -124,7 +224,8 @@ fn write_file(p: &Path, lock: &PackLock) -> anyhow::Result<()> {
             );
         }
     }
-    let text = armadai_model::yaml::to_string(lock).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let text = armadai_model::yaml::to_string(&RawLock::from_file(lock))
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     if let Some(dir) = p.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -133,13 +234,19 @@ fn write_file(p: &Path, lock: &PackLock) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `pack pin`: copies `.armadai/pack.lock` to this checkout's pin (T1 to T4).
-pub fn pin(root: &Path) -> anyhow::Result<PackLock> {
-    let Some((name, _)) = super::effective::pack_ref(root) else {
+/// `pack pin`: copies `.armadai/pack.lock` to this checkout's pin (T1 to T4); the project
+/// references a pack (`pack:`), standards packs (`standards:`) or both.
+pub fn pin(root: &Path) -> anyhow::Result<LockFile> {
+    let team = super::effective::pack_ref(root);
+    let standards = super::effective::standards_locked_refs(root);
+    if team.is_none() && super::effective::only_unfinished_standards(root) {
+        anyhow::bail!("{}", super::effective::unfinished_standards("pin"));
+    }
+    if team.is_none() && standards.is_empty() {
         anyhow::bail!(
             "this project references no pack (pack: in .armadai/project.yaml); a pack installed by copy is already in the checkout and needs no pin"
         );
-    };
+    }
     let Some(p) = pin_path(root).map_err(|e| anyhow::anyhow!("pack pin refused: {e}"))? else {
         anyhow::bail!(
             "pack pin needs a git checkout: the pin is kept in its git directory, and there is no .git above {}",
@@ -147,21 +254,40 @@ pub fn pin(root: &Path) -> anyhow::Result<PackLock> {
         );
     };
     if let Some(old) = read_pin(root)? {
+        let (kind, l) = match (&old.team, old.standards.first()) {
+            (Some(t), _) => ("pack", Some(t)),
+            (None, s) => ("standards", s),
+        };
         anyhow::bail!(
-            "this checkout already pins pack {} {}; run armadai pack unpin first",
-            old.pack,
-            old.resolved.version
+            "this checkout already pins {kind} {} {}; run armadai pack unpin first",
+            l.map_or("", |l| &l.pack),
+            l.map_or("", |l| &l.resolved.version)
         );
     }
-    let Some(lock) = read_committed(root)? else {
-        anyhow::bail!("{}", super::effective::lock_missing(&name));
-    };
+    let committed = read_committed(root)?;
+    if let Some((name, _)) = &team
+        && committed.as_ref().is_none_or(|l| l.team.is_none())
+    {
+        anyhow::bail!("{}", super::effective::lock_missing(name));
+    }
+    for (name, ..) in &standards {
+        if committed
+            .as_ref()
+            .is_none_or(|l| l.standards_entry(name).is_none())
+        {
+            anyhow::bail!(
+                "{}",
+                super::effective::standards_missing(name, committed.is_some())
+            );
+        }
+    }
+    let lock = committed.expect("a referenced pack has a lock");
     write_file(&p, &lock)?;
     Ok(lock)
 }
 
 /// `pack unpin`: removes the pin (the folder around it stays); the pin it held, if any.
-pub fn unpin(root: &Path) -> anyhow::Result<Option<PackLock>> {
+pub fn unpin(root: &Path) -> anyhow::Result<Option<LockFile>> {
     pin_path(root).map_err(|e| anyhow::anyhow!("pack unpin refused: {e}"))?;
     let Some(old) = read_pin(root)? else {
         return Ok(None);
@@ -236,7 +362,11 @@ mod tests {
     use super::*;
     use crate::starters_registry::git_output;
 
-    fn sample() -> PackLock {
+    fn sample() -> LockFile {
+        entry().into()
+    }
+
+    fn entry() -> PackLock {
         PackLock {
             format: 1,
             pack: "demo".into(),
@@ -263,7 +393,7 @@ mod tests {
             format!("{text}  branch: main\n"),
         ] {
             std::fs::write(tmp.path().join(LOCK), &bad).unwrap();
-            let yaml = armadai_model::yaml::from_str::<PackLock>(&bad).unwrap_err();
+            let yaml = armadai_model::yaml::from_str::<RawLock>(&bad).unwrap_err();
             assert_eq!(
                 read(tmp.path()).unwrap_err().to_string(),
                 format!(".armadai/pack.lock: {yaml}")
@@ -274,7 +404,7 @@ mod tests {
 
     #[test]
     fn lock_id_is_the_commit_not_the_tag() {
-        let r = sample().resolved;
+        let r = entry().resolved;
         assert_eq!(r.id(), r.commit.clone().unwrap());
         let archive = Resolved {
             version: "1.0.0".into(),
@@ -486,12 +616,12 @@ mod tests {
         wt.join(".git")
     }
 
-    fn at(version: &str, commit: char) -> PackLock {
-        let mut l = sample();
+    fn at(version: &str, commit: char) -> LockFile {
+        let mut l = entry();
         l.resolved.version = version.into();
         l.resolved.tag = Some(format!("demo-v{version}"));
         l.resolved.commit = Some(commit.to_string().repeat(40));
-        l
+        l.into()
     }
 
     #[test]
@@ -619,6 +749,111 @@ mod tests {
         .unwrap();
         assert_eq!(read(t.path()).unwrap(), Some(sample()));
     }
+
+    const RC13: &str = "format: 1\npack: demo\nsource: https://example.com/packs.git\nresolved:\n  version: \"1.3.2\"\n  tag: demo-v1.3.2\n  commit: 0123456789abcdef0123456789abcdef01234567\n";
+
+    fn with_dir(text: &str) -> tempfile::TempDir {
+        let t = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(t.path().join(".armadai")).unwrap();
+        std::fs::write(t.path().join(LOCK), text).unwrap();
+        t
+    }
+
+    #[test]
+    fn an_rc13_lock_is_rewritten_byte_for_byte() {
+        let t = with_dir(RC13);
+        let lock = read_committed(t.path()).unwrap().unwrap();
+        write(t.path(), &lock).unwrap();
+        assert_eq!(std::fs::read_to_string(t.path().join(LOCK)).unwrap(), RC13);
+    }
+
+    fn std_entry(name: &str, version: &str, c: char) -> PackLock {
+        let mut e = entry();
+        e.pack = name.into();
+        e.source = format!("https://example.com/{name}.git");
+        e.resolved.version = version.into();
+        e.resolved.tag = Some(format!("{name}-v{version}"));
+        e.resolved.commit = Some(c.to_string().repeat(40));
+        e
+    }
+
+    #[test]
+    fn a_lock_with_standards_roundtrips() {
+        let t = tempfile::tempdir().unwrap();
+        let lock = LockFile {
+            team: Some(entry()),
+            standards: vec![
+                std_entry("rust-std", "2.0.1", 'a'),
+                std_entry("web-std", "0.4.0", 'b'),
+            ],
+        };
+        write(t.path(), &lock).unwrap();
+        assert_eq!(read(t.path()).unwrap(), Some(lock.clone()));
+        assert_eq!(
+            lock.standards_entry("web-std").unwrap().resolved.version,
+            "0.4.0"
+        );
+        assert_eq!(lock.first().unwrap().pack, "demo");
+    }
+
+    #[test]
+    fn a_standards_only_lock_reads() {
+        let t = with_dir(
+            "format: 1\nstandards:\n- pack: rust-std\n  source: https://example.com/rust-std.git\n  resolved:\n    version: 2.0.1\n    commit: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+        );
+        let lock = read(t.path()).unwrap().unwrap();
+        assert_eq!(lock.team, None);
+        assert_eq!(lock.standards.len(), 1);
+        assert_eq!(lock.standards[0].pack, "rust-std");
+        assert_eq!(lock.standards[0].format, 1);
+        assert_eq!(lock.first().unwrap().pack, "rust-std");
+    }
+
+    #[test]
+    fn a_partial_team_is_refused() {
+        let t = with_dir("format: 1\npack: demo\nsource: https://example.com/p.git\n");
+        assert_eq!(
+            read(t.path()).unwrap_err().to_string(),
+            ".armadai/pack.lock: pack, source and resolved go together"
+        );
+    }
+
+    #[test]
+    fn an_unknown_key_in_a_standards_entry_is_refused() {
+        let t = with_dir(
+            "format: 1\nstandards:\n- pack: rust-std\n  source: https://example.com/rust-std.git\n  branch: main\n  resolved:\n    version: 2.0.1\n    commit: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+        );
+        let e = read(t.path()).unwrap_err().to_string();
+        assert!(e.starts_with(".armadai/pack.lock: "), "{e}");
+        assert!(e.contains("branch"), "{e}");
+    }
+
+    #[test]
+    fn a_pin_copies_the_whole_file_and_unpin_returns_it() {
+        let t = tempfile::tempdir().unwrap();
+        let (_, wt) = checkouts(t.path());
+        let lock = LockFile {
+            team: Some(entry()),
+            standards: vec![std_entry("rust-std", "2.0.1", 'a')],
+        };
+        write(&wt, &lock).unwrap();
+        assert_eq!(pin(&wt).unwrap(), lock);
+        assert_eq!(read_pin(&wt).unwrap(), Some(lock.clone()));
+        assert_eq!(unpin(&wt).unwrap(), Some(lock));
+    }
+
+    #[test]
+    fn a_standards_only_pin_is_refused_with_its_own_text() {
+        let pin = LockFile {
+            team: None,
+            standards: vec![std_entry("rust-std", "2.0.1", 'a')],
+        };
+        assert_eq!(
+            pinned_refusal(&pin),
+            "refused: this checkout pins standards rust-std 2.0.1 (armadai pack pin); run armadai pack unpin first"
+        );
+    }
+
     /// A project referencing pack `demo`, in `dir`.
     fn project_in(dir: &Path) {
         std::fs::create_dir_all(dir.join(".armadai")).unwrap();

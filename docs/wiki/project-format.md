@@ -39,6 +39,10 @@ pack:                        # optional: build on a pack (see starter-packs.md)
   name: demo                 # pack id
   source: https://example.com/packs.git   # URL of the git repository or archive
   version: ^1.3              # latest, an exact version, or a semver range
+standards:                   # optional: standards packs (skills only), same fields as `pack:`
+  - name: rust-std           # pack id; its pack.yaml says `kind: standards`
+    source: https://example.com/standards.git
+    version: ^1.0
 targets: [claude, opencode]  # default link targets
 outputs: { claude: .claude } # optional: output directory per target
 coordinator: lead            # optional: agent id whose prompt becomes the root file
@@ -67,6 +71,13 @@ the same paths, and `project.yaml` is merged key by key. `.armadai/pack.lock` re
 `link` uses. `pack.source` and `pack.version` may not be empty (`pack-empty-source`,
 `pack-empty-version`). A source that carries a secret is written masked. The commands, the ranges
 and the merge rules are in [Starter packs](starter-packs.md#building-on-a-pack-by-reference).
+
+`standards:` lists packs that hold skills only (`kind: standards` in their `pack.yaml`), each with
+the fields of `pack:`. They stack in order after the team pack (`pack:`) and before your own
+files; your `skills/<id>/` replaces a standards folder of the same id whole. Each entry's
+`source` and `version` may not be empty (`standards-empty-source`, `standards-empty-version`), and
+its `name` is an id (`bad-id`). Two pack sources holding the same skill id are an error
+(`duplicate-standards-skill`) unless your project has its own `skills/<id>/`.
 
 `{{var.name}}` in the body of an agent, template, command or `SKILL.md`, or in a text value under
 `native` of `project.yaml`, is replaced by `link` with the value of `name` (an id), read from
@@ -524,7 +535,7 @@ warning on stderr.
 | `ignored-file` | warning | A `.yml` file in `flows/` or `automations/` is not loaded | Rename it to `.yaml` |
 | `sequence-and-steps` | error | A flow has both `sequence` and `steps`/`links` | Keep one form |
 | `duplicate-step` | error | A `sequence` defines the same step id twice | Use `{ id: …, agent: … }` for the repeat |
-| `bad-id` | error | A file, folder or step id, a `vars` name, a `policy.grants` key, a slot name of an agent's `slots` or `pack.name`, does not match `[a-z0-9][a-z0-9-]{0,63}` | Rename it in kebab-case |
+| `bad-id` | error | A file, folder or step id, a `vars` name, a `policy.grants` key, a slot name of an agent's `slots`, `pack.name` or `standards[].name`, does not match `[a-z0-9][a-z0-9-]{0,63}` | Rename it in kebab-case |
 | `unknown-target` | error | A target in `targets`, `outputs` or a `native` key is not supported | Use `claude`, `codex`, `copilot` or `opencode` |
 | `bad-output` | error | An `outputs` value is absolute, climbs with `..`, is the project root, or points into `.armadai/` or `.git/` (any case) | Use a folder inside the project such as `.claude` (`link --output` can point elsewhere for one run) |
 | `bad-document-folder` | error | A `ui.documents` entry is empty, absolute, climbs with `..`, is the project root, or points into `.armadai/` or `.git/` | Name a folder of the project such as `docs` |
@@ -577,6 +588,12 @@ warning on stderr.
 | `journal-without-shell` | warning | An agent declares `journal` and `capabilities.shell: deny`, so it cannot run `armadai journal` (`shell` absent, `ask` or `allow` is not reported) | Allow shell (`ask` or `allow`), or drop `journal` |
 | `pack-empty-source` | error | `pack.source` is empty | Give the URL of the pack's source, as in `registries.yaml` |
 | `pack-empty-version` | error | `pack.version` is empty | Write `latest`, a version such as `1.2.3`, or a range such as `^1.3` |
+| `standards-empty-source` | error | `standards[i].source` is empty | Give the URL of the pack's source, as in `registries.yaml` |
+| `standards-empty-version` | error | `standards[i].version` is empty | Write `latest`, a version such as `1.2.3`, or a range such as `^1.3` |
+| `standards-foreign-file` | error | A file of a standards pack that the project format reads (`project.yaml`, `agents/*.md`, `templates/*.md`, `commands/*.md`, `flows/*.yaml`, `automations/*.yaml`) is not under `skills/` (`pack.yaml`, a README and any other file are not read, so they are fine); reported by `validate <pack>`, `pack add --standards` and every command that reads the project | Move it to a team pack, or remove it |
+| `standards-skill-no-slot` | warning | A skill of a standards pack fills no slot, so no agent receives it from this pack; reported by `validate <pack>` | Add `metadata: { armadai-slot: <slot> }` to its frontmatter |
+| `duplicate-standards-skill` | error | The same skill id comes from two pack sources (`pack:` and `standards:`, or two `standards:` entries) and the project has no `skills/<id>/` of its own | Remove one of the two packs, or put your own `skills/<id>/` in `.armadai/` to choose |
+| `standards-wrong-kind` | error | A pack named in `standards:` is a team pack (its `pack.yaml` has no `kind: standards`) | Reference it with `pack:`, or add `kind: standards` to its `pack.yaml` if it holds only skills |
 
 ## Migrating a legacy project
 
