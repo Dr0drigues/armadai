@@ -948,6 +948,22 @@ mod tests {
         assert_eq!(rules, ["Bash(ls *)"]);
     }
 
+    /// A project that only references standards packs: the hook reads the same view, so a
+    /// standards entry missing from the lock gives no rule, a locked one gives them.
+    #[test]
+    fn the_grant_hook_has_no_opinion_when_a_standards_entry_is_not_locked() {
+        use crate::claude_adapter::policy_gate::pinned_fixture::*;
+        let iso = armadai_core::test_support::IsolatedConfigDir::enter();
+        let registry = registry_of(iso.config_dir());
+        let grants =
+            "policy:\n  grants:\n    ops:\n      description: d\n      allow: [\"Bash(echo *)\"]\n";
+        let locked = standards_project(grants, true, &registry);
+        let (_, _, rules) = project_rules(&cwd_payload(locked.path()), "ops").unwrap();
+        assert_eq!(rules, ["Bash(echo *)"]);
+        let unlocked = standards_project(grants, false, &registry);
+        assert!(project_rules(&cwd_payload(unlocked.path()), "ops").is_none());
+    }
+
     #[cfg(unix)]
     #[test]
     fn an_unreadable_pin_gives_the_grant_hook_no_opinion() {

@@ -65,7 +65,13 @@ pub struct LegacyCompiler {
 }
 
 impl Compiler for LegacyCompiler {
-    fn compile(&self, project: &Project, _root: &Path, sources: &Path) -> anyhow::Result<Plan> {
+    fn compile_with_origins(
+        &self,
+        project: &Project,
+        _root: &Path,
+        sources: &Path,
+        _skill_packs: &std::collections::BTreeMap<String, String>,
+    ) -> anyhow::Result<Plan> {
         let t = self.target;
         let linker = create_linker(t)?;
         let mut agents = link_agents(project, t);

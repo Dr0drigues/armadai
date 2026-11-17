@@ -291,3 +291,48 @@ fn a_project_with_a_pack_and_a_claude_link_out_is_refused_behind_a_dot_git_that_
         assert_eq!(env.snapshot(), before, "{cmd}");
     }
 }
+
+const STANDARDS_ONLY: &str = "schema_version: 1\nstandards:\n  - name: rust-std\n    source: https://example.com/packs.git\n    version: latest\n";
+
+/// A project that references standards packs and no `pack:` still has a lock to keep: it
+/// is concerned by the broken `.git` like a project with a pack (lot 14 rule).
+fn standards_only_behind_a_broken_dot_git(name: &str, cmds: &[&str]) {
+    let env = linked_chantier(false);
+    if name == ".claude" {
+        std::fs::remove_file(env.wt().join(".armadai")).unwrap();
+        env.own_project();
+        put(&env.wt().join(".armadai/project.yaml"), STANDARDS_ONLY);
+    } else {
+        std::fs::remove_file(env.wt().join(".claude")).unwrap();
+        put(
+            &env.chantier().join(".armadai/project.yaml"),
+            STANDARDS_ONLY,
+        );
+    }
+    std::fs::remove_dir_all(env.wt().join(".git")).unwrap();
+    put(
+        &env.wt().join(".git"),
+        &format!("gitdir: {}\n", env.0.path().join("gone").display()),
+    );
+    let t14 = format!(
+        "Error: {}/.git does not lead to a git directory, where this checkout keeps its pack pin; repair it (git worktree repair) and run the command again\n",
+        std::fs::canonicalize(env.wt()).unwrap().display()
+    );
+    let before = env.snapshot();
+    for cmd in cmds {
+        let (code, out, err) = env.run(&env.wt(), cmd);
+        assert_eq!(code, Some(1), "{cmd}: {out}{err}");
+        assert_eq!(err, t14, "{cmd}");
+        assert_eq!(env.snapshot(), before, "{cmd}");
+    }
+}
+
+#[test]
+fn a_standards_only_project_with_an_armadai_link_out_is_refused_behind_a_broken_dot_git() {
+    standards_only_behind_a_broken_dot_git(".armadai", &["unlink --dry-run", "unlink", "link"]);
+}
+
+#[test]
+fn a_standards_only_project_with_a_claude_link_out_is_refused_behind_a_broken_dot_git() {
+    standards_only_behind_a_broken_dot_git(".claude", &["unlink --dry-run", "unlink"]);
+}

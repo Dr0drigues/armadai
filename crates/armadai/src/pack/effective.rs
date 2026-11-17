@@ -102,6 +102,12 @@ pub(crate) fn standards_refs(root: &Path) -> Vec<(String, String, String)> {
         .collect()
 }
 
+/// Whether the project references a pack, `pack:` or `standards:`, so that it has a lock
+/// (and a pin) to keep.
+pub(crate) fn references_packs(root: &Path) -> bool {
+    pack_ref(root).is_some() || !standards_refs(root).is_empty()
+}
+
 /// The entries of `standards:` to look for at the lock: a name that is not an id, an empty
 /// source or an empty version is `validate`'s to report, with its position.
 fn standards_declared(root: &Path) -> Vec<(String, String)> {
