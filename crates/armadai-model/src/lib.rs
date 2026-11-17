@@ -16,7 +16,10 @@ pub mod templates;
 pub mod types;
 pub mod write;
 pub mod yaml;
-pub use check::{check, entry_steps, has_errors, is_valid_id, load_checked, validate};
+pub use check::{
+    JOURNAL_DIR_RULE, check, entry_steps, has_errors, is_valid_id, is_valid_journal_dir,
+    load_checked, validate,
+};
 pub use delegation::{TeamAgent, TeamEdge, TeamGraph, allowed_targets, team_graph};
 pub use diag::{Diagnostic, Severity, locate, locate_key};
 pub use dot::{flow_graph_to_dot, flow_to_dot, team_to_dot};

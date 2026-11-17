@@ -43,6 +43,7 @@ impl Env {
         c.current_dir(at)
             .env("ARMADAI_CONFIG_DIR", self.dir.path().join("config"))
             .env("HOME", self.dir.path())
+            .env("CLAUDE_CONFIG_DIR", self.dir.path().join("config"))
             .env("NO_COLOR", "1")
             .timeout(std::time::Duration::from_secs(60));
         c
@@ -358,4 +359,55 @@ fn a_project_in_a_subfolder_writes_to_its_own_main_checkout_folder() {
             .is_file()
     );
     assert!(!e.main().join(".armadai/state").exists());
+}
+
+/// `c/` holds the real `.armadai` naming `../lot-journal`; `a/x/wa` and `wb` are two worktrees
+/// at different depths whose `.armadai` links to it; the main checkout has no project.
+fn shared_site(e: &Env) -> (PathBuf, PathBuf, PathBuf) {
+    let root = e.dir.path();
+    let (c, wa, wb) = (root.join("c"), root.join("a/x/wa"), root.join("wb"));
+    std::fs::create_dir_all(c.join(".armadai")).unwrap();
+    std::fs::write(
+        c.join(".armadai/project.yaml"),
+        "schema_version: 1\nsessions:\n  journal_dir: ../lot-journal\n",
+    )
+    .unwrap();
+    for w in [&wa, &wb] {
+        std::fs::create_dir_all(w).unwrap();
+        std::os::unix::fs::symlink(c.join(".armadai"), w.join(".armadai")).unwrap();
+    }
+    (c, wa, wb)
+}
+
+#[test]
+fn journal_dir_is_shared_by_worktrees_of_different_depths() {
+    let e = Env::new();
+    let (_c, wa, wb) = shared_site(&e);
+    let j = e.dir.path().join("lot-journal");
+    std::fs::create_dir_all(&j).unwrap();
+    let (code, ..) = e.run(&wa, &["journal", "add", "--lot", "l", "from-a"]);
+    assert_eq!(code, Some(0));
+    let (code, out, _) = e.run(&wb, &["journal", "show", "--lot", "l"]);
+    assert_eq!(code, Some(0));
+    assert!(out.ends_with("  from-a\n"), "{out}");
+    assert!(j.join("journal-l.jsonl").is_file());
+    assert!(!wa.join(".armadai/state").exists());
+}
+
+#[test]
+fn a_missing_journal_dir_fails_with_the_next_step_and_writes_nothing() {
+    let e = Env::new();
+    let (_c, wa, _wb) = shared_site(&e);
+    let (code, out, err) = e.run(&wa, &["journal", "add", "x"]);
+    assert_eq!(code, Some(1));
+    assert_eq!(out, "");
+    let want = format!(
+        "sessions.journal_dir leads to {}, which does not exist; create it, or fix the path in .armadai/project.yaml",
+        std::fs::canonicalize(e.dir.path())
+            .unwrap()
+            .join("c/../lot-journal")
+            .display()
+    );
+    assert_eq!(err.trim_end(), format!("Error: {want}"));
+    assert!(!e.dir.path().join("lot-journal").exists());
 }

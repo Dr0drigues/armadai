@@ -28,7 +28,7 @@ Transitions:
 
 ### Journal
 
-Before a decision, read `armadai journal show --lot <lot> --last 20`; check a premise about another lot there (`--lot <other>`), not from memory. After a decision, record it: `armadai journal add --lot <lot> --kind decision --by lead "<one line>"`. A decision that holds for every lot goes without `--lot`.
+The journal holds the decisions of each lot. Before a decision, its entries are read with `armadai journal show --lot <lot> --last 20`, and a premise about another lot is checked there (`--lot <other>`), not from memory. Once a decision is taken, it is recorded with `armadai journal add --lot <lot> --kind decision --by lead "<one line>"`; a decision that holds for every lot goes without `--lot`. A decision outside your scope still goes to the user: the journal records it, it does not stand in for the user.
 
 ### Marking delegations
 

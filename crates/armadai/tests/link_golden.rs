@@ -217,6 +217,19 @@ mod tests {
         );
     }
 
+    /// `sessions.journal: true` with a `session_link`: the whole block, so the two texts and
+    /// the clause that records the answer are fixed together.
+    #[test]
+    fn the_journal_with_a_session_link_matches_its_golden() {
+        ui_golden_with(
+            "sessions:\n  journal: true\n",
+            None,
+            SESSION_LINK,
+            "claude-journal-session-link",
+            &["### Journal", "### Sessions", "its answer is recorded with"],
+        );
+    }
+
     /// `link` writes nothing but the guidance: `.claude/settings.json` is the same bytes
     /// with and without a `session_link` (no `crossSessionInbound`, no rule on the
     /// messaging tools).

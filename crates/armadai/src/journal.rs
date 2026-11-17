@@ -1,6 +1,7 @@
-//! The lot journal: JSONL files under the main checkout's `.armadai/state/`, one per lot
-//! (`journal-<lot in lowercase>.jsonl`) plus `journal.jsonl` for entries that hold for every
-//! lot. Written by `armadai journal add` in one append, read by `armadai journal show`.
+//! The lot journal: JSONL files under the main checkout's `.armadai/state/` or in the folder
+//! `sessions.journal_dir` names, one per lot (`journal-<lot in lowercase>.jsonl`) plus
+//! `journal.jsonl` for entries that hold for every lot. Written by `armadai journal add` in one
+//! append, read by `armadai journal show`.
 
 use std::path::{Path, PathBuf};
 
@@ -61,6 +62,78 @@ pub fn state_dir(root: &Path) -> PathBuf {
         project.join(".armadai/state")
     } else {
         own
+    }
+}
+
+/// The folder holding the journal files: named by `sessions.journal_dir` (it must already
+/// exist) or the default one (created on the first write).
+enum JournalDir {
+    Default(PathBuf),
+    Named(PathBuf),
+    /// The key holds a value that `invalid-journal-dir` refuses.
+    Invalid,
+}
+
+/// `sessions.journal_dir`, read from the `.armadai/project.yaml` of `root` alone (not the
+/// effective view: `journal` must keep working on a project that does not validate, and a key
+/// set by a pack is not read). A relative value starts from the parent of the resolved
+/// `.armadai` (links followed), so worktrees sharing one `.armadai` agree on the folder.
+/// A file that does not read, or a `sessions` of another shape, means the default folder; a
+/// `journal_dir` that `validate` refuses (bad text, a list, a map) is `Invalid`.
+fn journal_dir(root: &Path) -> JournalDir {
+    /// Only the key: read as the model reads it (a number is its text), whatever else is wrong.
+    #[derive(Deserialize)]
+    struct Key {
+        sessions: Option<Sessions>,
+    }
+    #[derive(Deserialize)]
+    struct Sessions {
+        journal_dir: Option<String>,
+    }
+    let named = (|| {
+        let text = std::fs::read_to_string(root.join(".armadai/project.yaml")).ok()?;
+        let dir = match armadai_model::yaml::from_str::<Key>(&text) {
+            Ok(k) => k.sessions?.journal_dir?,
+            // a value `validate` refuses (a list, a map): refused here too, not ignored
+            Err(_) => {
+                let v: serde_json::Value = armadai_model::yaml::from_str(&text).ok()?;
+                v.pointer("/sessions/journal_dir")?;
+                return Some(JournalDir::Invalid);
+            }
+        };
+        if !armadai_model::is_valid_journal_dir(&dir) {
+            return Some(JournalDir::Invalid);
+        }
+        // a `canonicalize` that fails means no readable project: the default folder
+        let real = std::fs::canonicalize(root.join(".armadai")).ok()?;
+        Some(JournalDir::Named(real.parent()?.join(dir)))
+    })();
+    named.unwrap_or_else(|| JournalDir::Default(state_dir(root)))
+}
+
+/// The folder to use; a named one that is not a folder is refused with what to do next.
+fn resolve_dir(root: &Path) -> anyhow::Result<PathBuf> {
+    match journal_dir(root) {
+        JournalDir::Default(d) => Ok(d),
+        JournalDir::Invalid => bail!(
+            "{}; fix it in .armadai/project.yaml",
+            armadai_model::JOURNAL_DIR_RULE
+        ),
+        JournalDir::Named(d) => {
+            // a link is refused by the callers' own check, with its own message
+            if !is_link(&d) {
+                let (what, fix) = match std::fs::metadata(&d) {
+                    Err(_) => ("does not exist", "create it, or fix the path"),
+                    Ok(m) if !m.is_dir() => ("is not a folder", "fix the path"),
+                    Ok(_) => return Ok(d),
+                };
+                bail!(
+                    "sessions.journal_dir leads to {}, which {what}; {fix} in .armadai/project.yaml",
+                    d.display()
+                );
+            }
+            Ok(d)
+        }
     }
 }
 
@@ -145,7 +218,7 @@ fn add_with(
             line.len()
         );
     }
-    let dir = state_dir(root);
+    let dir = resolve_dir(root)?;
     let path = dir.join(name);
     for at in [&dir, &path] {
         if is_link(at) {
@@ -155,6 +228,7 @@ fn add_with(
             );
         }
     }
+    // a named folder exists by now (`resolve_dir`), so this only creates the default one
     std::fs::create_dir_all(&dir)?;
     // One write of the whole line in append mode: two writers never mix their lines.
     let mut f = std::fs::OpenOptions::new()
@@ -256,7 +330,7 @@ pub fn show(
     kind: Option<&str>,
     last: usize,
 ) -> anyhow::Result<Vec<Entry>> {
-    let dir = state_dir(root);
+    let dir = resolve_dir(root)?;
     let mut all: Vec<Entry> = Vec::new();
     for name in files_to_read(&dir, lot)? {
         let Some(bytes) = read_unlinked(&dir, &name)? else {
@@ -462,6 +536,153 @@ mod tests {
         symlink(&target, t.path().join(".armadai/state/journal.jsonl")).unwrap();
         assert!(add(t.path(), None, Kind::Note, None, "x", 1).is_err());
         assert_eq!(fs::read_to_string(&target).unwrap(), "");
+    }
+
+    /// A project whose `project.yaml` names `journal_dir`; returns it and its real path.
+    fn named(dir: &str) -> (tempfile::TempDir, PathBuf) {
+        let t = project();
+        fs::write(
+            t.path().join(".armadai/project.yaml"),
+            format!("sessions:\n  journal_dir: {dir}\n"),
+        )
+        .unwrap();
+        let real = fs::canonicalize(t.path()).unwrap();
+        (t, real)
+    }
+
+    #[test]
+    fn a_named_folder_receives_the_journal_and_state_is_not_created() {
+        let (_t, real) = named("j");
+        let j = real.join("j");
+        fs::create_dir_all(&j).unwrap();
+        put(&real, Some("a"), "x", 1);
+        assert!(j.join("journal-a.jsonl").is_file());
+        assert!(!real.join(".armadai/state").exists());
+        assert_eq!(show(&real, Some("a"), None, 20).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_missing_named_folder_is_refused_and_not_created() {
+        let (_t, real) = named("lot-journal");
+        let want = format!(
+            "sessions.journal_dir leads to {}, which does not exist; create it, or fix the path in .armadai/project.yaml",
+            real.join("lot-journal").display()
+        );
+        let e = add(&real, None, Kind::Note, None, "x", 1).unwrap_err();
+        assert_eq!(e.to_string(), want);
+        let e = show(&real, None, None, 20).unwrap_err();
+        assert_eq!(e.to_string(), want);
+        assert!(!real.join("lot-journal").exists());
+    }
+
+    #[test]
+    fn a_named_path_that_is_a_file_is_refused() {
+        let (_t, real) = named("f");
+        fs::write(real.join("f"), "").unwrap();
+        let want = format!(
+            "sessions.journal_dir leads to {}, which is not a folder; fix the path in .armadai/project.yaml",
+            real.join("f").display()
+        );
+        let e = add(&real, None, Kind::Note, None, "x", 1).unwrap_err();
+        assert_eq!(e.to_string(), want);
+        assert_eq!(show(&real, None, None, 20).unwrap_err().to_string(), want);
+    }
+
+    #[test]
+    fn a_named_folder_that_is_a_link_is_not_used_but_a_linked_armadai_is() {
+        use std::os::unix::fs::symlink;
+        let (_t, real) = named("j");
+        let out = tempfile::tempdir().unwrap();
+        symlink(out.path(), real.join("j")).unwrap();
+        let e = add(&real, None, Kind::Note, None, "x", 1).unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            format!(
+                "{} is a symbolic link; the journal is not written through it",
+                real.join("j").display()
+            )
+        );
+        let e = show(&real, None, None, 20).unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            format!(
+                "{} is a symbolic link; the journal is not read through it",
+                real.join("j").display()
+            )
+        );
+        assert_eq!(fs::read_dir(out.path()).unwrap().count(), 0);
+
+        // `.armadai` itself a link: allowed, the folder is beside the real one
+        let w = tempfile::tempdir().unwrap();
+        let w = fs::canonicalize(w.path()).unwrap();
+        fs::create_dir_all(w.join("wt")).unwrap();
+        fs::create_dir_all(w.join("c/j")).unwrap();
+        fs::create_dir_all(w.join("c/.armadai")).unwrap();
+        fs::write(
+            w.join("c/.armadai/project.yaml"),
+            "sessions:\n  journal_dir: j\n",
+        )
+        .unwrap();
+        symlink(w.join("c/.armadai"), w.join("wt/.armadai")).unwrap();
+        put(&w.join("wt"), None, "x", 1);
+        assert!(w.join("c/j/journal.jsonl").is_file());
+    }
+
+    #[test]
+    fn a_dotdot_after_a_linked_component_is_left_to_the_file_system() {
+        use std::os::unix::fs::symlink;
+        let (_t, real) = named("lnk/../j");
+        let else_ = tempfile::tempdir().unwrap();
+        let else_ = fs::canonicalize(else_.path()).unwrap();
+        fs::create_dir_all(else_.join("sub")).unwrap();
+        fs::create_dir_all(else_.join("j")).unwrap();
+        symlink(else_.join("sub"), real.join("lnk")).unwrap();
+        put(&real, None, "x", 1);
+        // `lnk/..` is `else_`, not the folder holding `lnk`
+        assert!(else_.join("j/journal.jsonl").is_file());
+        assert!(!real.join("j").exists());
+    }
+
+    #[test]
+    fn a_value_the_validator_refuses_names_no_folder_and_writes_nothing() {
+        for bad in ["\"\"", "\" j\"", "\"j \"", "\"a\\nb\""] {
+            let (_t, real) = named(bad);
+            let want = format!(
+                "{}; fix it in .armadai/project.yaml",
+                armadai_model::JOURNAL_DIR_RULE
+            );
+            let e = add(&real, None, Kind::Note, None, "x", 1).unwrap_err();
+            assert_eq!(e.to_string(), want, "{bad}");
+            assert_eq!(show(&real, None, None, 20).unwrap_err().to_string(), want);
+            let names: Vec<_> = fs::read_dir(&real).unwrap().flatten().collect();
+            assert_eq!(names.len(), 1, "{bad}: only .armadai");
+            assert!(!real.join(".armadai/state").exists());
+        }
+    }
+
+    #[test]
+    fn journal_dir_is_read_as_validate_reads_it() {
+        // a number is its text: the folder `5`
+        let (_t, real) = named("5");
+        fs::create_dir_all(real.join("5")).unwrap();
+        put(&real, None, "x", 1);
+        assert!(real.join("5/journal.jsonl").is_file());
+        assert!(!real.join(".armadai/state").exists());
+        // a list or a map is refused, not ignored
+        for bad in ["[a]", "{a: b}"] {
+            let (_t, real) = named(bad);
+            let e = add(&real, None, Kind::Note, None, "x", 1).unwrap_err();
+            assert_eq!(
+                e.to_string(),
+                format!(
+                    "{}; fix it in .armadai/project.yaml",
+                    armadai_model::JOURNAL_DIR_RULE
+                ),
+                "{bad}"
+            );
+            assert!(show(&real, None, None, 20).is_err());
+            assert!(!real.join(".armadai/state").exists(), "{bad}");
+        }
     }
 
     #[test]

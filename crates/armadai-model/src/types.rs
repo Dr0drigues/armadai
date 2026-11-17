@@ -123,6 +123,9 @@ pub struct Sessions {
     /// Compile the journal instructions for the coordinator (`armadai journal`).
     #[serde(default, skip_serializing_if = "is_false")]
     pub journal: bool,
+    /// Folder of the journal files; relative to the real folder holding `.armadai`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub journal_dir: Option<String>,
 }
 
 impl Sessions {
