@@ -1,6 +1,6 @@
 # Plan du lot C : les packs de normes
 
-- Spec : `docs/superpowers/specs/2026-11-13-lot-c-packs-normes-design.md` (commitée en `dd52d5f`).
+- Spec : `docs/superpowers/specs/2026-11-13-lot-c-packs-normes-design.md` (commit `df23795` après les rebases).
 - Cadre : réponse de `framer` du 2026-11-13, décisions Q1 à Q5 de Dimitri du 2026-11-13. Elles ne sont pas rouvertes ici.
 - Branche : `feat/lot-c-normes`, worktree `armadai-lotc`.
 - Mesures : lecture du code par `architect` et trois passes d'`Explore` (lecture seule, 2026-11-13), citées « (Explore) ». Rien n'a été compilé ni lancé pour écrire ce plan.
@@ -229,6 +229,7 @@ Rendu existant : `file:line:column: error[code]: message` puis `hint: …`.
 | U4. lien échoué après un update de normes (annulation) | `standards <nom> <v> was not applied: link failed, so .armadai/pack.lock, the referent record and the files link had written are back as they were` (même forme que le message existant, `pack` remplacé par `standards`). Cas combiné (pack copié et normes) : le message existant de la copie, `NOT_APPLIED_COPY`, inchangé (décision de Dimitri, C10) |
 | U6. aucune version en cache ne tient la plage d'une norme (livré en T5, **à valider par Dimitri en PR**) | `no cached version of standards <nom> matches <range> …` (la suite de la ligne est celle du message existant pour `pack`) |
 | H1. aide de `pack add --standards` (livré en T5, **à valider par Dimitri en PR**) | ``Add it to `standards:` (a pack of skills only) instead of making it the project's pack`` |
+| U7. `pack pin`, `pack status` ou `pack update` sur un projet dont `standards:` ne porte que des entrées inachevées, sans `pack:` (livré, `pack/effective.rs` `unfinished_standards` ; décision de Dimitri du 2026-11-17, « Renvoyer à validate (Recommandé) » ; **à valider par Dimitri en PR**) | ``.armadai/project.yaml has a standards: entry that is not complete: fix the errors `armadai validate` reports in standards:, then run `armadai pack <cmd>` again`` (`<cmd>` vaut `pin`, `status` ou `update`) |
 | U5. refus sous un pin à normes seules (avant le réseau) | `refused: this checkout pins standards <nom> <v> (armadai pack pin); run armadai pack unpin first` (avec un pack d'équipe au pin, le texte existant ne change pas) |
 | S1. note d'une source de normes hors `registries.yaml` | `note: <src> comes from .armadai/project.yaml (standards <nom>), not from your registries.yaml` |
 | S2. tag déplacé | `  warn: tag <tag> of standards <nom> now points to <new12>, .armadai/pack.lock says <old12>: the lock is kept (link uses its commit)` (sous un pin : les variantes existantes, `pack` remplacé par `standards`) |
@@ -255,7 +256,7 @@ Standards rust-std (reference)
 | P4. `pack pin`, une ligne par entrée de normes (après la ligne existante du pack d'équipe) | `pinned standards <nom> <v> for this checkout; pack update is refused here until armadai pack unpin` |
 | P5. `pack pin` déjà épinglé, à normes seules | `this checkout already pins standards <nom> <v>; run armadai pack unpin first` |
 | P6. `pack unpin`, une ligne par entrée de normes | `unpinned standards <nom> (was <v>); this checkout follows .armadai/pack.lock (<maintenant>) again` (`<maintenant>` = l'entrée commitée, ou `missing`) |
-| P7. `pack pin` sans `pack:` ni `standards:` | texte existant, inchangé. Livré : une entrée de normes inachevée (source ou version vide) est ignorée par `pin`, `status` et `newer` et laissée à `validate` ; un projet dont la seule entrée est inachevée reçoit P7 |
+| P7. `pack pin` sans `pack:` ni `standards:` | texte existant, inchangé. Livré : une entrée de normes inachevée (source ou version vide) est ignorée par `pin`, `status` et `newer` et laissée à `validate` ; un projet dont `standards:` ne porte que des entrées inachevées, sans `pack:`, ne reçoit pas P7 mais U7 (§5.4 ; décision de Dimitri du 2026-11-17, « Renvoyer à validate (Recommandé) ») |
 | N2. `pack new <nom> --kind standards` | `Created pack <nom> in <dossier>: pack.yaml, skills/` |
 | N3. `pack new --from-project` dans un projet à `standards:` | `this project references standards <nom>: its .armadai/ is an overlay, not a pack; create the pack from its source instead` (le premier nom de la liste) |
 | N4. `pack.yaml` d'un `pack new --kind standards` | `format: 1\nname: <nom>\nkind: standards\ndescription: "<description>"\n` : description entre guillemets JSON, même règle que les packs d'équipe ; par défaut `description: "A standards pack"` (amendé, décision de Dimitri « Guillemets, plan amendé », C10) |
@@ -471,7 +472,7 @@ Livré (écarts au plan d'origine, décisions de Dimitri en C10) :
 - `pack update` et `pack add` ôtent du lock les entrées de normes qui ne sont plus déclarées dans `standards:` ; les entrées déclarées sont gardées (tests venus de T2, reformulés ici).
 - Le cas combiné (pack copié et normes) : l'annulation garde le message de la copie (`NOT_APPLIED_COPY`), U4 ne vaut que pour un projet à `pack:` ou à normes seules.
 - Deux textes neufs, U6 et H1 (§5.4), à valider par Dimitri en PR.
-- Une entrée inachevée (source ou version vide) est ignorée par `pin`, `status` et `newer`, et laissée à `validate` (C4) ; seule, elle donne P7.
+- Une entrée inachevée (source ou version vide) est ignorée par `pin`, `status` et `newer`, et laissée à `validate` (C4). Un projet dont `standards:` ne porte que des entrées inachevées, sans `pack:`, reçoit U7 (§5.4) de `pin`, `status` et `update` (décision de Dimitri du 2026-11-17, « Renvoyer à validate (Recommandé) »).
 
 Étapes :
 - [ ] `pack add --standards` et l'insertion C5.
@@ -695,4 +696,4 @@ Le plan (T5) est écrit pour A. B ou C ne changeraient que T5.
 
 **Tranchée** par Dimitri le 2026-11-13, avant les tâches (journal du lot C) : « Copie + normes, un link (Recommandé) », soit l'option A. `pack update` fait la copie, puis les normes, puis un seul `link`, et annule les deux si `link` échoue.
 
-**Q2. Les textes de la §5 et de la §7** sont à valider ligne par ligne (règle du 2026-10-27). Amendement du 2026-11-17 : U6 et H1 (§5.4), écrits pendant T5, restent à valider par Dimitri à la relecture de la PR.
+**Q2. Les textes de la §5 et de la §7** sont à valider ligne par ligne (règle du 2026-10-27). Amendement du 2026-11-17 : U6 et H1 (§5.4), écrits pendant T5, et U7 (§5.4), écrit après la décision du 2026-11-17, restent à valider par Dimitri à la relecture de la PR.

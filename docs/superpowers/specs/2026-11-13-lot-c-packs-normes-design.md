@@ -15,7 +15,7 @@ Objectifs (sur la recommandation de chaque question) :
 
 Non-objectifs :
 - Un pack de normes qui apporte des agents, flows, commandes, automations, templates ou une `project.yaml` : refusé (décision B1 : « une prise ne contient que des skills »).
-- Les normes privées de Dimitri ou de Boulanger : hors dépôt public.
+- Des normes privées d'une entreprise : hors dépôt public.
 - Un second mode « copie » nouveau : `init --pack <normes> --force` continue de fonctionner comme aujourd'hui, sans promesse de mise à jour.
 - Codex, Copilot.
 - Changer la résolution des prises (union triée par id, B1) : elle est conservée.
