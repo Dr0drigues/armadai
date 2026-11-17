@@ -96,7 +96,8 @@ fn marketplace_warning(root: &Path) -> Option<String> {
     let file = marketplace_registry::registry_file(&|k| std::env::var(k).ok())?;
     let text = std::fs::read_to_string(&file).ok()?;
     // `root` comes from the working directory, already resolved, and link refuses a linked
-    // `.armadai` before it writes the plugin: this path is the resolved one
+    // `.armadai` (a separate write check: "link does not write through it"): this path is
+    // the resolved one
     let plugin = root.join(compile::PLUGIN_DIR);
     marketplace_registry::armadai_ui_warning(&file, &text, &plugin)
 }
