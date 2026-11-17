@@ -211,8 +211,14 @@ replaces the level's. `--for` and `--until-time` exclude each other (the command
 `--until` combines with either, and the level then ends at the first of the two. `--until <step>` is `<flow>/<step>`, or a step id held by one flow only; it
 needs the delegation markers that `link` makes Claude Code record (see
 [Flow status](flow-status.md#the-delegation-marker)), so run `armadai link --target claude` first.
-The state is `.armadai/state/grants.yaml`, git-ignored with the rest of `state/`; the hook of each
-rule reads it at every call, so an expiry holds without anything running in between. A grant never
+The state is kept per checkout, in `<git dir>/armadai/grants.yaml` (outside git, `.armadai/state/grants.yaml`
+of the project, git-ignored with the rest of `state/`); the hook of each
+rule reads it at every call, so an expiry holds without anything running in between. A project in a
+sub-folder shares the state of its checkout with any other project of that checkout. If a `.git`
+does not lead to a git directory, `grant` and `revoke` refuse (`grant refused: <path>/.git does not lead to a git directory, ...`); run
+`git worktree repair`. The old `.armadai/state/grants.yaml` is never read or touched: while it exists,
+each `grant` prints a note on stderr, and a level opened before this version is off; delete the file
+to drop the note. The flow journals stay under the project root, not in the git directory. A grant never
 lifts a `deny`: a level whose rule is, character for character, a `deny` rule of
 `.claude/settings.json` or `.claude/settings.local.json` is refused, and one that equals a
 `native.claude.permissions.deny` rule is the validator error `grant-over-deny`.
@@ -264,8 +270,8 @@ has twice (the autumn change) is the first one.
 
 **A worktree linked to a checkout.** When a pinned worktree's `.armadai` is a symbolic link to
 another checkout (see [Starter packs](starter-packs.md#pinning-a-pack-per-checkout)), `grant` and
-`revoke` write `.armadai/state/grants.yaml` of that other checkout, so the level is switched on
-for its session too, not only for the worktree's. `link` and `unlink` refuse in that setting;
+`revoke` act on the checkout where you type them: the level is switched on or off for that worktree
+only, never for the one its `.armadai` leads to. `link` and `unlink` refuse in that setting;
 `grant` and `revoke` do not.
 
 ## OpenCode

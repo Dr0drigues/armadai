@@ -1,7 +1,7 @@
 //! `armadai grant` and `armadai revoke` end to end: the lines printed, the state file,
 //! the refusals, and `unlink` taking the state away.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
 
@@ -41,11 +41,16 @@ impl Env {
     }
 
     fn run(&self, args: &[&str]) -> (Option<i32>, String, String) {
+        self.run_in(&self.root(), args)
+    }
+
+    fn run_in(&self, cwd: &Path, args: &[&str]) -> (Option<i32>, String, String) {
         let out = Command::cargo_bin("armadai")
             .unwrap()
-            .current_dir(self.root())
+            .current_dir(cwd)
             .env("ARMADAI_CONFIG_DIR", self.dir.path().join("config"))
             .env("HOME", self.dir.path())
+            .env("CLAUDE_CONFIG_DIR", self.dir.path().join("claude"))
             .env("NO_COLOR", "1")
             // the tests run in a Claude Code shell too: grant refuses there
             .env_remove("CLAUDECODE")
@@ -59,6 +64,19 @@ impl Env {
             String::from_utf8_lossy(&out.stdout).into_owned(),
             String::from_utf8_lossy(&out.stderr).into_owned(),
         )
+    }
+
+    /// A linked worktree `name` of the project, with its own (fake) git dir and no
+    /// `.armadai`: the project root the command resolves is the main checkout's, the
+    /// same for every worktree, so only the cwd tells the checkouts apart.
+    fn worktree(&self, name: &str) -> PathBuf {
+        let base = self.dir.path().canonicalize().unwrap();
+        let wt = base.join(name);
+        std::fs::create_dir_all(&wt).unwrap();
+        let gd = base.join(format!("project/.git/worktrees/{name}"));
+        std::fs::create_dir_all(&gd).unwrap();
+        std::fs::write(wt.join(".git"), format!("gitdir: {}\n", gd.display())).unwrap();
+        wt
     }
 
     fn link(&self) {
@@ -254,5 +272,106 @@ fn a_level_whose_step_was_delegated_is_listed_ended() {
     assert!(
         list.contains("  auto-until-mr  ended (evolution/publish started)\n"),
         "{list}"
+    );
+}
+
+const OLD_STATE: &str = ".armadai/state/grants.yaml";
+
+#[test]
+fn a_level_opened_in_one_worktree_is_not_open_in_another() {
+    let env = Env::new();
+    let (a, b) = (env.worktree("a"), env.worktree("b"));
+    env.link();
+    ok(env.run_in(&a, &["grant", "read-logs", "--for", "1h"]));
+    let list = |wt: &Path| ok(env.run_in(wt, &["grant"]));
+    assert!(
+        list(&a).contains("  read-logs      active until "),
+        "{}",
+        list(&a)
+    );
+    assert_eq!(
+        list(&b),
+        "grant levels (policy.grants)\n  auto-until-mr  inactive  Push feature branches until the MR\n  read-logs      inactive  Lire les journaux de recette\n"
+    );
+    // a revoke typed in B does not end the level of A
+    assert_eq!(
+        refused(env.run_in(&b, &["revoke", "read-logs"])),
+        "Error: grant read-logs is not active\n"
+    );
+    assert!(list(&a).contains("  read-logs      active until "));
+    assert!(!env.root().join(OLD_STATE).exists());
+    // `revoke` in A ends it there
+    ok(env.run_in(&a, &["revoke", "read-logs"]));
+    assert!(list(&a).contains("  read-logs      inactive"));
+}
+
+#[test]
+fn a_dot_git_that_leads_nowhere_refuses_grant_and_revoke_and_writes_nothing() {
+    let env = Env::new();
+    env.link();
+    let dot_git = env.root().canonicalize().unwrap().join(".git");
+    std::fs::remove_dir(&dot_git).unwrap();
+    std::fs::write(&dot_git, "").unwrap();
+    for cmd in ["grant", "revoke"] {
+        let args: &[&str] = if cmd == "grant" {
+            &["grant", "read-logs", "--for", "1h"]
+        } else {
+            &["revoke", "--all"]
+        };
+        assert_eq!(
+            refused(env.run(args)),
+            format!(
+                "Error: {cmd} refused: {} does not lead to a git directory, where this checkout keeps its grant levels; repair it (git worktree repair) and run the command again\n",
+                dot_git.display()
+            )
+        );
+    }
+    assert!(!env.root().join(OLD_STATE).exists());
+    assert!(!env.root().join(".git/armadai").exists());
+}
+
+#[test]
+fn an_old_state_file_is_announced_at_each_grant_and_never_touched() {
+    let env = Env::new();
+    env.link();
+    let old = env.root().join(OLD_STATE);
+    std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+    std::fs::write(&old, "version: 1\nactive: {}\n").unwrap();
+    let before = (
+        std::fs::read(&old).unwrap(),
+        std::fs::metadata(&old).unwrap().modified().unwrap(),
+    );
+    let new = env
+        .root()
+        .canonicalize()
+        .unwrap()
+        .join(".git/armadai/grants.yaml");
+    let note = format!(
+        "note: .armadai/state/grants.yaml is no longer read: grant levels are now kept per checkout in {}, and a level opened before this version is off; delete the old file to drop this note\n",
+        new.display()
+    );
+    // the list, a grant, and a second grant: the note every time, on stderr only
+    for args in [
+        &["grant"][..],
+        &["grant", "read-logs", "--for", "1h"],
+        &["grant", "read-logs", "--for", "1h"],
+    ] {
+        let (code, out, err) = env.run(args);
+        assert_eq!((code, err.as_str()), (Some(0), note.as_str()), "{args:?}");
+        assert!(!out.contains("note:"), "{out}");
+    }
+    // revoke does not repeat it
+    let (code, _, err) = env.run(&["revoke", "--all"]);
+    assert_eq!((code, err.as_str()), (Some(0), ""));
+    let after = (
+        std::fs::read(&old).unwrap(),
+        std::fs::metadata(&old).unwrap().modified().unwrap(),
+    );
+    assert_eq!(before, after);
+    // without the old file: no note
+    std::fs::remove_file(&old).unwrap();
+    assert_eq!(
+        ok(env.run(&["grant"])).lines().next(),
+        Some("grant levels (policy.grants)")
     );
 }

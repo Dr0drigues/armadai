@@ -159,7 +159,8 @@ pub enum Command {
             --until <step> (a delegation to the step ends the level; needs the delegation \
             markers of `link`), --for <duration>, --until-time <HH:MM> (local time, tomorrow \
             when it has passed), or `until:` in the level. The state is \
-            .armadai/state/grants.yaml. A grant never lifts a `deny` rule: a level whose rule is \
+            kept per checkout, in the git directory (<git dir>/armadai/grants.yaml): a level \
+            opened in one worktree is not open in another. A grant never lifts a `deny` rule: a level whose rule is \
             a deny rule of .claude/settings.json or settings.local.json is refused. Run it \
             yourself in a terminal: an agent is stopped from running it.",
         after_help = "Examples:\n  \

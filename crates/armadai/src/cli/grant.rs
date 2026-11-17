@@ -1,7 +1,7 @@
 //! `armadai grant` and `armadai revoke`: switch the permission levels of
-//! `policy.grants` on for a while, and off. The state is
-//! `.armadai/state/grants.yaml` (see `claude_adapter::grant_hook`, which reads it at
-//! every permission request).
+//! `policy.grants` on for a while, and off. The state is kept per checkout, in
+//! `<git dir>/armadai/grants.yaml` (`.armadai/state/grants.yaml` outside git; see
+//! `claude_adapter::grant_hook`, which reads it at every permission request).
 //!
 //! The pure parts (`plan_grant`, `render_list`, `plan_revoke`, the duration and time
 //! parsing) take the clock and what they read from the settings as arguments, so a test
@@ -413,6 +413,18 @@ fn checkout_state_path(root: &Path, command: &str) -> anyhow::Result<std::path::
     })
 }
 
+/// T10: the note for the state file of the versions before this one, which is no longer
+/// read. Only `exists` is asked of it: it is neither read nor touched.
+fn legacy_note(root: &Path, path: &Path) -> Option<String> {
+    let old = root.join(crate::claude_adapter::grant_hook::LEGACY_STATE_FILE);
+    (path != old && old.exists()).then(|| {
+        format!(
+            "note: .armadai/state/grants.yaml is no longer read: grant levels are now kept per checkout in {}, and a level opened before this version is off; delete the old file to drop this note",
+            path.display()
+        )
+    })
+}
+
 pub fn execute_grant(
     level: Option<String>,
     until: Option<String>,
@@ -421,6 +433,9 @@ pub fn execute_grant(
 ) -> anyhow::Result<()> {
     let (root, project) = open_project()?;
     let path = checkout_state_path(&root, "grant")?;
+    if let Some(note) = legacy_note(&root, &path) {
+        eprintln!("{note}");
+    }
     let mut state = load_state(&path)?;
     let now = chrono::Local::now();
     let Some(level) = level else {
