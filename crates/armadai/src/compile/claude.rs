@@ -561,9 +561,10 @@ fn claude_md(coordinator: &str, lead: &Agent, project: &Project) -> String {
 }
 
 /// T19: one `### Sessions` section, a paragraph per flow that declares a `session_link`
-/// (flows sorted by id); empty when none does. The sentence about recording the answer is
-/// there only with `sessions.journal`; the fallback on the journal always is (the commands
-/// exist without the key).
+/// (flows sorted by id); empty when none does. The clause about recording the answer is
+/// there only with `sessions.journal`; the sentence that keeps an unanswered decision with
+/// the user (the journal records it, never stands in for the user) always is, and the
+/// commands it names exist without the key.
 fn sessions_section(project: &Project) -> String {
     let mut out = String::new();
     for (fid, flow) in &project.flows {
@@ -577,7 +578,7 @@ fn sessions_section(project: &Project) -> String {
         }
         let (to, when) = (&link.to, one_line(&link.when));
         let record = if project.manifest.sessions.journal {
-            "; record its answer with `armadai journal add --lot <lot> --kind decision \"<one line>\"`"
+            "; its answer is recorded with `armadai journal add --lot <lot> --kind decision \"<one line>\"`"
         } else {
             ""
         };
@@ -1887,7 +1888,7 @@ mod tests {
             linked_team(b"schema_version: 1\ncoordinator: lead\nsessions:\n  journal: true\n");
         let block = &plan.blocks[0].1;
         let section = format!(
-            "\n### Sessions\n\n{PARA_EVO}; record its answer with `armadai journal add --lot <lot> --kind decision \"<one line>\"`{PARA_TAIL_A}"
+            "\n### Sessions\n\n{PARA_EVO}; its answer is recorded with `armadai journal add --lot <lot> --kind decision \"<one line>\"`{PARA_TAIL_A}"
         );
         assert!(
             block.ends_with(&format!("{T15}{section}{MARKING}\n")),
@@ -1901,6 +1902,11 @@ mod tests {
             linked_team(b"schema_version: 1\ncoordinator: lead\nsessions:\n  journal: true\n");
         let block = &plan.blocks[0].1;
         assert!(!block.contains("instead of asking the user"), "{block}");
+        assert!(!block.contains("record its answer"), "{block}");
+        assert!(
+            block.contains("with SendMessage; its answer is recorded with `armadai journal add --lot <lot> --kind decision \"<one line>\"`. If `chantier` is not listed"),
+            "{block}"
+        );
         assert!(!block.contains("Before a decision, read"), "{block}");
         // one in `### Journal`, one in `### Sessions`: dropping either sentence turns this red
         assert_eq!(block.matches("goes to the user").count(), 2, "{block}");
