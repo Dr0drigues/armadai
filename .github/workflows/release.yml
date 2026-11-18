@@ -8,9 +8,13 @@
 # - Windows x86_64 (MSVC)
 #
 # Creates a GitHub Release with all binaries attached. The four other targets are
-# required; the Intel build is optional (GitHub's Intel macOS runners are scarce and
-# the job can be cancelled with no runner): without its binary the release is still
-# published, and says so in its notes and in a run warning.
+# required; the Intel build is optional. It is cross-compiled on `macos-latest`, an
+# arm64 runner (the same label as the required aarch64 build), and may never get one
+# ("Due to capacity constraints, jobs targeting macOS arm64 runners may experience
+# longer queue times"): GitHub then drops the job after about 15 minutes (measured at
+# rc.14). The release is still published without it, and says so in its notes and
+# in a run warning. Do not cancel the run by hand: that makes `cancelled()` true and
+# no release is created (measured on run 44134204209).
 # Trigger: push a semver tag like v0.1.0
 #
 # Usage: rename `## Unreleased` in CHANGELOG.md to `## v0.1.0 (YYYY-MM-DD)` and
@@ -149,9 +153,9 @@ jobs:
         shell: bash
         run: |
           for f in armadai-linux-x86_64 armadai-linux-aarch64 armadai-macos-aarch64 armadai-windows-x86_64.exe; do
-            [ -f "artifacts/$f/$f" ] || { echo "::error::required binary $f is missing: no release"; exit 1; }
+            [ -s "artifacts/$f/$f" ] || { echo "::error::required binary $f is missing: no release"; exit 1; }
           done
-          if [ ! -f artifacts/armadai-macos-x86_64/armadai-macos-x86_64 ]; then
+          if [ ! -s artifacts/armadai-macos-x86_64/armadai-macos-x86_64 ]; then
             echo "::warning::the macOS Intel build is missing: this release has no armadai-macos-x86_64"
             printf '\n> No macOS Intel (x86_64) binary in this release: its build did not complete. Intel Macs: build from source.\n' >> RELEASE_NOTES.md
           fi
