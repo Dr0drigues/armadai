@@ -303,7 +303,13 @@ mod tests {
     #[test]
     fn a_release_without_the_platform_binary_says_so() {
         let other = format!("{}  armadai-linux-x86_64", binary_sha());
-        for (sums, missing) in [(Some(other.as_str()), true), (None, false)] {
+        let listed = format!("{}  armadai-macos-x86_64", binary_sha());
+        // The third case: the line is there, the download fails anyway (network).
+        for (sums, missing) in [
+            (Some(other.as_str()), true),
+            (None, false),
+            (Some(listed.as_str()), false),
+        ] {
             let dir = tempfile::tempdir().unwrap();
             let sums_body = match sums {
                 Some(s) => format!("printf '%s\\n' '{s}' > \"$out\""),
