@@ -64,6 +64,7 @@ ui:                          # optional, opt-in interface keys
 sessions:                    # optional, opt-in session keys
   journal: true              # compile the lot-journal instructions for the coordinator (default false)
   journal_dir: ../lot-journal # folder of the journal files (default: the .armadai/state/ of the main checkout, or of this checkout without one)
+herdr: true                  # optional: Herdr.app integration, or { sessions: [{ name: chantier, kind: claude }] } (default off)
 ```
 
 With `pack:`, the project is built on a pack by reference: its files are the pack's, plus yours at
@@ -110,6 +111,13 @@ elsewhere are not moved when the key is set.
 it. An agent (or template) may also declare `journal: read` or `journal: write` (`write` includes
 reading) in its frontmatter; that key compiles the agent's own instructions even without
 `sessions.journal`.
+
+`herdr` (optional) is `true`, `false`, or an object with `sessions`, a list of `{ name, kind }`; absent or `false`, nothing
+changes anywhere (`herdr: true` equals an object without sessions). `name` is 1 to 32 of `a-z 0-9 - _` (`invalid-herdr-session-name`),
+unique and not the id of the coordinator (`duplicate-herdr-session`); `kind` is `claude`, `codex` or `opencode`
+(`unknown-herdr-kind`). Any other value, and any other key under `herdr` or under a session, is `invalid-yaml`, naming the key.
+With `herdr` on, a flow's `session_link.to` that is not a Herdr address (a name as above, or `t` then digits) is a
+warning, `herdr-session-link-address`.
 
 `ui` holds opt-in interface keys: absent or `false`, `link` writes nothing for them. `ui.status_line`
 (a boolean; any other value, and any other key under `ui`, is `invalid-yaml`) asks `link --target claude`
@@ -569,6 +577,10 @@ warning on stderr.
 | `unreachable-step` | warning | A step cannot be reached from any entry step (every link and `on_failure` counts here) | Link it, or remove it |
 | `invalid-session-link` | error | A flow's `session_link.to` is empty, has a line break (`\n` or `\r`), a backtick or a blank at either end, or its `when` is empty or blank | Name the session as you start it (`claude --name <name>`), and say when to write to it |
 | `invalid-journal-dir` | error | `sessions.journal_dir` is empty, has a line break (`\n` or `\r`) or a blank at either end | Give a path relative to the folder that holds `.armadai`, such as `../lot-journal` |
+| `invalid-herdr-session-name` | error | A `herdr.sessions[].name` is not 1 to 32 of `a-z 0-9 - _` | Herdr names a terminal with `hc run --name`, which accepts only these characters |
+| `duplicate-herdr-session` | error | A `herdr.sessions[].name` is declared twice, or is the id of the coordinator | Give each session a name of its own |
+| `unknown-herdr-kind` | error | A `herdr.sessions[].kind` is not `claude`, `codex` or `opencode` | `kind` is the program Herdr starts, from a closed list |
+| `herdr-session-link-address` | warning | `herdr` is on and a flow's `session_link.to` is not a name of 1 to 32 `a-z 0-9 - _` (or `t` then digits) | Declare the session under `herdr.sessions`, or start it with `hc run --name` |
 | `empty-command` | error | An automation's `run` is empty | Give the command to run |
 | `unknown-template` | error | An agent's `from` names no template of `templates/` | Use an existing template id (the hint suggests a close one) |
 | `missing-template-var` | error | The template uses `{{x}}` and the instance's `vars` does not set `x` | Add `x` to `vars` |

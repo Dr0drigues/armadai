@@ -117,6 +117,79 @@ pub struct Manifest {
     pub ui: Ui,
     #[serde(default, skip_serializing_if = "Sessions::is_default")]
     pub sessions: Sessions,
+    /// Herdr.app integration: `true`, or an object declaring the sessions of the team.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub herdr: Option<Herdr>,
+}
+
+/// The `herdr` setting: a boolean, or an object. `Deserialize` is written by hand so that an
+/// unknown key keeps being named (a derived `untagged` would say "did not match any variant").
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum Herdr {
+    Flag(bool),
+    Config(HerdrConfig),
+}
+
+impl<'de> Deserialize<'de> for Herdr {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = Herdr;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a boolean or a map with `sessions`")
+            }
+            fn visit_bool<E: serde::de::Error>(self, b: bool) -> Result<Herdr, E> {
+                Ok(Herdr::Flag(b))
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, m: A) -> Result<Herdr, A::Error> {
+                HerdrConfig::deserialize(serde::de::value::MapAccessDeserializer::new(m))
+                    .map(Herdr::Config)
+            }
+        }
+        d.deserialize_any(V)
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HerdrConfig {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sessions: Vec<HerdrSession>,
+}
+
+/// A session Herdr opens next to the coordinator; `name` is 1 to 32 of `a-z 0-9 - _`, `kind`
+/// one of [`HERDR_KINDS`] (both checked by `validate`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HerdrSession {
+    pub name: String,
+    pub kind: String,
+}
+
+/// The programs Herdr may start for a session.
+pub const HERDR_KINDS: [&str; 3] = ["claude", "codex", "opencode"];
+
+/// A Herdr terminal name: 1 to 32 bytes of `a-z 0-9 - _`.
+pub fn is_herdr_name(s: &str) -> bool {
+    (1..=32).contains(&s.len())
+        && s.bytes()
+            .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_'))
+}
+
+impl Manifest {
+    /// `herdr: true` or an object: on. Absent or `false`: off.
+    pub fn herdr_enabled(&self) -> bool {
+        !matches!(self.herdr, None | Some(Herdr::Flag(false)))
+    }
+
+    /// The declared sessions; empty for `herdr: true`.
+    pub fn herdr_sessions(&self) -> &[HerdrSession] {
+        match &self.herdr {
+            Some(Herdr::Config(c)) => &c.sessions,
+            _ => &[],
+        }
+    }
 }
 
 /// Opt-in keys about the sessions of a team: absent or `false`, `link` writes nothing for them.

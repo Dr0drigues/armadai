@@ -35,6 +35,46 @@
       },
       "type": "object"
     },
+    "Herdr": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "$ref": "#/$defs/HerdrConfig"
+        }
+      ],
+      "description": "The `herdr` setting: a boolean, or an object. `Deserialize` is written by hand so that an\nunknown key keeps being named (a derived `untagged` would say \"did not match any variant\")."
+    },
+    "HerdrConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "sessions": {
+          "items": {
+            "$ref": "#/$defs/HerdrSession"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "HerdrSession": {
+      "additionalProperties": false,
+      "description": "A session Herdr opens next to the coordinator; `name` is 1 to 32 of `a-z 0-9 - _`, `kind`\none of [`HERDR_KINDS`] (both checked by `validate`).",
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "kind"
+      ],
+      "type": "object"
+    },
     "PackRef": {
       "additionalProperties": false,
       "description": "A pack this project is built on (reference mode): its files come from the cache,\nthe project's own files overlay them.",
@@ -140,6 +180,17 @@
         "string",
         "null"
       ]
+    },
+    "herdr": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Herdr"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Herdr.app integration: `true`, or an object declaring the sessions of the team."
     },
     "name": {
       "type": [
