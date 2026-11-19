@@ -180,7 +180,7 @@ fn herdr_session_link_address_warns() {
     for ok in ["chantier", "t12"] {
         assert!(link_warnings("herdr: true\n", ok).is_empty(), "{ok}");
     }
-    // `t` alone is a valid name (a-z), so no warning; the `tN` form only adds nothing new
+    // `t` and `t12` are plain names: no separate `tN` rule
     assert!(link_warnings("herdr: true\n", "t").is_empty());
     assert_eq!(link_warnings("herdr: true\n", "T12").len(), 1);
     assert!(link_warnings("", "Chantier Un").is_empty());

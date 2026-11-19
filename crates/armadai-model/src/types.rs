@@ -170,7 +170,8 @@ pub struct HerdrSession {
 /// The programs Herdr may start for a session.
 pub const HERDR_KINDS: [&str; 3] = ["claude", "codex", "opencode"];
 
-/// A Herdr terminal name: 1 to 32 bytes of `a-z 0-9 - _`.
+/// A Herdr terminal name (`hc run --name`): 1 to 32 bytes of `a-z 0-9 - _`.
+/// A `tN` address is such a name, so this is also the Herdr address rule.
 pub fn is_herdr_name(s: &str) -> bool {
     (1..=32).contains(&s.len())
         && s.bytes()

@@ -1138,7 +1138,7 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
                     Some("name the session as you start it: claude --name <name>".into()),
                 );
             }
-            if project.manifest.herdr_enabled() && !is_herdr_address(&l.to) {
+            if project.manifest.herdr_enabled() && !is_herdr_name(&l.to) {
                 o.emit(
                     at,
                     Severity::Warning,
@@ -1556,11 +1556,4 @@ fn nth_key_after<'a>(t: &'a str, block: &str, key: &str, n: usize) -> Option<(&'
         at = key_start(t, at, key)? + key.len();
     }
     Some((t, key_start(t, at, key)?))
-}
-
-/// A Herdr terminal name, or a terminal id: `t` then digits.
-fn is_herdr_address(s: &str) -> bool {
-    is_herdr_name(s)
-        || s.strip_prefix('t')
-            .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
 }
