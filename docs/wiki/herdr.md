@@ -44,7 +44,8 @@ this order:
 
 The binaries are taken from `PATH` alone: put `~/.local/bin` there. Each call is made without a shell, one argument
 each. A failed call stops the command with `<call> failed: <reason>` (the error of the tool, else the first line of
-its stderr, else `exit status <n>`, `killed by signal <n>`; `unexpected output` when a call succeeds without the id expected; the system error when the binary cannot be launched), exit code 1.
+its stderr, else `exit status <n>`, `killed by signal <n>`; `unexpected output` when a call succeeds without the JSON or id expected; the system error when the binary cannot be launched), exit code 1. The calls already made are not undone: after a failed
+`open-team`, close the space, tabs and sessions it opened in the app.
 
 - **`armadai herdr watch`** opens `armadai flow status --watch` in a new pane below the active pane, and prints
   `opened flow status --watch in a new Herdr pane`.
@@ -65,7 +66,7 @@ carry them.
 
 ## Limits and not measured
 
-- The label is set and nothing here displays it.
+- The label is set and ArmadAI does not display it.
 - No TTL: the label stays until the terminal ends, so a finished flow can still show its last step (no cleanup in this version).
 - `hc send` goes through the Bash tool of the model, so it can trigger a permission prompt.
 - A session started by hand has no name: `hc send` reaches only named sessions.
@@ -74,4 +75,4 @@ carry them.
 - The terminal UI of Herdr is not supported.
 - Not measured, left to the real trial: whether a shipped layout of the app shows an arbitrary label; that a `PreToolUse` hook of a real `claude` session sees `HC_TERMINAL_ID`
   and has `hc` in its `PATH`; the rendering of the animated `flow status` pane; whether sessions started with
-  `--no-parent` survive closing the parent pane; `hc send --wait` between two real sessions.
+  `--no-parent` survive closing the parent pane; `hc send --wait` between two real sessions; whether `hc send` asks for permission.
