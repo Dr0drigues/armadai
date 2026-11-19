@@ -294,7 +294,38 @@ fn record(raw: &str) -> anyhow::Result<()> {
         .append(true)
         .open(&path)?
         .write_all(line.as_bytes())?;
+    label_terminal(&root, &event);
     Ok(())
+}
+
+/// Under `herdr` and `HC_TERMINAL_ID`, a marked delegation labels the terminal with its flow
+/// and step. The marker is text an agent wrote: both ids must exist in the project before
+/// they reach `hc`. Cheapest check first; every failure is silent and nothing propagates.
+fn label_terminal(root: &Path, event: &FlowEvent) {
+    let (EventKind::Mark, Some(flow), Some(step)) = (&event.event, &event.flow, &event.step) else {
+        return;
+    };
+    let Some(terminal) = crate::herdr::terminal_id() else {
+        return;
+    };
+    // the project as the gate loads it
+    let Ok(view) = crate::pack::effective::open(root, crate::pack::effective::Vars::Literal) else {
+        return;
+    };
+    let Ok((project, _)) = view.load_checked() else {
+        return;
+    };
+    if !project.manifest.herdr_enabled()
+        || !project
+            .flows
+            .get(flow)
+            .is_some_and(|f| f.steps.contains_key(step))
+    {
+        return;
+    }
+    if let Some(hc) = crate::herdr::find_bin(crate::herdr::HC) {
+        crate::herdr::label_step(&hc, &terminal, flow, step);
+    }
 }
 
 #[cfg(test)]

@@ -4,6 +4,7 @@ mod cli;
 mod compile;
 mod file_lock;
 mod flow_status;
+mod herdr;
 mod journal;
 mod linker;
 mod migrate;
