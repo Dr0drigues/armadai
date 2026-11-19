@@ -12,11 +12,6 @@ use crate::herdr::{HC, HERDR_APP, find_bin, terminal_id};
 #[derive(Subcommand)]
 pub enum HerdrCommand {
     /// Open armadai flow status --watch in a new pane below
-    #[command(
-        long_about = "Split the pane you are in and run `armadai flow status --watch` in it. \
-            Run it in a terminal of Herdr.app, in a project that sets `herdr` in \
-            .armadai/project.yaml. It writes nothing."
-    )]
     Watch,
     /// Open a space with the coordinator, flow status and the sessions declared under herdr
     OpenTeam,
@@ -91,10 +86,19 @@ fn reason(out: &std::process::Output) -> String {
                 .find(|l| !l.is_empty())
                 .map(str::to_string)
         })
-        .unwrap_or_else(|| match out.status.code() {
-            Some(c) => format!("exit status {c}"),
-            None => "killed by a signal".to_string(),
-        })
+        .unwrap_or_else(|| exit_reason(out.status))
+}
+
+/// `exit status {code}`, else `killed by signal {n}`, else `exit status unknown` (plan 3.3).
+fn exit_reason(status: std::process::ExitStatus) -> String {
+    if let Some(c) = status.code() {
+        return format!("exit status {c}");
+    }
+    #[cfg(unix)]
+    if let Some(n) = std::os::unix::process::ExitStatusExt::signal(&status) {
+        return format!("killed by signal {n}");
+    }
+    "exit status unknown".to_string()
 }
 
 /// Run one call and return its stdout; a failure becomes `{what} failed: {reason}`.

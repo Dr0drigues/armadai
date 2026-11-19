@@ -199,6 +199,16 @@ fn watch_reports_a_failed_call() {
         stderr(&out),
         format!("Error: herdr-app do pane.split failed: {msg}\n")
     );
+    // (c) killed by a signal, nothing written
+    let e = Env::new(ON);
+    e.fake("herdr-app", "kill -9 $$");
+    e.fake("hc", "");
+    let out = e.watch();
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        stderr(&out),
+        "Error: herdr-app do pane.split failed: killed by signal 9\n"
+    );
 }
 
 #[test]
@@ -215,6 +225,16 @@ fn herdr_help_lists_both_commands() {
     ] {
         assert!(text.lines().any(|l| l == line), "{text}");
     }
+    let w = Command::cargo_bin("armadai")
+        .unwrap()
+        .args(["herdr", "watch", "--help"])
+        .output()
+        .unwrap();
+    let w = String::from_utf8_lossy(&w.stdout);
+    assert!(
+        w.starts_with("Open armadai flow status --watch in a new pane below\n\nUsage:"),
+        "{w}"
+    );
     assert!(
         text.starts_with("Open ArmadAI panes in Herdr.app (run it in a terminal of the app)\n"),
         "{text}"
