@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 use armadai_model::{
-    Agent, AgentFront, Cap, Command, Delegation, Flow, JournalAccess, NativeValue, Project, Tier,
-    agent_skills,
+    Agent, AgentFront, Cap, Command, Delegation, Flow, JournalAccess, NativeValue, Project,
+    SessionLink, Tier, agent_skills,
 };
 use serde_json::{Map, Value};
 
@@ -245,12 +245,12 @@ impl Compiler for ClaudeCompiler {
                     );
                 }
                 for (fid, flow) in &project.flows {
-                    if flow.session_link.is_some() {
+                    if let Some(link) = &flow.session_link {
                         plan.report.push(
                             T,
                             format!("flow {fid} session link"),
                             Status::Approximated,
-                            Some(if project.manifest.herdr_enabled() {
+                            Some(if herdr_link(project, link) {
                                 "instructions in CLAUDE.md: hc send in a Herdr terminal, else SendMessage; Claude Code decides whether to send"
                             } else {
                                 "instructions in CLAUDE.md; Claude Code decides whether to send"
@@ -573,6 +573,13 @@ fn claude_md(coordinator: &str, lead: &Agent, project: &Project) -> String {
     out
 }
 
+/// Whether this flow's session link is written as `hc send`: `herdr` is on and `to` is a Herdr
+/// address. `to` ends up in a command Claude runs, so anything else keeps the `SendMessage`
+/// paragraph. The one decision, read by the paragraph and by the report line, flow by flow.
+fn herdr_link(project: &Project, link: &SessionLink) -> bool {
+    project.manifest.herdr_enabled() && armadai_model::is_herdr_name(&link.to)
+}
+
 /// T19: one `### Sessions` section, a paragraph per flow that declares a `session_link`
 /// (flows sorted by id); empty when none does. The clause about recording the answer is
 /// there only with `sessions.journal`; the sentence that keeps an unanswered decision with
@@ -595,7 +602,7 @@ fn sessions_section(project: &Project) -> String {
         } else {
             ""
         };
-        if project.manifest.herdr_enabled() {
+        if herdr_link(project, link) {
             // `hc send` in a Herdr terminal (HC_TERMINAL_ID), SendMessage otherwise; the
             // answer is recorded in a sentence of its own, valid for both channels.
             let record = if project.manifest.sessions.journal {

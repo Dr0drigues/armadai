@@ -275,6 +275,74 @@ mod tests {
         );
     }
 
+    const PWN: &str = "x; touch $HOME/pwned";
+
+    /// Three flows under `herdr: true`: a Herdr address, a name with a space and a shell
+    /// injection. Only the first gets `hc send`; the others are the paragraph they get without
+    /// `herdr`, and the report says what was written.
+    #[test]
+    fn herdr_non_address_keeps_send_message() {
+        let write = |dir: &Path, herdr: bool| {
+            let root = dir.join("project");
+            for (id, to) in [("a", "chantier"), ("b", "Chantier Un"), ("c", PWN)] {
+                std::fs::write(
+                    root.join(format!(".armadai/flows/{id}.yaml")),
+                    format!(
+                        "steps:\n  build: {{ agent: dev }}\n  plan: {{ agent: lead }}\nlinks:\n  - {{ from: plan, to: build }}\nsession_link:\n  to: \"{to}\"\n  when: \"a question {id}\"\n"
+                    ),
+                )
+                .unwrap();
+            }
+            std::fs::write(
+                root.join(".armadai/project.yaml"),
+                format!(
+                    "schema_version: 1\ncoordinator: lead\n{}",
+                    if herdr { "herdr: true\n" } else { "" }
+                ),
+            )
+            .unwrap();
+        };
+        let paragraphs = |dir: &Path| -> Vec<String> {
+            link_all(dir, None, None);
+            let md = std::fs::read_to_string(dir.join("project/CLAUDE.md")).unwrap();
+            md.lines()
+                .filter(|l| l.starts_with("Flow `"))
+                .map(String::from)
+                .collect()
+        };
+        let plain = project();
+        write(plain.path(), false);
+        let without = paragraphs(plain.path());
+        let dir = project();
+        write(dir.path(), true);
+        let out = link_all(dir.path(), None, None);
+        let with = paragraphs(dir.path());
+        assert_eq!((with.len(), without.len()), (3, 3));
+        assert!(with[0].contains("`hc send --wait --timeout 120 chantier"));
+        assert_eq!(with[1], without[1]);
+        assert_eq!(with[2], without[2]);
+        let md = std::fs::read_to_string(dir.path().join("project/CLAUDE.md")).unwrap();
+        let hc: Vec<&str> = md.lines().filter(|l| l.contains("hc send")).collect();
+        assert_eq!(hc, [with[0].as_str()]);
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let got: Vec<&str> = stdout
+            .lines()
+            .filter(|l| l.starts_with("claude: flow ") && l.contains("session link"))
+            .collect();
+        let plain_reason = "instructions in CLAUDE.md; Claude Code decides whether to send";
+        assert_eq!(
+            got,
+            [
+                "claude: flow a session link: approximated (instructions in CLAUDE.md: hc send in a Herdr terminal, else SendMessage; Claude Code decides whether to send)".to_string(),
+                format!("claude: flow b session link: approximated ({plain_reason})"),
+                format!("claude: flow c session link: approximated ({plain_reason})"),
+            ],
+            "{stdout}"
+        );
+        let rendered = format!("=== CLAUDE.md ===\n{md}");
+        check_golden("claude-herdr-non-address", &rendered);
+    }
+
     /// `herdr` adds nothing to `settings.json` nor to the link manifest.
     #[test]
     fn herdr_changes_nothing_in_settings_json_and_manifest() {
