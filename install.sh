@@ -85,12 +85,22 @@ main() {
 
     echo "Downloading..."
     local sums_url="https://github.com/${REPO}/releases/download/${version}/SHA256SUMS"
+    local got=1
     if command -v curl &>/dev/null; then
-        curl -q -fsSL --proto =https --proto-redir =https -o "${tmp_dir}/${artifact_name}" "$download_url"
+        curl -q -fsSL --proto =https --proto-redir =https -o "${tmp_dir}/${artifact_name}" "$download_url" && got=0
         curl -q -fsSL --proto =https --proto-redir =https -o "${tmp_dir}/SHA256SUMS" "$sums_url" || true
     else
-        wget -qO "${tmp_dir}/${artifact_name}" "$download_url"
+        wget -qO "${tmp_dir}/${artifact_name}" "$download_url" && got=0
         wget -qO "${tmp_dir}/SHA256SUMS" "$sums_url" || true
+    fi
+    if [ "$got" -ne 0 ]; then
+        # Checksums readable but no line for this platform: the release has no such binary.
+        if [ -s "${tmp_dir}/SHA256SUMS" ] && ! grep -q "${artifact_name}\$" "${tmp_dir}/SHA256SUMS"; then
+            echo "Error: ${version} has no binary for ${platform}: build from source (cargo install --git https://github.com/${REPO} armadai) or install another version with VERSION=vX.Y.Z." >&2
+        else
+            echo "Error: could not download ${download_url}; check your network connection." >&2
+        fi
+        exit 1
     fi
 
     # Verify: a release without SHA256SUMS, or without a line for this platform, is refused.

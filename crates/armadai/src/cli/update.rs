@@ -97,14 +97,32 @@ fn download_release(
     let base = format!("https://github.com/{repo}/releases/download/v{version}");
     let artifact = format!("armadai-{platform}");
     let tmp_path = dir.join(".armadai-update-tmp");
-    download_to(curl, &format!("{base}/{artifact}"), &tmp_path).map_err(|e| {
-        anyhow::anyhow!("{e}\nCheck your network connection or try: VERSION=v{version} install.sh")
-    })?;
+    if let Err(e) = download_to(curl, &format!("{base}/{artifact}"), &tmp_path) {
+        // A release whose SHA256SUMS is readable but names no such binary does not
+        // publish one for this platform (e.g. macOS Intel): that is not a network error.
+        if let Some(sums) = fetch_sums(curl, &format!("{base}/SHA256SUMS"))
+            && !sums.lines().any(|l| l.ends_with(&artifact))
+        {
+            anyhow::bail!(
+                "v{version} has no binary for {platform}: build from source (cargo install --git https://github.com/{repo} armadai) or stay on v{}",
+                env!("CARGO_PKG_VERSION")
+            );
+        }
+        anyhow::bail!("{e}\nCheck your network connection or try: VERSION=v{version} install.sh");
+    }
     if let Err(e) = verify_checksum(curl, &format!("{base}/SHA256SUMS"), &artifact, &tmp_path) {
         let _ = std::fs::remove_file(&tmp_path);
         anyhow::bail!("v{version} not installed: {e}");
     }
     Ok(tmp_path)
+}
+
+/// The release's `SHA256SUMS` text, or `None` when it cannot be fetched.
+fn fetch_sums(curl: &str, sums_url: &str) -> Option<String> {
+    let dir = tempfile::tempdir().ok()?;
+    let path = dir.path().join("SHA256SUMS");
+    download_to(curl, sums_url, &path).ok()?;
+    std::fs::read_to_string(&path).ok()
 }
 
 /// Checks `file` against the `artifact` line of the `SHA256SUMS` at `sums_url`
@@ -275,6 +293,45 @@ mod tests {
                 !dir.path().join(".armadai-update-tmp").exists(),
                 "{expected}: the unverified binary was kept"
             );
+        }
+    }
+
+    /// A release with checksums but no binary for the platform says so, instead of
+    /// blaming the network; a failing download with no readable checksums stays a
+    /// network error.
+    #[cfg(unix)]
+    #[test]
+    fn a_release_without_the_platform_binary_says_so() {
+        let other = format!("{}  armadai-linux-x86_64", binary_sha());
+        let listed = format!("{}  armadai-macos-x86_64", binary_sha());
+        // The third case: the line is there, the download fails anyway (network).
+        for (sums, missing) in [
+            (Some(other.as_str()), true),
+            (None, false),
+            (Some(listed.as_str()), false),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let sums_body = match sums {
+                Some(s) => format!("printf '%s\\n' '{s}' > \"$out\""),
+                None => "exit 22".to_string(),
+            };
+            let curl = crate::starters_registry::archive_tests::fake_curl(
+                dir.path(),
+                &format!("case \"$1\" in *SHA256SUMS) {sums_body} ;; *) exit 22 ;; esac"),
+            );
+            let err = crate::starters_registry::archive_tests::retry_busy(|| {
+                super::download_release(&curl, super::REPO, "9.9.9", "macos-x86_64", dir.path())
+            })
+            .unwrap_err()
+            .to_string();
+            if missing {
+                assert!(
+                    err.starts_with("v9.9.9 has no binary for macos-x86_64: build from source"),
+                    "{err}"
+                );
+            } else {
+                assert!(err.contains("Check your network connection"), "{err}");
+            }
         }
     }
 }
