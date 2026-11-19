@@ -17,7 +17,11 @@ impl Env {
         let e = Env {
             home: tempfile::tempdir().unwrap(),
             bins: tempfile::tempdir().unwrap(),
-            proj: tempfile::tempdir().unwrap(),
+            // a space in the root: a shell would split it
+            proj: tempfile::Builder::new()
+                .prefix("my proj")
+                .tempdir()
+                .unwrap(),
         };
         std::fs::create_dir_all(e.proj.path().join(".armadai")).unwrap();
         std::fs::write(e.proj.path().join(".armadai/project.yaml"), project_yaml).unwrap();
@@ -466,9 +470,15 @@ fn open_team_names_each_session_once() {
 fn open_team_uses_no_shell() {
     let e = Env::team(&TEAM.replace("name: demo", "name: my team"));
     assert!(e.open_team().status.success());
+    let root = e.root();
     for c in e.calls() {
-        for a in &c[1..] {
+        for (i, a) in c.iter().enumerate().skip(1) {
             assert!(a != "sh" && a != "-c", "{c:?}");
+            if c[i - 1] == "--cwd" {
+                // the root, with its space, in one argument
+                assert_eq!(a, &root);
+                continue;
+            }
             // a space only inside a JSON value
             assert!(
                 !a.contains(' ') || a.starts_with('{') || a.starts_with('['),
