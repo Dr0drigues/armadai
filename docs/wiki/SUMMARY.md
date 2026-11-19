@@ -10,6 +10,7 @@
 - [Starter packs](starter-packs.md)
 - [Policy gate](policy-gate.md)
 - [Flow status](flow-status.md)
+- [Herdr.app](herdr.md)
 
 # Legacy (migrate)
 
