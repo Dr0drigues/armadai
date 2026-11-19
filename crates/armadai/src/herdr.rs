@@ -7,8 +7,6 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 pub(crate) const HC: &str = "hc";
-// Used by `herdr watch` (T4).
-#[allow(dead_code)]
 pub(crate) const HERDR_APP: &str = "herdr-app";
 
 /// `HC_TERMINAL_ID`, when set and not empty: we run in a Herdr.app terminal.

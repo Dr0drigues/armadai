@@ -2,6 +2,7 @@ mod config;
 pub(crate) mod flow;
 mod grant;
 mod graph;
+mod herdr;
 pub mod init;
 mod inspect;
 mod journal;
@@ -106,6 +107,11 @@ pub enum Command {
     Journal {
         #[command(subcommand)]
         what: journal::JournalCommand,
+    },
+    /// Open ArmadAI panes in Herdr.app (run it in a terminal of the app)
+    Herdr {
+        #[command(subcommand)]
+        what: herdr::HerdrCommand,
     },
     /// Draw a flow, every flow, or the team (Mermaid, Markdown, DOT, JSON or ASCII)
     #[command(
@@ -552,6 +558,7 @@ pub fn handle(cli: Cli) -> anyhow::Result<()> {
         } => graph::execute(flow, format, view, open),
         Command::Flow { what } => flow::execute(what),
         Command::Journal { what } => journal::execute(what),
+        Command::Herdr { what } => herdr::execute(what),
         Command::Grant {
             level,
             until,
