@@ -90,6 +90,7 @@ checkout; link writes through it`. `link` refuses a `.claude` leading out with o
 | `policy.grants` | per rule of each level, a `PermissionRequest` hook (matcher `Bash`, `if` the rule) running `armadai __claude-grant <level>`, and three `deny` rules owned by link, `Bash(armadai grant *)`, `Edit(/.armadai/state/grants.yaml)` and `Edit(//**/armadai/grants.yaml)`. Reports `policy grants: compiled (PermissionRequest hooks (armadai __claude-grant), one per rule; inactive until armadai grant)` and `grant state guard: compiled (deny rules Bash(armadai grant *), Edit(/.armadai/state/grants.yaml) and Edit(//**/armadai/grants.yaml) in .claude/settings.json)`; other targets `not-compiled (Claude Code only)`. See [Permission levels](#permission-levels-grant) |
 | `sessions.journal: true`, `journal:` of an agent | the lot-journal instructions, see [below](#the-lot-journal-and-the-session-link); reports `journal` and `agent <id> journal`; other targets `not-compiled (Claude Code only)` |
 | `session_link` of a flow | a `### Sessions` section in the root `CLAUDE.md` block; report `flow <id> session link: approximated`; other targets `not-compiled (Claude Code only)` |
+| `herdr` | with `herdr` on, a `session_link` whose `to` is a Herdr address gets an `hc send` instruction in its `### Sessions` paragraph; `link` never calls `hc`. See [Herdr.app](herdr.md) |
 | `native.claude` of project.yaml | top-level keys of `settings.json` |
 | `ui.status_line: true` | the `statusLine` of `.claude/settings.json`, running `armadai __claude-statusline` (chained after the `statusLine` of your user settings, when there is one; a `statusLine` already in the project settings is kept and reported `not-compiled`) |
 | `ui.subagent_status_line: true` | the plugin `armadai-ui` in `.armadai/plugins/armadai-ui/` (`.claude-plugin/marketplace.json`, `.claude-plugin/plugin.json`, and a `settings.json` whose `subagentStatusLine` runs `armadai __claude-subagent-statusline`), and two entries in `.claude/settings.json`: `extraKnownMarketplaces.armadai-ui` (a `directory` source, `./.armadai/plugins/armadai-ui`) and `enabledPlugins.armadai-ui@armadai-ui: true`. Claude Code loads the plugin once you trust the folder. The plugin is versioned with the project. If you already set one of those two entries to another value, `link` writes no plugin and reports `ui.subagent_status_line` as `not-compiled`, naming the key. `native.claude` may not hold `enabledPlugins` or `extraKnownMarketplaces` with this key (error). Claude Code keeps one `armadai-ui` marketplace per user (`known_marketplaces.json`, under `$CLAUDE_CODE_PLUGIN_CACHE_DIR`, else `$CLAUDE_CONFIG_DIR/plugins`, else `~/.claude/plugins`): when that entry leads somewhere other than this project's plugin (a folder that is gone, another folder, or a `github` source), `link` adds a `ui marketplace` line, `approximated`, with the command that fixes it (`claude plugin marketplace remove armadai-ui`). `link` only reads that file; one that is absent, unreadable or of another shape gives no line. The other targets report `not-compiled (Claude Code only)` |
@@ -126,6 +127,8 @@ writes (Claude Code only, the other targets report `not-compiled (Claude Code on
   always there, since they exist without the key. `session_link.to` is any one-line name with no blank at either end and no
   backtick; `when` is not blank (`invalid-session-link`). Report `flow <id> session link: approximated (instructions in CLAUDE.md;
   Claude Code decides whether to send)`; without a coordinator it is `not-compiled (no coordinator: no CLAUDE.md to render the flow into)`.
+
+With `herdr` on (see [Herdr.app](herdr.md)), the paragraph of a flow whose `to` is a Herdr address tells the model to use `hc send --wait` in a Herdr terminal (`HC_TERMINAL_ID` set) and `SendMessage` otherwise, and its report line becomes `approximated (instructions in CLAUDE.md: hc send in a Herdr terminal, else SendMessage; Claude Code decides whether to send)`; any other `to` keeps the paragraph above.
 
 The session link is **guidance, nothing else**. `link` writes no setting (no `crossSessionInbound`), no permission
 rule for `SendMessage` or `ListAgents`, and no hook; the delegation gate does not judge `SendMessage` either
@@ -472,5 +475,6 @@ version before upgrading.
 ## See Also
 
 - [Project format](project-format.md) — the files `link` reads
+- [Herdr.app](herdr.md) — the opt-in Herdr integration
 - [Policy gate](policy-gate.md) — enforcing the declared topology in Claude Code
 - [Getting Started](getting-started.md) — installation and first steps

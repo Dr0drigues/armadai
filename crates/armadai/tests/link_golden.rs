@@ -247,6 +247,217 @@ mod tests {
         }
     }
 
+    /// `herdr: true` with a `session_link`: the `hc send` instruction of `CLAUDE.md` and the
+    /// report line are fixed by the golden.
+    #[test]
+    fn the_herdr_session_link_matches_its_golden() {
+        ui_golden_with(
+            "herdr: true\n",
+            None,
+            SESSION_LINK,
+            "claude-herdr-session-link",
+            &[
+                "hc send --wait --timeout 120 chantier",
+                "never use `--force`",
+            ],
+        );
+    }
+
+    /// The same with `sessions.journal: true`: the sentence that records the answer.
+    #[test]
+    fn the_herdr_session_link_with_journal_matches_its_golden() {
+        ui_golden_with(
+            "herdr: true\nsessions:\n  journal: true\n",
+            None,
+            SESSION_LINK,
+            "claude-herdr-journal-session-link",
+            &["### Journal", "Its answer is recorded with"],
+        );
+    }
+
+    const PWN: &str = "x; touch $HOME/pwned";
+
+    /// Four flows under `herdr: true`: a Herdr address, a name with a space, a shell
+    /// injection and an option-like `--force`. Only the first gets `hc send`; the others are the paragraph they get without
+    /// `herdr`, and the report says what was written.
+    #[test]
+    fn herdr_non_address_keeps_send_message() {
+        let write = |dir: &Path, herdr: bool| {
+            let root = dir.join("project");
+            for (id, to) in [
+                ("a", "chantier"),
+                ("b", "Chantier Un"),
+                ("c", PWN),
+                ("d", "--force"),
+            ] {
+                std::fs::write(
+                    root.join(format!(".armadai/flows/{id}.yaml")),
+                    format!(
+                        "steps:\n  build: {{ agent: dev }}\n  plan: {{ agent: lead }}\nlinks:\n  - {{ from: plan, to: build }}\nsession_link:\n  to: \"{to}\"\n  when: \"a question {id}\"\n"
+                    ),
+                )
+                .unwrap();
+            }
+            std::fs::write(
+                root.join(".armadai/project.yaml"),
+                format!(
+                    "schema_version: 1\ncoordinator: lead\n{}",
+                    if herdr { "herdr: true\n" } else { "" }
+                ),
+            )
+            .unwrap();
+        };
+        let paragraphs = |dir: &Path| -> Vec<String> {
+            link_all(dir, None, None);
+            let md = std::fs::read_to_string(dir.join("project/CLAUDE.md")).unwrap();
+            md.lines()
+                .filter(|l| l.starts_with("Flow `"))
+                .map(String::from)
+                .collect()
+        };
+        let plain = project();
+        write(plain.path(), false);
+        let without = paragraphs(plain.path());
+        let dir = project();
+        write(dir.path(), true);
+        let out = link_all(dir.path(), None, None);
+        let with = paragraphs(dir.path());
+        assert_eq!((with.len(), without.len()), (4, 4));
+        assert!(with[0].contains("`hc send --wait --timeout 120 chantier"));
+        assert_eq!(with[1], without[1]);
+        assert_eq!(with[2], without[2]);
+        assert_eq!(with[3], without[3]);
+        let md = std::fs::read_to_string(dir.path().join("project/CLAUDE.md")).unwrap();
+        let hc: Vec<&str> = md.lines().filter(|l| l.contains("hc send")).collect();
+        assert_eq!(hc, [with[0].as_str()]);
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let got: Vec<&str> = stdout
+            .lines()
+            .filter(|l| l.starts_with("claude: flow ") && l.contains("session link"))
+            .collect();
+        let plain_reason = "instructions in CLAUDE.md; Claude Code decides whether to send";
+        assert_eq!(
+            got,
+            [
+                "claude: flow a session link: approximated (instructions in CLAUDE.md: hc send in a Herdr terminal, else SendMessage; Claude Code decides whether to send)".to_string(),
+                format!("claude: flow b session link: approximated ({plain_reason})"),
+                format!("claude: flow c session link: approximated ({plain_reason})"),
+                format!("claude: flow d session link: approximated ({plain_reason})"),
+            ],
+            "{stdout}"
+        );
+        let rendered = format!("=== CLAUDE.md ===\n{md}");
+        check_golden("claude-herdr-non-address", &rendered);
+    }
+
+    /// `herdr` adds nothing to `settings.json` nor to the link manifest.
+    #[test]
+    fn herdr_changes_nothing_in_settings_json_and_manifest() {
+        let read = |ui: &str| {
+            let (dir, _) = link_claude(ui, None, SESSION_LINK);
+            let root = dir.path().join("project");
+            (
+                std::fs::read_to_string(root.join(".claude/settings.json")).unwrap(),
+                // `linked_at` is the wall clock to the second: the only line that may differ.
+                std::fs::read_to_string(root.join(".armadai/link-manifest.yaml"))
+                    .unwrap()
+                    .lines()
+                    .filter(|l| !l.trim_start().starts_with("linked_at:"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )
+        };
+        assert_eq!(read("herdr: true\n"), read(""));
+    }
+
+    fn link_all(
+        dir: &Path,
+        path_env: Option<&str>,
+        terminal: Option<&str>,
+    ) -> std::process::Output {
+        let mut cmd = Command::cargo_bin("armadai").unwrap();
+        cmd.current_dir(dir.join("project"))
+            .env("ARMADAI_CONFIG_DIR", isolated_config(dir))
+            .env("CLAUDE_CONFIG_DIR", dir.join("claude"))
+            .env_remove("CLAUDE_CODE_PLUGIN_CACHE_DIR")
+            .env("HOME", dir)
+            .args(["link", "--target", "claude", "opencode", "codex", "copilot"]);
+        if let Some(p) = path_env {
+            cmd.env("PATH", p);
+        }
+        if let Some(t) = terminal {
+            cmd.env("HC_TERMINAL_ID", t);
+        }
+        let out = cmd.output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out
+    }
+
+    fn herdr_project(herdr: &str) -> tempfile::TempDir {
+        let dir = project();
+        let root = dir.path().join("project");
+        let flow = root.join(".armadai/flows/ship.yaml");
+        let text = std::fs::read_to_string(&flow).unwrap();
+        std::fs::write(&flow, format!("{text}{SESSION_LINK}")).unwrap();
+        std::fs::write(
+            root.join(".armadai/project.yaml"),
+            format!("schema_version: 1\ncoordinator: lead\n{herdr}"),
+        )
+        .unwrap();
+        dir
+    }
+
+    /// Exact report lines: the Claude reason under `herdr`, the three other targets keep theirs.
+    #[test]
+    fn herdr_session_link_report_lines() {
+        let dir = herdr_project("herdr: true\n");
+        let out = link_all(dir.path(), None, None);
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let got: Vec<&str> = stdout
+            .lines()
+            .filter(|l| l.contains("flow ship session link"))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                "claude: flow ship session link: approximated (instructions in CLAUDE.md: hc send in a Herdr terminal, else SendMessage; Claude Code decides whether to send)",
+                "codex: flow ship session link: not-compiled (Claude Code only)",
+                "copilot: flow ship session link: not-compiled (Claude Code only)",
+                "opencode: flow ship session link: not-compiled (Claude Code only)",
+            ],
+            "{stdout}"
+        );
+    }
+
+    /// `link` never runs `hc` nor `herdr-app`, even with both on `PATH` and a terminal id set.
+    #[test]
+    fn link_never_calls_herdr_tools() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = herdr_project("herdr:\n  sessions:\n    - { name: chantier, kind: claude }\n");
+        let bin = dir.path().join("fakebin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let log = dir.path().join("calls.log");
+        for tool in ["hc", "herdr-app"] {
+            let f = bin.join(tool);
+            std::fs::write(
+                &f,
+                format!(
+                    "#!/bin/sh\nprintf '%s\\0' \"$0\" \"$@\" >> '{}'\n",
+                    log.display()
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+        link_all(dir.path(), Some(&path), Some("t7"));
+        assert!(!log.exists(), "a fake tool was called");
+    }
+
     fn ui_golden(ui: &str, golden: &str, present: &[&str]) {
         ui_golden_with(ui, None, "", golden, present);
     }

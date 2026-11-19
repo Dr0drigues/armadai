@@ -97,6 +97,7 @@ pub fn convert(old: &OldProject) -> (Project, Vec<SkillCopy>, Report) {
         native: Default::default(),
         ui: Default::default(),
         sessions: Default::default(),
+        herdr: None,
     };
     convert_link(old, &resolve, &mut manifest, &mut r);
     let mut flows = BTreeMap::new();

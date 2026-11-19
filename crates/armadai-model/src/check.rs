@@ -9,7 +9,7 @@ use crate::diag::{
     locate_pair,
 };
 use crate::load::{Kind, Origins, Project, load_project};
-use crate::types::Cap;
+use crate::types::{Cap, HERDR_KINDS, is_herdr_name};
 
 const MAX_SKILL_DESCRIPTION: usize = 1024;
 
@@ -770,6 +770,65 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
             ),
         );
     }
+    for (i, s) in m.herdr_sessions().iter().enumerate() {
+        // positioned on the i-th `key:` after `herdr:` (every session has both keys)
+        let at = |o: &Out, key: &str| {
+            o.text(man)
+                .and_then(|t| nth_key_after(t, "herdr", key, i))
+                .map_or((None, None), |(t, idx)| line_col(t, idx))
+        };
+        if !is_herdr_name(&s.name) {
+            let pos = at(&o, "name");
+            o.emit_pos(
+                man,
+                Severity::Error,
+                "invalid-herdr-session-name",
+                pos,
+                format!(
+                    "herdr session name `{}` is not 1 to 32 of a-z 0-9 - _, not starting with -",
+                    s.name.escape_debug()
+                ),
+                Some("Herdr names a terminal with hc run --name, which accepts only these characters; a leading - would be read as an option".into()),
+            );
+            o.set_last_path(format!("herdr.sessions[{i}].name"));
+        }
+        let twice = m.herdr_sessions()[..i].iter().any(|p| p.name == s.name);
+        let coordinator = m.coordinator.as_deref() == Some(s.name.as_str());
+        if twice || coordinator {
+            let pos = at(&o, "name");
+            let what = if twice {
+                "is declared twice"
+            } else {
+                "has the id of the coordinator"
+            };
+            o.emit_pos(
+                man,
+                Severity::Error,
+                "duplicate-herdr-session",
+                pos,
+                format!("herdr session `{}` {what}", s.name.escape_debug()),
+                Some("give each session a name of its own".into()),
+            );
+            o.set_last_path(format!("herdr.sessions[{i}].name"));
+        }
+        if !HERDR_KINDS.contains(&s.kind.as_str()) {
+            let pos = at(&o, "kind");
+            o.emit_pos(
+                man,
+                Severity::Error,
+                "unknown-herdr-kind",
+                pos,
+                format!(
+                    "herdr session `{}` has kind `{}`: expected {}",
+                    s.name.escape_debug(),
+                    s.kind.escape_debug(),
+                    "claude, codex or opencode"
+                ),
+                Some("kind is the program Herdr starts, from a closed list".into()),
+            );
+            o.set_last_path(format!("herdr.sessions[{i}].kind"));
+        }
+    }
     if let Some(p) = &m.pack {
         // positioned inside the `pack:` block, so a top-level `name:` is not matched
         let at = |o: &Out, key: &str| {
@@ -1077,6 +1136,19 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
                         l.to.escape_debug()
                     ),
                     Some("name the session as you start it: claude --name <name>".into()),
+                );
+            }
+            if project.manifest.herdr_enabled() && !is_herdr_name(&l.to) {
+                o.emit(
+                    at,
+                    Severity::Warning,
+                    "herdr-session-link-address",
+                    Some(("to", true)),
+                    format!(
+                        "session_link.to `{}` is not a Herdr address (1 to 32 of a-z 0-9 - _, not starting with -): hc send cannot reach it",
+                        l.to.escape_debug()
+                    ),
+                    Some("declare the session under herdr.sessions, or start it with hc run --name".into()),
                 );
             }
             if l.when.trim().is_empty() {

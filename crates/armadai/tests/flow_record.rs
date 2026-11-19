@@ -296,3 +296,276 @@ fn a_typed_command_is_recorded_silently() {
     assert_eq!(std::fs::read_to_string(&log_path).unwrap(), log);
     assert!(!outside.path().join(".armadai").exists());
 }
+
+// ---- Herdr: the terminal label of a marked delegation (`hc label`) ----
+
+/// Project with agent `dev` and flow `lot` (step `plan`); `herdr: true` when asked.
+fn herdr_project(dir: &Path, herdr: bool) {
+    std::fs::create_dir_all(dir.join(".armadai/agents")).unwrap();
+    std::fs::create_dir_all(dir.join(".armadai/flows")).unwrap();
+    let herdr = if herdr { "herdr: true\n" } else { "" };
+    std::fs::write(
+        dir.join(".armadai/project.yaml"),
+        format!("schema_version: 1\n{herdr}"),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join(".armadai/agents/dev.md"),
+        "---\ndescription: d\n---\nB\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join(".armadai/flows/lot.yaml"),
+        "steps:\n  plan: { agent: dev }\n",
+    )
+    .unwrap();
+}
+
+/// A delegation to `dev` whose description opens with `marker`.
+fn delegation(marker: &str, cwd: &Path) -> String {
+    serde_json::json!({
+        "session_id": "s1",
+        "cwd": cwd.to_string_lossy(),
+        "permission_mode": "default",
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Agent",
+        "agent_type": "",
+        "tool_input": {
+            "description": format!("{marker} do work"),
+            "prompt": "...",
+            "subagent_type": "dev",
+        },
+        "tool_use_id": "toolu_01",
+    })
+    .to_string()
+}
+
+/// A fake `hc` that appends its argv (each argument ended by NUL, each call by a newline) to
+/// `argv.log` next to it,
+/// then runs `tail` (shell). Returns the directory to put first in `PATH`.
+fn fake_hc(tail: &str) -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let script = format!(
+        "#!/bin/sh\n{{ printf '%s\\0' hc \"$@\"; printf '\\n'; }} >> '{}/argv.log'\n{tail}\n",
+        dir.path().display()
+    );
+    let p = dir.path().join("hc");
+    std::fs::write(&p, script).unwrap();
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    dir
+}
+
+/// One argument vector per call of the fake `hc`.
+fn hc_calls(fake: &tempfile::TempDir) -> Vec<Vec<String>> {
+    std::fs::read_to_string(fake.path().join("argv.log"))
+        .unwrap_or_default()
+        .lines()
+        .map(|l| l.split_terminator('\0').map(str::to_string).collect())
+        .collect()
+}
+
+/// The hook with the fake `hc` first in PATH and `HC_TERMINAL_ID` as given.
+fn record_herdr(
+    input: &str,
+    home: &Path,
+    fake: &Path,
+    terminal: Option<&str>,
+) -> std::process::Output {
+    let path = format!(
+        "{}:{}",
+        fake.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let mut cmd = Command::cargo_bin("armadai").unwrap();
+    cmd.current_dir(home)
+        .arg("__record-flow-event")
+        .env("HOME", home)
+        .env("ARMADAI_CONFIG_DIR", home.join("cfg"))
+        .env("PATH", path)
+        .env_remove("RUST_LOG")
+        .env_remove("HC_TERMINAL_ID")
+        .write_stdin(input.to_string());
+    if let Some(t) = terminal {
+        cmd.env("HC_TERMINAL_ID", t);
+    }
+    cmd.output().unwrap()
+}
+
+fn log_of(dir: &Path) -> String {
+    std::fs::read_to_string(dir.join(".armadai/state/claude/s1.jsonl")).unwrap()
+}
+
+#[test]
+fn a_mark_under_herdr_labels_the_terminal() {
+    let (home, dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    herdr_project(dir.path(), true);
+    let fake = fake_hc("");
+
+    let out = record_herdr(
+        &delegation("[lot/plan#x]", dir.path()),
+        home.path(),
+        fake.path(),
+        Some("t7"),
+    );
+
+    assert_silent_success(&out);
+    assert_eq!(
+        hc_calls(&fake),
+        [["hc", "label", "t7", "armadai.flow=lot", "armadai.step=plan"]]
+    );
+}
+
+#[test]
+fn no_label_without_terminal_id() {
+    let (home, dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    herdr_project(dir.path(), true);
+    let fake = fake_hc("");
+    let out = record_herdr(
+        &delegation("[lot/plan#x]", dir.path()),
+        home.path(),
+        fake.path(),
+        None,
+    );
+    assert_silent_success(&out);
+    assert_eq!(hc_calls(&fake), Vec::<Vec<String>>::new());
+    // an empty variable is no terminal either
+    let out = record_herdr(
+        &delegation("[lot/plan#x]", dir.path()),
+        home.path(),
+        fake.path(),
+        Some(""),
+    );
+    assert_silent_success(&out);
+    assert_eq!(hc_calls(&fake), Vec::<Vec<String>>::new());
+}
+
+#[test]
+fn no_label_without_herdr() {
+    let (home, dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    herdr_project(dir.path(), false);
+    let fake = fake_hc("");
+    let out = record_herdr(
+        &delegation("[lot/plan#x]", dir.path()),
+        home.path(),
+        fake.path(),
+        Some("t7"),
+    );
+    assert_silent_success(&out);
+    assert_eq!(hc_calls(&fake), Vec::<Vec<String>>::new());
+}
+
+#[test]
+fn no_label_for_an_unknown_flow_or_step() {
+    let (home, dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    herdr_project(dir.path(), true);
+    let fake = fake_hc("");
+    for marker in ["[lot/nowhere]", "[nope/plan]"] {
+        let out = record_herdr(
+            &delegation(marker, dir.path()),
+            home.path(),
+            fake.path(),
+            Some("t7"),
+        );
+        assert_silent_success(&out);
+    }
+    assert_eq!(hc_calls(&fake), Vec::<Vec<String>>::new());
+    // the marks themselves were still recorded
+    assert_eq!(log_of(dir.path()).lines().count(), 2);
+}
+
+#[test]
+fn no_label_for_a_start_event() {
+    let (home, dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    herdr_project(dir.path(), true);
+    let fake = fake_hc("");
+    let start = serde_json::json!({
+        "session_id": "s1",
+        "cwd": dir.path().to_string_lossy(),
+        "hook_event_name": "SubagentStart",
+        "agent_id": "a1",
+        "agent_type": "dev",
+    })
+    .to_string();
+    let out = record_herdr(&start, home.path(), fake.path(), Some("t7"));
+    assert_silent_success(&out);
+    assert!(log_of(dir.path()).contains(r#""event":"start""#));
+    assert_eq!(hc_calls(&fake), Vec::<Vec<String>>::new());
+}
+
+#[test]
+fn the_record_is_the_same_with_and_without_herdr() {
+    let home = tempfile::tempdir().unwrap();
+    let mut logs = Vec::new();
+    for herdr in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        herdr_project(dir.path(), herdr);
+        let fake = fake_hc("echo '{\"ok\":true}'");
+        let out = record_herdr(
+            &delegation("[lot/plan#x]", dir.path()),
+            home.path(),
+            fake.path(),
+            Some("t7"),
+        );
+        assert_silent_success(&out);
+        assert_eq!(hc_calls(&fake).len(), usize::from(herdr));
+        logs.push(without_ts(&log_of(dir.path())));
+    }
+    assert_eq!(logs[0], logs[1]);
+    assert_eq!(logs[0].len(), 1);
+}
+
+#[test]
+fn a_failing_hc_changes_nothing() {
+    let (home, dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    herdr_project(dir.path(), true);
+    let fake = fake_hc(
+        "echo 'some text on stdout'\n\
+         echo '{\"error\":{\"hint\":\"see `hc ls --all`\",\"kind\":\"not_found\",\"message\":\"no terminal \\\"t7\\\"\"}}' >&2\n\
+         exit 3",
+    );
+    let out = record_herdr(
+        &delegation("[lot/plan#x]", dir.path()),
+        home.path(),
+        fake.path(),
+        Some("t7"),
+    );
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(out.stdout, b"");
+    assert_eq!(out.stderr, b"");
+    assert_eq!(hc_calls(&fake).len(), 1);
+    // the journal is the one of the same project without `herdr`
+    let plain = tempfile::tempdir().unwrap();
+    herdr_project(plain.path(), false);
+    let out = record_herdr(
+        &delegation("[lot/plan#x]", plain.path()),
+        home.path(),
+        fake.path(),
+        Some("t7"),
+    );
+    assert_silent_success(&out);
+    assert_eq!(
+        without_ts(&log_of(dir.path())),
+        without_ts(&log_of(plain.path()))
+    );
+}
+
+#[test]
+fn a_hanging_hc_is_cut() {
+    for _ in 0..5 {
+        let (home, dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        herdr_project(dir.path(), true);
+        let fake = fake_hc("exec sleep 30");
+        let start = std::time::Instant::now();
+        let out = record_herdr(
+            &delegation("[lot/plan#x]", dir.path()),
+            home.path(),
+            fake.path(),
+            Some("t7"),
+        );
+        let took = start.elapsed();
+        assert_silent_success(&out);
+        assert_eq!(hc_calls(&fake).len(), 1);
+        assert!(took < std::time::Duration::from_secs(10), "{took:?}");
+    }
+}
