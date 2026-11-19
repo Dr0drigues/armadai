@@ -277,14 +277,19 @@ mod tests {
 
     const PWN: &str = "x; touch $HOME/pwned";
 
-    /// Three flows under `herdr: true`: a Herdr address, a name with a space and a shell
-    /// injection. Only the first gets `hc send`; the others are the paragraph they get without
+    /// Four flows under `herdr: true`: a Herdr address, a name with a space, a shell
+    /// injection and an option-like `--force`. Only the first gets `hc send`; the others are the paragraph they get without
     /// `herdr`, and the report says what was written.
     #[test]
     fn herdr_non_address_keeps_send_message() {
         let write = |dir: &Path, herdr: bool| {
             let root = dir.join("project");
-            for (id, to) in [("a", "chantier"), ("b", "Chantier Un"), ("c", PWN)] {
+            for (id, to) in [
+                ("a", "chantier"),
+                ("b", "Chantier Un"),
+                ("c", PWN),
+                ("d", "--force"),
+            ] {
                 std::fs::write(
                     root.join(format!(".armadai/flows/{id}.yaml")),
                     format!(
@@ -317,10 +322,11 @@ mod tests {
         write(dir.path(), true);
         let out = link_all(dir.path(), None, None);
         let with = paragraphs(dir.path());
-        assert_eq!((with.len(), without.len()), (3, 3));
+        assert_eq!((with.len(), without.len()), (4, 4));
         assert!(with[0].contains("`hc send --wait --timeout 120 chantier"));
         assert_eq!(with[1], without[1]);
         assert_eq!(with[2], without[2]);
+        assert_eq!(with[3], without[3]);
         let md = std::fs::read_to_string(dir.path().join("project/CLAUDE.md")).unwrap();
         let hc: Vec<&str> = md.lines().filter(|l| l.contains("hc send")).collect();
         assert_eq!(hc, [with[0].as_str()]);
@@ -336,6 +342,7 @@ mod tests {
                 "claude: flow a session link: approximated (instructions in CLAUDE.md: hc send in a Herdr terminal, else SendMessage; Claude Code decides whether to send)".to_string(),
                 format!("claude: flow b session link: approximated ({plain_reason})"),
                 format!("claude: flow c session link: approximated ({plain_reason})"),
+                format!("claude: flow d session link: approximated ({plain_reason})"),
             ],
             "{stdout}"
         );
