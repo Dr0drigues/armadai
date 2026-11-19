@@ -45,13 +45,14 @@ this order:
 The binaries are taken from `PATH` alone: put `~/.local/bin` there. Each call is made without a shell, one argument
 each. A failed call stops the command with `<call> failed: <reason>` (the error of the tool, else the first line of
 its stderr, else `exit status <n>`, `killed by signal <n>`; `unexpected output` when a call succeeds without the JSON or id expected; the system error when the binary cannot be launched), exit code 1. The calls already made are not undone: after a failed
-`open-team`, close the space, tabs and sessions it opened in the app.
+`open-team`, close the space in the app and stop the named sessions it started with `hc kill <name>`: closing the space does not stop a session started with `--no-parent` (measured).
 
 - **`armadai herdr watch`** opens `armadai flow status --watch` in a new pane below the active pane, and prints
   `opened flow status --watch in a new Herdr pane`.
+  The pane starts in the project folder and runs the `armadai` found in your login `PATH`, not the binary that typed the command: an older one that does not know `herdr` closes the pane ("Terminal failed to start"). Sessions started by Herdr take your login environment, not that of the calling terminal.
 - **`armadai herdr open-team`** opens one space for the project (named after `name:` of the project, else its folder),
   with the coordinator in the first tab and `flow status --watch` in a pane below, then one tab per declared session,
-  started with `hc run --name <name> --no-parent`. The coordinator runs the first of the project's targets that Herdr
+  started with `hc run --name <name> --no-parent`, the tab renamed to the session name once the app has it. The app puts a new tab next to the active one, so the tabs can appear in another order than declared, and the window switches to the new space. The coordinator runs the first of the project's targets that Herdr
   can start (`claude`, `codex`, `opencode`); none (Copilot alone) is refused with
   `no target of this project runs in Herdr (claude, codex or opencode); targets: <list>`.
 
@@ -61,18 +62,17 @@ With `herdr` on, inside a Herdr terminal, the recorder of `link`'s hooks labels 
 session on each marked delegation (`[flow/step#lot]`) whose flow and step exist in the project:
 `hc label <terminal> armadai.flow=<flow> armadai.step=<step>`, 2 seconds at most. Any failure (no `hc`, timeout,
 unreadable project) is ignored; the hook prints nothing and always exits 0. Outside `herdr` or outside a terminal of
-the app, nothing is called. Read the labels with `hc get <terminal>` (field `labels`); `hc ls --json` does not
+the app, nothing is called. Read the labels with `hc get <terminal> --json` (field `labels`); `hc ls --json` does not
 carry them.
 
 ## Limits and not measured
 
 - The label is set and ArmadAI does not display it.
 - No TTL: the label stays until the terminal ends, so a finished flow can still show its last step (no cleanup in this version).
-- `hc send` goes through the Bash tool of the model, so it can trigger a permission prompt.
+- `hc send` goes through the Bash tool of the model, so a permission prompt depends on the user's settings (none was seen in the trial).
 - A session started by hand has no name: `hc send` reaches only named sessions.
-- A tab for a declared session is created with an id the tool does not document (measured to work, not documented by Herdr).
+- A tab for a declared session is created with an id the tool does not document: measured to work in the app, hyphens and a 32-hex space id included, but not documented by Herdr.
+- `hc send` types the answer into the target terminal: if the sender is not an interactive Claude session (for example `claude -p` from a shell), the answer lands in that shell.
 - A cloned repository can switch `herdr` on for you: read `.armadai/project.yaml` of a repository you do not trust before running these commands. The label calls `hc` for you too.
 - The terminal UI of Herdr is not supported.
-- Not measured, left to the real trial: whether a shipped layout of the app shows an arbitrary label; that a `PreToolUse` hook of a real `claude` session sees `HC_TERMINAL_ID`
-  and has `hc` in its `PATH`; the rendering of the animated `flow status` pane; whether sessions started with
-  `--no-parent` survive closing the parent pane; `hc send --wait` between two real sessions; whether `hc send` asks for permission.
+- Not measured, left to the real trial: whether a shipped layout of the app shows an arbitrary label; the rendering of the animated `flow status` pane; whether sessions started with `--no-parent` survive closing the parent pane by its close button (closing the space leaves them alive, measured).
