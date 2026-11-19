@@ -183,6 +183,34 @@ fn watch_refuses_without_binaries() {
 }
 
 #[test]
+fn watch_does_not_look_in_local_bin() {
+    // fakes in $HOME/.local/bin, which is not in PATH: they must not be called
+    let e = Env::new(ON);
+    let dir = e.home.path().join(".local/bin");
+    std::fs::create_dir_all(&dir).unwrap();
+    for name in ["hc", "herdr-app"] {
+        let p = dir.join(name);
+        std::fs::write(
+            &p,
+            format!(
+                "#!/bin/sh\nprintf '%s\\0' \"$0\" \"$@\" >> '{}'\n",
+                e.log().display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let path = std::env::join_paths([Path::new("/usr/bin"), Path::new("/bin")]).unwrap();
+    let out = e.run(&path, Some("t2"), e.proj.path());
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        stderr(&out),
+        "Error: herdr-app not found in PATH: Herdr.app installs hc and herdr-app in ~/.local/bin, put that folder in PATH\n"
+    );
+    assert!(e.calls().is_empty());
+}
+
+#[test]
 fn watch_reports_a_failed_call() {
     // (a) the error on stdout as a string, exit 1
     let e = Env::new(ON);
@@ -512,6 +540,11 @@ fn coordinator_kind_follows_targets() {
         e.calls()[0]
     );
     let (out, e) = kind_of("[]");
+    assert!(out.status.success(), "{out:?}");
+    assert!(e.calls()[0][3].ends_with(r#""argv":["claude"]}"#));
+    // the key omitted
+    let e = Env::team("schema_version: 1\nherdr: true\n");
+    let out = e.open_team();
     assert!(out.status.success(), "{out:?}");
     assert!(e.calls()[0][3].ends_with(r#""argv":["claude"]}"#));
     let (out, e) = kind_of("[copilot]");
