@@ -158,7 +158,7 @@ pub struct HerdrConfig {
     pub sessions: Vec<HerdrSession>,
 }
 
-/// A session Herdr opens next to the coordinator; `name` is 1 to 32 of `a-z 0-9 - _`, `kind`
+/// A session Herdr opens next to the coordinator; `name` is 1 to 32 of `a-z 0-9 - _` not starting with `-`, `kind`
 /// one of [`HERDR_KINDS`] (both checked by `validate`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -170,10 +170,12 @@ pub struct HerdrSession {
 /// The programs Herdr may start for a session.
 pub const HERDR_KINDS: [&str; 3] = ["claude", "codex", "opencode"];
 
-/// A Herdr terminal name (`hc run --name`): 1 to 32 bytes of `a-z 0-9 - _`.
+/// A Herdr terminal name (`hc run --name`): 1 to 32 bytes of `a-z 0-9 - _`,
+/// not starting with `-` (a leading dash would reach `hc` as an option).
 /// A `tN` address is such a name, so this is also the Herdr address rule.
 pub fn is_herdr_name(s: &str) -> bool {
     (1..=32).contains(&s.len())
+        && !s.starts_with('-')
         && s.bytes()
             .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_'))
 }

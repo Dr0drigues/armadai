@@ -112,7 +112,7 @@ fn herdr_session_name_bounds() {
         assert_eq!(h[0].path, "herdr.sessions[0].name");
         assert_eq!(
             h[0].message,
-            format!("herdr session name `{n}` is not 1 to 32 of a-z 0-9 - _")
+            format!("herdr session name `{n}` is not 1 to 32 of a-z 0-9 - _, not starting with -")
         );
     }
 }
@@ -174,7 +174,7 @@ fn herdr_session_link_address_warns() {
     assert_eq!(w[0].severity, Severity::Warning);
     assert_eq!(
         w[0].message,
-        "session_link.to `Chantier Un` is not a Herdr address (a name of 1 to 32 a-z 0-9 - _, or tN): hc send cannot reach it"
+        "session_link.to `Chantier Un` is not a Herdr address (1 to 32 of a-z 0-9 - _, not starting with -): hc send cannot reach it"
     );
     assert_eq!((w[0].line, w[0].column), (Some(4), Some(3)));
     for ok in ["chantier", "t12"] {
@@ -208,4 +208,37 @@ fn herdr_writer_round_trip() {
 #[test]
 fn no_herdr_key_is_written_without_herdr() {
     assert!(!render_manifest(&manifest("")).contains("herdr"));
+}
+
+#[test]
+fn herdr_name_refuses_a_leading_dash() {
+    for n in ["-x", "--force"] {
+        let ds = diags(&format!(
+            "herdr: {{ sessions: [{{ name: \"{n}\", kind: claude }}] }}\n"
+        ));
+        let h = code(&ds, "invalid-herdr-session-name");
+        assert_eq!(h.len(), 1, "{n}: {ds:?}");
+        assert_eq!(h[0].severity, Severity::Error);
+        assert_eq!(h[0].path, "herdr.sessions[0].name");
+        assert_eq!(
+            h[0].message,
+            format!("herdr session name `{n}` is not 1 to 32 of a-z 0-9 - _, not starting with -")
+        );
+        let w = link_warnings("herdr: true\n", n);
+        assert_eq!(w.len(), 1, "{n}: {w:?}");
+        assert_eq!(w[0].severity, Severity::Warning);
+        assert_eq!(
+            w[0].message,
+            format!(
+                "session_link.to `{n}` is not a Herdr address (1 to 32 of a-z 0-9 - _, not starting with -): hc send cannot reach it"
+            )
+        );
+    }
+    for n in ["a-b", "t12"] {
+        let ds = diags(&format!(
+            "herdr: {{ sessions: [{{ name: {n}, kind: claude }}] }}\n"
+        ));
+        assert!(code(&ds, "invalid-herdr-session-name").is_empty(), "{n}");
+        assert!(link_warnings("herdr: true\n", n).is_empty(), "{n}");
+    }
 }

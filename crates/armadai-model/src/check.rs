@@ -785,10 +785,10 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
                 "invalid-herdr-session-name",
                 pos,
                 format!(
-                    "herdr session name `{}` is not 1 to 32 of a-z 0-9 - _",
+                    "herdr session name `{}` is not 1 to 32 of a-z 0-9 - _, not starting with -",
                     s.name.escape_debug()
                 ),
-                Some("Herdr names a terminal with hc run --name, which accepts only these characters".into()),
+                Some("Herdr names a terminal with hc run --name, which accepts only these characters; a leading - would be read as an option".into()),
             );
             o.set_last_path(format!("herdr.sessions[{i}].name"));
         }
@@ -1145,7 +1145,7 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
                     "herdr-session-link-address",
                     Some(("to", true)),
                     format!(
-                        "session_link.to `{}` is not a Herdr address (a name of 1 to 32 a-z 0-9 - _, or tN): hc send cannot reach it",
+                        "session_link.to `{}` is not a Herdr address (1 to 32 of a-z 0-9 - _, not starting with -): hc send cannot reach it",
                         l.to.escape_debug()
                     ),
                     Some("declare the session under herdr.sessions, or start it with hc run --name".into()),
