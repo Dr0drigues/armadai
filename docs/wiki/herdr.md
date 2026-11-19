@@ -1,7 +1,7 @@
 # Herdr.app
 
 Opt-in integration with Herdr.app (versions read: app 0.1.16, core 0.1.21). ArmadAI never starts Herdr and never
-calls its binaries from `link`: `link` only writes text in `CLAUDE.md`. Everything else is an explicit command you
+calls its binaries from `link`: for Herdr, `link` only writes text in `CLAUDE.md`. Everything else is an explicit command you
 run, or a label set by the flow recorder.
 
 ## Setting
@@ -44,9 +44,9 @@ this order:
 
 The binaries are taken from `PATH` alone: put `~/.local/bin` there. Each call is made without a shell, one argument
 each. A failed call stops the command with `<call> failed: <reason>` (the error of the tool, else the first line of
-its stderr, else `exit status <n>`, `killed by signal <n>`), exit code 1.
+its stderr, else `exit status <n>`, `killed by signal <n>`; `unexpected output` when a call succeeds without the id expected; the system error when the binary cannot be launched), exit code 1.
 
-- **`armadai herdr watch`** opens `armadai flow status --watch` in a new pane below the current one, and prints
+- **`armadai herdr watch`** opens `armadai flow status --watch` in a new pane below the active pane, and prints
   `opened flow status --watch in a new Herdr pane`.
 - **`armadai herdr open-team`** opens one space for the project (named after `name:` of the project, else its folder),
   with the coordinator in the first tab and `flow status --watch` in a pane below, then one tab per declared session,
@@ -65,11 +65,13 @@ carry them.
 
 ## Limits and not measured
 
-- No shipped layout displays the label: nothing was captured of it.
+- The label is set and nothing here displays it.
+- No TTL: the label stays until the terminal ends, so a finished flow can still show its last step (no cleanup in this version).
+- `hc send` goes through the Bash tool of the model, so it can trigger a permission prompt.
 - A session started by hand has no name: `hc send` reaches only named sessions.
 - A tab for a declared session is created with an id the tool does not document (measured to work, not documented by Herdr).
 - A cloned repository can switch `herdr` on for you: read `.armadai/project.yaml` of a repository you do not trust before running these commands. The label calls `hc` for you too.
 - The terminal UI of Herdr is not supported.
-- Not measured, left to the real trial: that a `PreToolUse` hook of a real `claude` session sees `HC_TERMINAL_ID`
+- Not measured, left to the real trial: whether a shipped layout of the app shows an arbitrary label; that a `PreToolUse` hook of a real `claude` session sees `HC_TERMINAL_ID`
   and has `hc` in its `PATH`; the rendering of the animated `flow status` pane; whether sessions started with
   `--no-parent` survive closing the parent pane; `hc send --wait` between two real sessions.
