@@ -211,6 +211,33 @@ fn watch_reports_a_failed_call() {
     );
 }
 
+/// Empty `PATH` (no fake, no real `hc`) and no `HC_TERMINAL_ID` in the child.
+fn bare(yaml: &str) -> std::process::Output {
+    let e = Env::new(yaml);
+    let empty = tempfile::tempdir().unwrap();
+    e.run(empty.path().as_os_str(), None, e.proj.path())
+}
+
+#[test]
+fn herdr_guard_checks_the_setting_before_the_terminal() {
+    let out = bare("schema_version: 1\nherdr: false\n");
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        stderr(&out),
+        "Error: herdr is not enabled for this project: add herdr: true to .armadai/project.yaml\n"
+    );
+}
+
+#[test]
+fn herdr_guard_checks_the_terminal_before_the_binaries() {
+    let out = bare(ON);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        stderr(&out),
+        "Error: not in a Herdr terminal (HC_TERMINAL_ID is not set): run this command in a terminal of Herdr.app\n"
+    );
+}
+
 #[test]
 fn herdr_help_lists_both_commands() {
     let out = Command::cargo_bin("armadai")
