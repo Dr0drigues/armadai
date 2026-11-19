@@ -3,11 +3,18 @@
 # Builds optimized binaries for:
 # - Linux x86_64 (GNU)
 # - Linux aarch64 (GNU, via cross-rs)
-# - macOS x86_64 (Intel Macs)
+# - macOS x86_64 (Intel Macs, optional: see below)
 # - macOS aarch64 (Apple Silicon)
 # - Windows x86_64 (MSVC)
 #
-# Creates a GitHub Release with all binaries attached.
+# Creates a GitHub Release with all binaries attached. The four other targets are
+# required; the Intel build is optional. It is cross-compiled on `macos-latest`, an
+# arm64 runner (the same label as the required aarch64 build), and may never get one
+# ("Due to capacity constraints, jobs targeting macOS arm64 runners may experience
+# longer queue times"): GitHub then drops the job after about 15 minutes (measured at
+# rc.14). The release is still published without it, and says so in its notes and
+# in a run warning. Do not cancel the run by hand: that makes `cancelled()` true and
+# no release is created (measured on run 44134204209).
 # Trigger: push a semver tag like v0.1.0
 #
 # Usage: rename `## Unreleased` in CHANGELOG.md to `## v0.1.0 (YYYY-MM-DD)` and
@@ -35,6 +42,7 @@ jobs:
     name: Build ${{ matrix.target }}
     needs: notes
     runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.optional == true }}
     strategy:
       matrix:
         include:
@@ -50,6 +58,7 @@ jobs:
             os: macos-latest
             artifact: armadai-macos-x86_64
             use_cross: false
+            optional: true
           - target: aarch64-apple-darwin
             os: macos-latest
             artifact: armadai-macos-aarch64
@@ -113,6 +122,9 @@ jobs:
   release:
     name: Create Release
     needs: [notes, build]
+    # Runs even when a build job failed or was cancelled (the Intel one may be);
+    # the "Check the targets" step then enforces the four required binaries.
+    if: ${{ !cancelled() && needs.notes.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -134,6 +146,19 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           path: artifacts
+
+      # A required binary missing fails the run (no release); the optional Intel
+      # one only warns and is named in the notes.
+      - name: Check the targets
+        shell: bash
+        run: |
+          for f in armadai-linux-x86_64 armadai-linux-aarch64 armadai-macos-aarch64 armadai-windows-x86_64.exe; do
+            [ -s "artifacts/$f/$f" ] || { echo "::error::required binary $f is missing: no release"; exit 1; }
+          done
+          if [ ! -s artifacts/armadai-macos-x86_64/armadai-macos-x86_64 ]; then
+            echo "::warning::the macOS Intel build is missing: this release has no armadai-macos-x86_64"
+            printf '\n> No macOS Intel (x86_64) binary in this release: its build did not complete. Intel Macs: build from source.\n' >> RELEASE_NOTES.md
+          fi
 
       # `armadai update` and install.sh refuse a release without this file.
       - name: Checksums
