@@ -18,8 +18,6 @@ pub enum HerdrCommand {
 }
 
 /// What a Herdr command needs, checked once: shared with `open-team`.
-// `project` and `hc` are read by `open-team`.
-#[allow(dead_code)]
 pub(crate) struct Ready {
     pub root: PathBuf,
     pub project: armadai_model::Project,
@@ -126,6 +124,127 @@ pub fn execute(what: HerdrCommand) -> anyhow::Result<()> {
             println!("opened flow status --watch in a new Herdr pane");
             Ok(())
         }
-        HerdrCommand::OpenTeam => bail!("armadai herdr open-team is not available yet"),
+        HerdrCommand::OpenTeam => open_team(&ready),
     }
+}
+
+/// The coordinator program: the first effective target that runs in Herdr (plan 2.2).
+fn coordinator_kind(targets: &[String]) -> Option<&'static str> {
+    targets
+        .iter()
+        .find_map(|t| ["claude", "codex", "opencode"].into_iter().find(|k| k == t))
+}
+
+/// A tab id of our own, unique per session in a fresh space (plan 2.4: `hc run` creates the tab).
+fn tab_id(space: &str, name: &str) -> String {
+    format!("tb{}-{name}", space.strip_prefix("sp").unwrap_or(space))
+}
+
+fn field(v: &serde_json::Value, key: &str) -> Option<String> {
+    v.get(key)?.as_str().map(str::to_string)
+}
+
+fn unexpected(what: &str) -> anyhow::Error {
+    anyhow::anyhow!("{what} failed: unexpected output")
+}
+
+fn open_team(ready: &Ready) -> anyhow::Result<()> {
+    let project = &ready.project;
+    let targets = super::link::targets_of(&[], project);
+    let Some(kind) = coordinator_kind(&targets) else {
+        bail!(
+            "no target of this project runs in Herdr (claude, codex or opencode); targets: {}",
+            targets.join(", ")
+        );
+    };
+    let root = ready.root.to_string_lossy().into_owned();
+    let space_name = project.manifest.name.clone().unwrap_or_else(|| {
+        ready
+            .root
+            .file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
+    });
+    let app = |args: &[&str], what: &str| {
+        let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        call(&ready.herdr_app, &args, what)
+    };
+
+    // One JSON object, so that no value (the space name is unchecked) is read as an option.
+    let new = serde_json::json!({ "name": space_name, "folder": root, "argv": [kind] });
+    let what = "herdr-app do space.new";
+    let out = app(&["do", "space.new", &new.to_string()], what)?;
+    let made: serde_json::Value = serde_json::from_str(&out).map_err(|_| unexpected(what))?;
+    let (Some(space), Some(_tab), Some(terminal)) = (
+        field(&made, "space"),
+        field(&made, "tab"),
+        field(&made, "terminal"),
+    ) else {
+        return Err(unexpected(what));
+    };
+
+    // `--pane` wants a pane id, not the terminal id `space.new` returns
+    let what = "herdr-app ls";
+    let out = app(&["ls"], what)?;
+    let listing: serde_json::Value = serde_json::from_str(&out).map_err(|_| unexpected(what))?;
+    let pane = listing["spaces"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|s| s["tabs"].as_array().into_iter().flatten())
+        .flat_map(|t| t["terminals"].as_array().into_iter().flatten())
+        .find(|t| t["terminal"].as_str() == Some(terminal.as_str()))
+        .and_then(|t| field(t, "pane"))
+        .ok_or_else(|| unexpected(what))?;
+
+    let argv = serde_json::to_string(&["armadai", "flow", "status", "--watch"])?;
+    app(
+        &[
+            "do",
+            "pane.split",
+            "--direction",
+            "down",
+            "--pane",
+            &pane,
+            "--argv",
+            &argv,
+        ],
+        "herdr-app do pane.split",
+    )?;
+
+    for s in project.manifest.herdr_sessions() {
+        let tab = tab_id(&space, &s.name);
+        let args = [
+            "run",
+            "--bg",
+            "--name",
+            &s.name,
+            "--cwd",
+            &root,
+            "--no-parent",
+            "--label",
+            &format!("herdr.space={space}"),
+            "--label",
+            &format!("herdr.tab={tab}"),
+            &s.kind,
+        ]
+        .map(String::from);
+        call(&ready.hc, &args, &format!("hc run {}", s.name))?;
+        app(
+            &["do", "tab.rename", "--id", &tab, "--name", &s.name],
+            &format!("herdr-app do tab.rename {}", s.name),
+        )?;
+    }
+
+    let sessions = project.manifest.herdr_sessions();
+    let width = sessions
+        .iter()
+        .map(|s| s.name.len())
+        .fold("coordinator".len(), usize::max);
+    println!("opened Herdr space `{space_name}`");
+    println!("  {:<width$}  {kind}", "coordinator");
+    println!("  {:<width$}  armadai flow status --watch", "flow status");
+    for s in sessions {
+        println!("  {:<width$}  {}", s.name, s.kind);
+    }
+    Ok(())
 }
