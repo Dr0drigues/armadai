@@ -1,3 +1,26 @@
+## v1.0.0-rc.15 (2026-11-19)
+
+Fifteenth release candidate. ArmadAI now works with the Herdr.app desktop app (0.1.16), behind a new `herdr` project setting: `link --target claude` writes a session link that uses `hc send` in a Herdr terminal, a marked delegation labels the Herdr terminal of the session that makes it with the flow and step, and two new commands open things in the app, `armadai herdr watch` and `armadai herdr open-team`. Without `herdr`, nothing changes and no new `link` is needed. Also: `update` and `install.sh` say clearly when a release has no binary for your platform. Moving from rc.14: add `herdr: true` (or a `herdr:` map with `sessions`) to `.armadai/project.yaml` to use Herdr, then, for a flow with `session_link`, run `armadai link` again; `hc` and `herdr-app` must be in `PATH`; an older binary refuses a project with `herdr:`. See [Herdr.app](docs/wiki/herdr.md).
+
+### Added
+
+- `herdr` in `.armadai/project.yaml`: `true`, or a map with `sessions: [{ name, kind }]` (`kind` one of `claude`, `codex`, `opencode`). A Herdr name is 1 to 32 characters of `a-z 0-9 - _` and does not start with `-`. New diagnostics: `invalid-herdr-session-name`, `duplicate-herdr-session`, `unknown-herdr-kind`, and the warning `herdr-session-link-address` for a `session_link.to` that is not a Herdr name (#580).
+- Under `herdr`, the `### Sessions` text that `link --target claude` writes in `CLAUDE.md` tells a session in a Herdr terminal (`HC_TERMINAL_ID` set) to write to the linked session with `hc send --wait --timeout 120`, and to use `SendMessage` elsewhere. This holds only for a `session_link.to` that is a Herdr name; any other value keeps the text of rc.14. `link` never runs `hc` (#580).
+- The flow recorder labels the Herdr terminal that makes a marked delegation (`hc label <terminal> armadai.flow=<flow> armadai.step=<step>`), under `herdr`, in a Herdr terminal, and only for a flow and a step that the project declares. The call is bounded to 2 s, runs no shell, and a failure changes nothing (#580).
+- `armadai herdr watch`: opens `armadai flow status --watch` in a new pane below the active pane of the app (#580).
+- `armadai herdr open-team`: opens a new space for the project, with the coordinator and `flow status --watch` in its first tab, then one tab per declared session, named after it. A failed call stops the command and names the call; what was already opened is not undone (close the space in the app, and stop the named sessions with `hc kill <name>`) (#580).
+
+### Changed
+
+- `update` and `install.sh`: a release that has no binary for your platform is now reported as such (`v… has no binary for <platform>: build from source (cargo install --git …)`, then `or stay on v…` for `update`, `or install another version with VERSION=vX.Y.Z` for `install.sh`), instead of a download error. Any other failed download in `install.sh` now says `could not download …; check your network connection` (#579).
+- Releases: the macOS Intel (x86_64) binary is now optional. When its build does not complete, the release is still published without it, and its notes say so; on an Intel Mac, build from source (#579).
+- Compatibility: a `project.yaml` that has a `herdr:` key cannot be read by an older binary (it rejects unknown keys): the project is refused, not corrupted. Every checkout and every `armadai` in `PATH` (including the one the Herdr panes run) must be rc.15 or later (#580).
+
+### Known limits
+
+- The panes opened by `herdr watch` and `herdr open-team` run the `armadai` found in your login `PATH`, not the binary you typed: keep the installed `armadai` up to date (#580).
+- Closing a Herdr space does not end the sessions that `open-team` started: stop them with `hc kill <name>` (#580).
+
 ## v1.0.0-rc.14 (2026-11-17)
 
 Fourteenth release candidate. Standards packs: a project can now plug packs that hold only skills (code conventions, security rules) next to its team pack, with the new `standards:` key, and an embedded `rust-standards` pack shows how. It also fixes what a real use of rc.13 brought up: the lot journal can be shared by worktrees that each hold their own `.armadai` through `sessions.journal_dir`, a `grant` level now belongs to the checkout where it was opened, a `.git` that leads nowhere is refused instead of borrowing the state of a parent checkout, the chained status line waits 3 s and shows when it failed, and `link` warns about an `armadai-ui` marketplace that leads elsewhere. Moving from rc.13: run `armadai link` again, to get the new `### Journal` and `### Sessions` text in `CLAUDE.md` and, with `policy.grants`, the new deny rule that guards the grant state; a `grant` level opened with rc.13 is no longer read (open it again; the old `.armadai/state/grants.yaml` can be deleted); a checkout whose `.git` leads nowhere must be repaired (`git worktree repair`) before `grant`, `revoke`, a pack command or, for a project that references a pack, `link` works in it; a YAML key with no value where a list or a map is expected is now refused (write `[]` or `{}`, or leave the key out).
