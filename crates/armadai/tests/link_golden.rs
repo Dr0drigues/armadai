@@ -247,6 +247,142 @@ mod tests {
         }
     }
 
+    /// `herdr: true` with a `session_link`: the `hc send` instruction of `CLAUDE.md` and the
+    /// report line are fixed by the golden.
+    #[test]
+    fn the_herdr_session_link_matches_its_golden() {
+        ui_golden_with(
+            "herdr: true\n",
+            None,
+            SESSION_LINK,
+            "claude-herdr-session-link",
+            &[
+                "hc send --wait --timeout 120 chantier",
+                "never use `--force`",
+            ],
+        );
+    }
+
+    /// The same with `sessions.journal: true`: the sentence that records the answer.
+    #[test]
+    fn the_herdr_session_link_with_journal_matches_its_golden() {
+        ui_golden_with(
+            "herdr: true\nsessions:\n  journal: true\n",
+            None,
+            SESSION_LINK,
+            "claude-herdr-journal-session-link",
+            &["### Journal", "Its answer is recorded with"],
+        );
+    }
+
+    /// `herdr` adds nothing to `settings.json` nor to the link manifest.
+    #[test]
+    fn herdr_changes_nothing_in_settings_json_and_manifest() {
+        let read = |ui: &str| {
+            let (dir, _) = link_claude(ui, None, SESSION_LINK);
+            let root = dir.path().join("project");
+            (
+                std::fs::read_to_string(root.join(".claude/settings.json")).unwrap(),
+                // `linked_at` is the wall clock to the second: the only line that may differ.
+                std::fs::read_to_string(root.join(".armadai/link-manifest.yaml"))
+                    .unwrap()
+                    .lines()
+                    .filter(|l| !l.trim_start().starts_with("linked_at:"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )
+        };
+        assert_eq!(read("herdr: true\n"), read(""));
+    }
+
+    fn link_all(
+        dir: &Path,
+        path_env: Option<&str>,
+        terminal: Option<&str>,
+    ) -> std::process::Output {
+        let mut cmd = Command::cargo_bin("armadai").unwrap();
+        cmd.current_dir(dir.join("project"))
+            .env("ARMADAI_CONFIG_DIR", isolated_config(dir))
+            .env("CLAUDE_CONFIG_DIR", dir.join("claude"))
+            .env_remove("CLAUDE_CODE_PLUGIN_CACHE_DIR")
+            .env("HOME", dir)
+            .args(["link", "--target", "claude", "opencode", "codex", "copilot"]);
+        if let Some(p) = path_env {
+            cmd.env("PATH", p);
+        }
+        if let Some(t) = terminal {
+            cmd.env("HC_TERMINAL_ID", t);
+        }
+        let out = cmd.output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out
+    }
+
+    fn herdr_project(herdr: &str) -> tempfile::TempDir {
+        let dir = project();
+        let root = dir.path().join("project");
+        let flow = root.join(".armadai/flows/ship.yaml");
+        let text = std::fs::read_to_string(&flow).unwrap();
+        std::fs::write(&flow, format!("{text}{SESSION_LINK}")).unwrap();
+        std::fs::write(
+            root.join(".armadai/project.yaml"),
+            format!("schema_version: 1\ncoordinator: lead\n{herdr}"),
+        )
+        .unwrap();
+        dir
+    }
+
+    /// Exact report lines: the Claude reason under `herdr`, the three other targets keep theirs.
+    #[test]
+    fn herdr_session_link_report_lines() {
+        let dir = herdr_project("herdr: true\n");
+        let out = link_all(dir.path(), None, None);
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let got: Vec<&str> = stdout
+            .lines()
+            .filter(|l| l.contains("flow ship session link"))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                "claude: flow ship session link: approximated (instructions in CLAUDE.md: hc send in a Herdr terminal, else SendMessage; Claude Code decides whether to send)",
+                "codex: flow ship session link: not-compiled (Claude Code only)",
+                "copilot: flow ship session link: not-compiled (Claude Code only)",
+                "opencode: flow ship session link: not-compiled (Claude Code only)",
+            ],
+            "{stdout}"
+        );
+    }
+
+    /// `link` never runs `hc` nor `herdr-app`, even with both on `PATH` and a terminal id set.
+    #[test]
+    fn link_never_calls_herdr_tools() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = herdr_project("herdr:\n  sessions:\n    - { name: chantier, kind: claude }\n");
+        let bin = dir.path().join("fakebin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let log = dir.path().join("calls.log");
+        for tool in ["hc", "herdr-app"] {
+            let f = bin.join(tool);
+            std::fs::write(
+                &f,
+                format!(
+                    "#!/bin/sh\nprintf '%s\\0' \"$0\" \"$@\" >> '{}'\n",
+                    log.display()
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+        link_all(dir.path(), Some(&path), Some("t7"));
+        assert!(!log.exists(), "a fake tool was called");
+    }
+
     fn ui_golden(ui: &str, golden: &str, present: &[&str]) {
         ui_golden_with(ui, None, "", golden, present);
     }
