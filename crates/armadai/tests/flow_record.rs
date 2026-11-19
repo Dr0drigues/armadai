@@ -340,13 +340,14 @@ fn delegation(marker: &str, cwd: &Path) -> String {
     .to_string()
 }
 
-/// A fake `hc` that appends its argv, one JSON-ish line per call, to `argv.log` next to it,
+/// A fake `hc` that appends its argv (each argument ended by NUL, each call by a newline) to
+/// `argv.log` next to it,
 /// then runs `tail` (shell). Returns the directory to put first in `PATH`.
 fn fake_hc(tail: &str) -> tempfile::TempDir {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
     let script = format!(
-        "#!/bin/sh\nprintf '%s\\n' \"hc $*\" >> '{}/argv.log'\n{tail}\n",
+        "#!/bin/sh\n{{ printf '%s\\0' hc \"$@\"; printf '\\n'; }} >> '{}/argv.log'\n{tail}\n",
         dir.path().display()
     );
     let p = dir.path().join("hc");
@@ -355,11 +356,12 @@ fn fake_hc(tail: &str) -> tempfile::TempDir {
     dir
 }
 
-fn hc_calls(fake: &tempfile::TempDir) -> Vec<String> {
+/// One argument vector per call of the fake `hc`.
+fn hc_calls(fake: &tempfile::TempDir) -> Vec<Vec<String>> {
     std::fs::read_to_string(fake.path().join("argv.log"))
         .unwrap_or_default()
         .lines()
-        .map(str::to_string)
+        .map(|l| l.split_terminator('\0').map(str::to_string).collect())
         .collect()
 }
 
@@ -410,7 +412,7 @@ fn a_mark_under_herdr_labels_the_terminal() {
     assert_silent_success(&out);
     assert_eq!(
         hc_calls(&fake),
-        ["hc label t7 armadai.flow=lot armadai.step=plan"]
+        [["hc", "label", "t7", "armadai.flow=lot", "armadai.step=plan"]]
     );
 }
 
@@ -426,7 +428,7 @@ fn no_label_without_terminal_id() {
         None,
     );
     assert_silent_success(&out);
-    assert_eq!(hc_calls(&fake), Vec::<String>::new());
+    assert_eq!(hc_calls(&fake), Vec::<Vec<String>>::new());
     // an empty variable is no terminal either
     let out = record_herdr(
         &delegation("[lot/plan#x]", dir.path()),
@@ -435,7 +437,7 @@ fn no_label_without_terminal_id() {
         Some(""),
     );
     assert_silent_success(&out);
-    assert_eq!(hc_calls(&fake), Vec::<String>::new());
+    assert_eq!(hc_calls(&fake), Vec::<Vec<String>>::new());
 }
 
 #[test]
@@ -450,7 +452,7 @@ fn no_label_without_herdr() {
         Some("t7"),
     );
     assert_silent_success(&out);
-    assert_eq!(hc_calls(&fake), Vec::<String>::new());
+    assert_eq!(hc_calls(&fake), Vec::<Vec<String>>::new());
 }
 
 #[test]
@@ -467,7 +469,7 @@ fn no_label_for_an_unknown_flow_or_step() {
         );
         assert_silent_success(&out);
     }
-    assert_eq!(hc_calls(&fake), Vec::<String>::new());
+    assert_eq!(hc_calls(&fake), Vec::<Vec<String>>::new());
     // the marks themselves were still recorded
     assert_eq!(log_of(dir.path()).lines().count(), 2);
 }
@@ -488,7 +490,7 @@ fn no_label_for_a_start_event() {
     let out = record_herdr(&start, home.path(), fake.path(), Some("t7"));
     assert_silent_success(&out);
     assert!(log_of(dir.path()).contains(r#""event":"start""#));
-    assert_eq!(hc_calls(&fake), Vec::<String>::new());
+    assert_eq!(hc_calls(&fake), Vec::<Vec<String>>::new());
 }
 
 #[test]
@@ -532,7 +534,20 @@ fn a_failing_hc_changes_nothing() {
     assert_eq!(out.stdout, b"");
     assert_eq!(out.stderr, b"");
     assert_eq!(hc_calls(&fake).len(), 1);
-    assert_eq!(without_ts(&log_of(dir.path())).len(), 1);
+    // the journal is the one of the same project without `herdr`
+    let plain = tempfile::tempdir().unwrap();
+    herdr_project(plain.path(), false);
+    let out = record_herdr(
+        &delegation("[lot/plan#x]", plain.path()),
+        home.path(),
+        fake.path(),
+        Some("t7"),
+    );
+    assert_silent_success(&out);
+    assert_eq!(
+        without_ts(&log_of(dir.path())),
+        without_ts(&log_of(plain.path()))
+    );
 }
 
 #[test]

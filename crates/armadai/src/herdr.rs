@@ -98,17 +98,12 @@ mod tests {
     }
 
     #[test]
-    fn an_absent_binary_is_none_and_an_empty_entry_is_not_the_cwd() {
+    fn an_absent_binary_is_none_and_an_empty_path_entry_is_skipped() {
         let a = tempfile::tempdir().unwrap();
         assert_eq!(find_bin_in("hc", &join(&[a.path()])), None);
-        // an empty PATH entry must not resolve against the current directory
-        let cwd_file = std::env::current_dir()
-            .unwrap()
-            .join("cargo-test-herdr-bin");
-        std::fs::write(&cwd_file, "").unwrap();
-        std::fs::set_permissions(&cwd_file, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let found = find_bin_in("cargo-test-herdr-bin", OsStr::new(":"));
-        std::fs::remove_file(&cwd_file).unwrap();
+        // an empty entry joins an absolute name to itself: it must not be searched
+        let abs = bin(a.path(), "x", 0o755);
+        let found = find_bin_in(abs.to_str().unwrap(), OsStr::new(":"));
         assert_eq!(found, None);
     }
 }
