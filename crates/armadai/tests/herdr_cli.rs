@@ -359,11 +359,10 @@ fn stdout(o: &std::process::Output) -> String {
     String::from_utf8_lossy(&o.stdout).into_owned()
 }
 
-#[test]
-fn open_team_calls_in_order() {
-    let e = Env::team(TEAM);
-    let out = e.open_team();
-    assert!(out.status.success(), "{out:?}");
+const TEAM_SUCCESS: &str = "opened Herdr space `demo`\n  coordinator  claude\n  flow status  armadai flow status --watch\n  chantier     claude\n  relecteur    codex\n";
+
+/// The calls of `open-team` on `TEAM`, with `chantier` renamed `renames` times in a row.
+fn team_calls(e: &Env, renames: usize) -> Vec<Vec<String>> {
     let (app, hc, root) = (e.app(), e.hc(), e.root());
     let new = format!(r#"{{"name":"demo","folder":"{root}","argv":["claude"]}}"#);
     let argv = r#"["armadai","flow","status","--watch"]"#;
@@ -395,32 +394,34 @@ fn open_team_calls_in_order() {
             name,
         ])
     };
-    assert_eq!(
-        e.calls(),
-        vec![
-            v(&[&app, "do", "space.new", &new]),
-            v(&[&app, "ls"]),
-            v(&[
-                &app,
-                "do",
-                "pane.split",
-                "--direction",
-                "down",
-                "--pane",
-                "p09",
-                "--argv",
-                argv
-            ]),
-            run("chantier", "claude"),
-            rename("chantier"),
-            run("relecteur", "codex"),
-            rename("relecteur"),
-        ]
-    );
-    assert_eq!(
-        stdout(&out),
-        "opened Herdr space `demo`\n  coordinator  claude\n  flow status  armadai flow status --watch\n  chantier     claude\n  relecteur    codex\n"
-    );
+    let mut calls = vec![
+        v(&[&app, "do", "space.new", &new]),
+        v(&[&app, "ls"]),
+        v(&[
+            &app,
+            "do",
+            "pane.split",
+            "--direction",
+            "down",
+            "--pane",
+            "p09",
+            "--argv",
+            argv,
+        ]),
+        run("chantier", "claude"),
+    ];
+    calls.extend(std::iter::repeat_n(rename("chantier"), renames));
+    calls.extend([run("relecteur", "codex"), rename("relecteur")]);
+    calls
+}
+
+#[test]
+fn open_team_calls_in_order() {
+    let e = Env::team(TEAM);
+    let out = e.open_team();
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(e.calls(), team_calls(&e, 1));
+    assert_eq!(stdout(&out), TEAM_SUCCESS);
 }
 
 #[test]
@@ -439,22 +440,8 @@ fn open_team_waits_for_the_tab() {
     );
     let out = e.open_team();
     assert!(out.status.success(), "{out:?}\n{}", stderr(&out));
-    assert!(stdout(&out).starts_with("opened Herdr space `demo`\n"));
-    let renames: Vec<String> = e
-        .calls()
-        .into_iter()
-        .filter(|c| c.get(2).map(String::as_str) == Some("tab.rename"))
-        .map(|c| c[4].clone())
-        .collect();
-    assert_eq!(
-        renames,
-        v(&[
-            "tb01-chantier",
-            "tb01-chantier",
-            "tb01-chantier",
-            "tb01-relecteur"
-        ])
-    );
+    assert_eq!(stdout(&out), TEAM_SUCCESS);
+    assert_eq!(e.calls(), team_calls(&e, 3));
 }
 
 #[test]
