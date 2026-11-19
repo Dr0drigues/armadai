@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use anyhow::{Context, bail};
 use clap::Subcommand;
@@ -148,6 +149,31 @@ fn unexpected(what: &str) -> anyhow::Error {
     anyhow::anyhow!("{what} failed: unexpected output")
 }
 
+const TAB_RENAME_ATTEMPTS: usize = 20;
+const TAB_RENAME_PAUSE: Duration = Duration::from_millis(100);
+
+/// `hc run --bg` returns before the app has registered the tab: `tab.rename` is called again
+/// while the app answers exactly `no tab "<tab>"`, at most `attempts` calls, `pause` between
+/// two; any other error stops at once and the last error is returned as it is (plan 2.4).
+fn rename_tab(
+    app: &Path,
+    tab: &str,
+    name: &str,
+    attempts: usize,
+    pause: Duration,
+) -> anyhow::Result<()> {
+    let args = ["do", "tab.rename", "--id", tab, "--name", name].map(String::from);
+    let what = format!("herdr-app do tab.rename {name}");
+    let missing = format!("{what} failed: no tab \"{tab}\"");
+    for i in 1..=attempts {
+        match call(app, &args, &what) {
+            Err(e) if i < attempts && e.to_string() == missing => std::thread::sleep(pause),
+            r => return r.map(drop),
+        }
+    }
+    Ok(())
+}
+
 fn open_team(ready: &Ready) -> anyhow::Result<()> {
     let project = &ready.project;
     let targets = super::link::targets_of(&[], project);
@@ -229,9 +255,12 @@ fn open_team(ready: &Ready) -> anyhow::Result<()> {
         ]
         .map(String::from);
         call(&ready.hc, &args, &format!("hc run {}", s.name))?;
-        app(
-            &["do", "tab.rename", "--id", &tab, "--name", &s.name],
-            &format!("herdr-app do tab.rename {}", s.name),
+        rename_tab(
+            &ready.herdr_app,
+            &tab,
+            &s.name,
+            TAB_RENAME_ATTEMPTS,
+            TAB_RENAME_PAUSE,
         )?;
     }
 
@@ -247,4 +276,87 @@ fn open_team(ready: &Ready) -> anyhow::Result<()> {
         println!("  {:<width$}  {}", s.name, s.kind);
     }
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// A fake `herdr-app` logging each call (NUL-separated, one line per call); `tab.rename`
+    /// answers `error` on stdout with exit 1 to the first `n` calls, then `{ "ok": true }`.
+    fn fake(dir: &Path, n: usize, error: &str) -> (PathBuf, PathBuf) {
+        let (bin, log) = (dir.join("herdr-app"), dir.join("log"));
+        let script = format!(
+            "#!/bin/sh\n: >> '{l}'\nk=$(wc -l < '{l}')\nprintf '%s\\0' \"$0\" \"$@\" >> '{l}'\nprintf '\\n' >> '{l}'\n\
+             if [ \"$k\" -lt {n} ]; then echo '{{ \"error\": \"{error}\" }}'; exit 1; fi\necho '{{ \"ok\": true }}'\n",
+            l = log.display()
+        );
+        std::fs::write(&bin, script).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (bin, log)
+    }
+
+    fn calls(log: &Path) -> Vec<Vec<String>> {
+        std::fs::read_to_string(log)
+            .unwrap_or_default()
+            .split("\0\n")
+            .filter(|c| !c.is_empty())
+            .map(|c| c.split('\0').map(str::to_string).collect())
+            .collect()
+    }
+
+    const MS: Duration = Duration::from_millis(1);
+
+    #[test]
+    fn rename_tab_waits_for_the_tab() {
+        let d = tempfile::tempdir().unwrap();
+        let (bin, log) = fake(d.path(), 3, r#"no tab \"tb01-chantier\""#);
+        rename_tab(&bin, "tb01-chantier", "chantier", 20, MS).unwrap();
+        let one = vec![
+            bin.display().to_string(),
+            "do".into(),
+            "tab.rename".into(),
+            "--id".into(),
+            "tb01-chantier".into(),
+            "--name".into(),
+            "chantier".into(),
+        ];
+        assert_eq!(calls(&log), vec![one; 4]);
+    }
+
+    #[test]
+    fn rename_tab_gives_up_with_the_last_error() {
+        let d = tempfile::tempdir().unwrap();
+        let (bin, log) = fake(d.path(), 25, r#"no tab \"tb01-chantier\""#);
+        let t = std::time::Instant::now();
+        let e = rename_tab(&bin, "tb01-chantier", "chantier", 20, MS).unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            r#"herdr-app do tab.rename chantier failed: no tab "tb01-chantier""#
+        );
+        assert_eq!(calls(&log).len(), 20);
+        assert!(t.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn rename_tab_stops_on_another_error() {
+        let d = tempfile::tempdir().unwrap();
+        let (bin, log) = fake(d.path(), 99, r#"no space \"sp01\""#);
+        let e = rename_tab(&bin, "tb01-chantier", "chantier", 20, MS).unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            r#"herdr-app do tab.rename chantier failed: no space "sp01""#
+        );
+        assert_eq!(calls(&log).len(), 1);
+        // a `no tab` about another tab does not retry either
+        let d = tempfile::tempdir().unwrap();
+        let (bin, log) = fake(d.path(), 99, r#"no tab \"tb99-autre\""#);
+        let e = rename_tab(&bin, "tb01-chantier", "chantier", 20, MS).unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            r#"herdr-app do tab.rename chantier failed: no tab "tb99-autre""#
+        );
+        assert_eq!(calls(&log).len(), 1);
+    }
 }

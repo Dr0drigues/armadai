@@ -424,6 +424,40 @@ fn open_team_calls_in_order() {
 }
 
 #[test]
+fn open_team_waits_for_the_tab() {
+    let e = Env::team(TEAM);
+    // the tab is not registered yet for the first two `tab.rename` of `chantier`
+    e.fake(
+        "herdr-app",
+        &FAKE_APP.replace(
+            r#"tab.rename) echo '{ "ok": true }';;"#,
+            &format!(
+                r#"tab.rename) if [ "$4" = tb01-chantier ] && [ "$(grep -c 'tab.rename' '{log}')" -le 2 ]; then echo '{{ "error": "no tab \"tb01-chantier\"" }}'; exit 1; fi; echo '{{ "ok": true }}';;"#,
+                log = e.log().display()
+            ),
+        ),
+    );
+    let out = e.open_team();
+    assert!(out.status.success(), "{out:?}\n{}", stderr(&out));
+    assert!(stdout(&out).starts_with("opened Herdr space `demo`\n"));
+    let renames: Vec<String> = e
+        .calls()
+        .into_iter()
+        .filter(|c| c.get(2).map(String::as_str) == Some("tab.rename"))
+        .map(|c| c[4].clone())
+        .collect();
+    assert_eq!(
+        renames,
+        v(&[
+            "tb01-chantier",
+            "tb01-chantier",
+            "tb01-chantier",
+            "tb01-relecteur"
+        ])
+    );
+}
+
+#[test]
 fn open_team_unexpected_ls() {
     let e = Env::team(TEAM);
     e.fake(
