@@ -115,7 +115,7 @@ fn watch_opens_one_pane() {
             "do".into(),
             "pane.split".into(),
             "--direction".into(),
-            "down".into(),
+            "right".into(),
             "--argv".into(),
             argv.into()
         ]]
@@ -288,7 +288,7 @@ fn herdr_help_lists_both_commands() {
         .unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
     for line in [
-        "  watch      Open armadai flow status --watch in a new pane below",
+        "  watch      Open armadai flow status --watch in a new pane to the right",
         "  open-team  Open a space with the coordinator, flow status and the sessions declared under herdr",
     ] {
         assert!(text.lines().any(|l| l == line), "{text}");
@@ -300,7 +300,7 @@ fn herdr_help_lists_both_commands() {
         .unwrap();
     let w = String::from_utf8_lossy(&w.stdout);
     assert!(
-        w.starts_with("Open armadai flow status --watch in a new pane below\n\nUsage:"),
+        w.starts_with("Open armadai flow status --watch in a new pane to the right\n\nUsage:"),
         "{w}"
     );
     assert!(

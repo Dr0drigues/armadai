@@ -1,3 +1,9 @@
+## Unreleased
+
+### Changed
+
+- `armadai herdr watch` opens its pane to the right of the active pane (was below).
+
 ## v1.0.0-rc.15 (2026-11-19)
 
 Fifteenth release candidate. ArmadAI now works with the Herdr.app desktop app (0.1.16), behind a new `herdr` project setting: `link --target claude` writes a session link that uses `hc send` in a Herdr terminal, a marked delegation labels the Herdr terminal of the session that makes it with the flow and step, and two new commands open things in the app, `armadai herdr watch` and `armadai herdr open-team`. Without `herdr`, nothing changes and no new `link` is needed. Also: `update` and `install.sh` say clearly when a release has no binary for your platform. Moving from rc.14: add `herdr: true` (or a `herdr:` map with `sessions`) to `.armadai/project.yaml` to use Herdr, then, for a flow with `session_link`, run `armadai link` again; `hc` and `herdr-app` must be in `PATH`; an older binary refuses a project with `herdr:`. See [Herdr.app](docs/wiki/herdr.md).

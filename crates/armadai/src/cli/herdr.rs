@@ -12,7 +12,7 @@ use crate::herdr::{HC, HERDR_APP, find_bin, terminal_id};
 
 #[derive(Subcommand)]
 pub enum HerdrCommand {
-    /// Open armadai flow status --watch in a new pane below
+    /// Open armadai flow status --watch in a new pane to the right
     Watch,
     /// Open a space with the coordinator, flow status and the sessions declared under herdr
     OpenTeam,
@@ -120,7 +120,7 @@ pub fn execute(what: HerdrCommand) -> anyhow::Result<()> {
         HerdrCommand::Watch => {
             let argv = serde_json::to_string(&["armadai", "flow", "status", "--watch"])?;
             let args =
-                ["do", "pane.split", "--direction", "down", "--argv", &argv].map(String::from);
+                ["do", "pane.split", "--direction", "right", "--argv", &argv].map(String::from);
             call(&ready.herdr_app, &args, "herdr-app do pane.split")?;
             println!("opened flow status --watch in a new Herdr pane");
             Ok(())
