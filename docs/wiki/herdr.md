@@ -47,8 +47,8 @@ each. A failed call stops the command with `<call> failed: <reason>` (the error 
 its stderr, else `exit status <n>`, `killed by signal <n>`; `unexpected output` when a call succeeds without the JSON or id expected; the system error when the binary cannot be launched), exit code 1. The calls already made are not undone: after a failed
 `open-team`, close the space in the app and stop the named sessions it started with `hc kill <name>`: closing the space does not stop a session started with `--no-parent` (measured).
 
-- **`armadai herdr watch`** opens `armadai flow status --watch` in a new pane below the active pane, and prints
-  `opened flow status --watch in a new Herdr pane`.
+- **`armadai herdr watch`** opens `armadai flow status --watch` in a new pane to the right of the active pane, and prints
+  `opened flow status --watch in a new Herdr pane`. The size is not adjustable (`pane.split` takes no size argument): the pane takes half of the active pane.
   The pane starts in the project folder and runs the `armadai` found in your login `PATH`, not the binary that typed the command: an older one that does not know `herdr` closes the pane ("Terminal failed to start"). Sessions started by Herdr take your login environment, not that of the calling terminal.
 - **`armadai herdr open-team`** opens one space for the project (named after `name:` of the project, else its folder),
   with the coordinator in the first tab and `flow status --watch` in a pane below, then one tab per declared session,
